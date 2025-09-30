@@ -6,7 +6,8 @@
 # 可以使用以下命令安装：
 # pip install black djlint
 
-# cd 到项目根目录
+# cd 到项目根目录并运行下面这句命令
+# bash code_formatter.sh
 
 echo "格式化 Python 文件..."
 black .
