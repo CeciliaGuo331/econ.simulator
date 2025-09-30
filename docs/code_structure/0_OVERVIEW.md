@@ -19,17 +19,17 @@ graph TD
     end
 
     subgraph "核心微服务 (Core Microservices)"
-        B[API网关 (API Gateway)]
-        C[编排器服务 (Orchestrator)]
-        D[状态服务 (State Service)]
-        E[市场逻辑服务 (Market Logic Service)]
-        F[代理人逻辑服务 (Agent Logic Service)]
-        G[日志服务 (Logger Service)]
+        B[API网关（API Gateway）]
+        C[编排器服务（Orchestrator）]
+        D[状态服务（State Service）]
+        E[市场逻辑服务（Market Logic Service）]
+        F[代理人逻辑服务（Agent Logic Service）]
+        G[日志服务（Logger Service）]
     end
     
     subgraph "基础设施"
-        H[数据存储 (Redis)]
-        I[数据仓库 (Parquet Files)]
+        H[数据存储（Redis）]
+        I[数据仓库（Parquet Files）]
     end
 
     A -- HTTP API --> B
