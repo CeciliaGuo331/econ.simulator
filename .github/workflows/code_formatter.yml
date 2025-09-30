@@ -1,0 +1,47 @@
+name: Code Formatter Check
+
+# 在向 main 分支 push 或创建/更新 pull_request 时触发
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    # Python 代码格式化检查
+    black:
+        name: Black Formatter Check
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Run black
+              uses: psf/black@stable
+              with:
+                  # 使用 --check 和 --diff 来检查格式问题而不实际修改文件
+                  options: "--check --diff"
+                  # 指定检查的源目录
+                  src: "."
+                  # 您还可以通过 version 指定 black 的版本
+                  # version: "~= 23.0"
+
+    # 模板文件格式化和风格检查
+    djlint:
+        name: Djlint Linter Check
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11" # 确保使用您项目兼容的 Python 版本
+
+            - name: Install and run djlint
+              run: |
+                  pip install djlint
+                  # 使用 --check 模式检查模板文件
+                  # 您可以根据项目情况添加更多参数，例如 --profile=django
+                  djlint . --check
