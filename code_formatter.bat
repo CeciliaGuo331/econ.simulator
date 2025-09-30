@@ -9,7 +9,7 @@ REM 可以使用以下命令在 CMD 或 PowerShell 中安装：
 REM pip install black djlint
 
 REM cd 到项目根目录并运行这个 .bat 文件
-REM 你可以通过在命令行输入 "format_code.bat" 或直接双击该文件来运行
+REM 你可以通过在命令行输入 "code_formatter.bat" 或直接双击该文件来运行
 
 echo 格式化 Python 文件...
 black .
