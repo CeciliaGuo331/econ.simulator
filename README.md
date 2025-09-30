@@ -19,36 +19,29 @@
 
 ### 四层架构设计
 
-```
-┌─────────────────────────────────────────┐
-│ 第四层：策略/API层 (Strategy/API Layer)   │
-│ - Python脚本策略                        │
-│ - JSON配置文件                          │
-│ - LLM API集成                           │
-└─────────────────────────────────────────┘
-┌─────────────────────────────────────────┐
-│ 第三层：代理人层 (Agent Layer)            │
-│ - 个人/家户 (~400个)                    │
-│ - 企业 (1个)                           │
-│ - 商业银行 (1个)                        │
-│ - 央行 (1个)                           │
-│ - 政府 (1个)                           │
-└─────────────────────────────────────────┘
-┌─────────────────────────────────────────┐
-│ 第二层：市场与环境层 (Market Layer)       │
-│ - 商品市场                              │
-│ - 劳动力市场                            │
-│ - 金融市场                              │
-│ - 宏观数据中心                          │
-└─────────────────────────────────────────┘
-┌─────────────────────────────────────────┐
-│ 第一层：核心引擎层 (Core Engine Layer)   │
-│ - 主事件循环                            │
-│ - 时序调度器                            │
-│ - 规则执行官                            │
-│ - 数据记录器                            │
-└─────────────────────────────────────────┘
-```
+#### 第四层：策略/API层 (Strategy/API Layer)    
+- Python脚本策略                          
+- JSON配置文件                            
+- LLM API集成                              
+
+#### 第三层：代理人层 (Agent Layer)            
+- 个人/家户 (~400个)                    
+- 企业 (1个)                           
+- 商业银行 (1个)                        
+- 央行 (1个)                           
+- 政府 (1个)                           
+
+#### 第二层：市场与环境层 (Market Layer)       
+- 商品市场                              
+- 劳动力市场                            
+- 金融市场                              
+- 宏观数据中心  
+
+#### 第一层：核心引擎层 (Core Engine Layer)   
+- 主事件循环                            
+- 时序调度器                            
+- 规则执行官                            
+- 数据记录器                            
 
 ### 时间机制
 
@@ -117,91 +110,6 @@
 - **层级 0**: 私有数据（agent_state）- 仅代理人自身可见
 - **层级 1**: 公开市场数据（market_data）- 所有代理人可见
 - **层级 2**: 系统数据 - 引擎全量数据，用于分析和可视化
-
-## 快速开始
-
-### 环境要求
-- Python 3.8+
-- 相关依赖包（详见 requirements.txt）
-
-### 安装
-```bash
-git clone https://github.com/CeciliaGuo331/econ.engine.git
-cd econ.simulator.engine
-pip install -r requirements.txt
-```
-
-### 基本使用
-```python
-from econ_engine import EconomicSimulator
-
-# 创建仿真实例
-simulator = EconomicSimulator()
-
-# 配置代理人策略
-simulator.load_strategies('strategies/')
-
-# 运行仿真
-results = simulator.run(days=100)
-
-# 分析结果
-simulator.analyze(results)
-```
-
-## 策略开发
-
-### 基本策略接口
-```python
-class AgentStrategy:
-    def get_decision(self, agent_state, market_data):
-        """
-        基于代理人状态和市场数据返回决策
-        
-        Args:
-            agent_state: 代理人私有状态
-            market_data: 公开市场数据
-            
-        Returns:
-            decision_object: 结构化决策对象
-        """
-        pass
-```
-
-### LLM集成示例
-```python
-class LLMStrategy(AgentStrategy):
-    def get_decision(self, agent_state, market_data):
-        # 格式化提示
-        prompt = self.format_prompt(agent_state, market_data)
-        
-        # 调用LLM API
-        response = llm_api.call(prompt)
-        
-        # 解析回答
-        decision = self.parse_response(response)
-        
-        return decision
-```
-
-## 项目结构
-
-```
-econ.simulator.engine/
-├── README.md
-├── docs/
-│   ├── STRUCTURE.md          # 架构设计文档
-│   └── econ.design/
-│       ├── agent.md          # 代理人设计
-│       └── market.md         # 市场设计
-├── src/
-│   ├── core/                 # 核心引擎
-│   ├── agents/               # 代理人实现
-│   ├── markets/              # 市场机制
-│   └── strategies/           # 策略示例
-├── examples/                 # 使用示例
-├── tests/                    # 测试文件
-└── requirements.txt          # 依赖包列表
-```
 
 ## 设计原则
 
