@@ -1,78 +1,97 @@
-# **代码结构设计 (微服务)**
+# **代码结构设计 (模块化单体)**
 
-本设计将系统拆分为多个独立的微服务，每个服务都有自己专属的目录和代码库，以实现最大限度的解耦。
+本设计遵循“高内聚、低耦合”的原则，在一个单一的应用内通过清晰的模块划分来实现。
 
-## **1. 根目录结构 (Monorepo 风格)**
-
-我们将采用 Monorepo（单一代码库）风格来管理所有微服务，便于统一管理依赖和共享配置。
+## **1. 根目录结构**
 
 ```
 econ.simulator/
-├── .venv/                  # 共享的 Python 虚拟环境
-├── configs/                # 所有服务的共享配置文件
+├── .venv/                  # Python 虚拟环境
+├── config/                 # 仿真配置文件 (如 world_settings.yaml)
 ├── data/                   # 输出的 Parquet 日志数据
 ├── docs/                   # 项目文档
-├── services/               # 所有微服务的源代码
-│   ├── api_gateway/        # API 网关服务
-│   ├── orchestrator/       # 编排器服务
-│   ├── state_service/      # 状态服务
-│   ├── market_logic_service/ # 市场逻辑服务
-│   └── ...                 # 其他逻辑和日志服务
-├── shared/                 # 跨服务共享的 Pydantic 模型
-├── scripts/                # 辅助脚本 (如启动所有服务)
+├── econ_sim/               # Python 核心代码包
+├── scripts/                # 辅助脚本 (如启动仿真、运行分析)
 ├── tests/                  # 测试代码
-├── docker-compose.yml      # 用于启动所有服务的 Docker Compose 文件
 ├── .gitignore
 ├── pyproject.toml          # 项目元数据和依赖管理
 └── README.md
 ```
 
-## **2. `shared/` 共享代码包**
+## **2. `econ_sim/` 核心代码包结构**
 
-为了确保服务间 API 契约的一致性，所有 Pydantic 数据模型将放在一个共享包中。
-
-```
-shared/
-└── models/
-    ├── __init__.py
-    ├── agent.py        # Agent 相关的状态和决策模型
-    ├── market.py       # Market 相关的状态模型
-    └── world.py        # WorldState 等顶层模型
-```
-**关键原则:** 这个 `shared` 包**只能包含 Pydantic 模型和枚举**，绝不能包含任何业务逻辑或数据库客户端代码。
-
-## **3. 单个服务目录结构 (示例: `state_service`)**
-
-所有服务都遵循相似的内部结构。
+这是项目的主体，所有核心逻辑都在这里。
 
 ```
-services/state_service/
-├── app/
+econ_sim/
+├── __init__.py
+├── api/                    # 对外 API 层
 │   ├── __init__.py
-│   ├── main.py             # FastAPI 应用实例和路由定义
-│   ├── crud.py             # 封装 Redis 操作的 CRUD 函数
-│   └── db.py               # Redis 连接管理
-├── Dockerfile              # 用于构建该服务的 Docker 镜像
-└── requirements.txt        # 该服务的 Python 依赖
+│   └── endpoints.py        # FastAPI 路由定义
+│
+├── core/                   # 核心编排与调度
+│   ├── __init__.py
+│   └── orchestrator.py     # 包含主事件循环的编排器
+│
+├── data_access/            # 数据访问层
+│   ├── __init__.py
+│   ├── models.py           # 核心 Pydantic 数据模型
+│   └── redis_client.py     # 封装与 Redis 交互的异步客户端
+│
+├── logic_modules/          # 【关键】所有业务逻辑模块
+│   ├── __init__.py
+│   ├── agent_logic.py      # 代理人行为逻辑
+│   ├── market_logic.py     # 市场结算逻辑
+│   └── ...                 # 其他独立的逻辑模块
+│
+├── utils/                  # 通用工具模块
+│   ├── __init__.py
+│   └── settings.py         # 配置加载模块
+│
+└── main.py                 # FastAPI 应用的启动入口
 ```
+
+## **3. 模块职责与依赖规则**
+
+*   **`main.py`**: 程序的入口。创建并配置 FastAPI 应用实例。
+
+*   **`api`**: 对外接口层。
+    *   **职责**: 定义 FastAPI 的路由，处理 HTTP 请求和响应。
+    *   **依赖**: 只能调用 `core` 模块。
+
+*   **`core`**: 编排层。
+    *   **职责**: 实现仿真的主事件循环。它不包含具体业务逻辑，而是通过调用 `logic_modules` 和 `data_access` 来“编排”一个 Tick 的流程。
+    *   **依赖**: 可以调用 `logic_modules` 和 `data_access`。
+
+*   **`logic_modules`**: 业务逻辑层。
+    *   **职责**: 实现所有具体的经济学计算逻辑。每个文件（如 `market_logic.py`）都是一个独立的、无状态的纯函数集合。
+    *   **依赖**: **绝对不能**依赖 `core` 或 `api`。它们是纯粹的计算单元，需要的数据通过函数参数传入。
+
+*   **`data_access`**: 数据访问层。
+    *   **职责**: **唯一**负责与数据库（Redis）交互的模块。它封装了所有的数据读写操作，并定义了 Pydantic 数据模型。
+    *   **依赖**: 不依赖任何其他内部模块。
+
+**依赖关系图:**
+
+```
+[API] -> [Core] -> [Logic Modules]
+   |         |
+   +------> [Data Access] <------+
+```
+这个严格的单向依赖链确保了系统的可维护性和低耦合性。
 
 ## **4. 运行流程示例 (一个Tick)**
 
-1.  **启动:** 用户运行 `docker-compose up`，启动所有微服务和 Redis 实例。
-2.  **接收决策:** `玩家策略` 向 `API网关` 发送 `POST /decisions` 请求。
-3.  **转发:** `API网关` 将请求直接转发给 `编排器服务`。
-4.  **编排开始:** `编排器服务` 收到请求，开始执行一个 Tick 的逻辑。
-5.  **获取状态:** `编排器` 向 `状态服务` 发送 `GET /state/full` 请求。
-6.  **状态服务响应:** `状态服务` 从 Redis 读取数据，组装成 `WorldState` 模型，并返回给 `编排器`。
-7.  **调用逻辑:**
-    *   `编排器` 将 `WorldState` 数据作为请求体，向 `市场逻辑服务` 发送 `POST /clear_markets` 请求。
-    *   `市场逻辑服务` 执行计算，返回一个包含交易结果的 `MarketClearingResult` 模型。
-8.  **更新状态:** `编排器` 将 `MarketClearingResult` 转换为更新指令，向 `状态服务` 发送 `PATCH /state/agents` 请求。
-9.  **状态服务执行更新:** `状态服务` 解析更新指令，并执行相应的 Redis 命令（如 `HINCRBYFLOAT`）。
-10. **记录日志:** `编排器` 向 `日志服务` 发送 `POST /logs` 请求，内容为需要记录的数据。
-11. **循环结束:** Tick 完成。
-
-这种架构虽然增加了网络通信的开销，但换来了极高的**灵活性**和**可维护性**。任何一个服务都可以被独立地修改、测试、部署和扩展，而不会影响到系统的其他部分。
+1.  **启动:** 用户运行 `uvicorn econ_sim.main:app` 启动 FastAPI 应用。
+2.  **接收决策:** `玩家策略` 向 `api.endpoints` 发送 `POST /decisions` 请求。
+3.  **转发:** API 层调用 `core.orchestrator` 中的函数来处理该请求。
+4.  **编排开始:** `Orchestrator` 开始执行一个 Tick 的逻辑。
+5.  **获取状态:** `Orchestrator` 调用 `data_access.redis_client` 中的函数，从 Redis 读取完整的世界状态。
+6.  **调用逻辑:**
+    *   `Orchestrator` 将状态数据作为参数，调用 `logic_modules.market_logic.clear_markets()`。
+    *   `market_logic` 执行计算，返回一个包含交易结果的数据结构。
+7.  **更新状态:** `Orchestrator` 将交易结果传递给 `data_access.redis_client` 中的函数，以更新 Redis 中的状态。
+8.  **循环结束:** Tick 完成。所有交互都在内存中的函数调用完成，高效且易于调试。
 
 ---
 **下一步:**
