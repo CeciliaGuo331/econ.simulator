@@ -1,0 +1,24 @@
+simulation:
+  name: default_world
+  ticks_per_day: 3
+  max_days: 2
+  num_households: 200
+  initial_tick: 0
+  initial_day: 0
+markets:
+  goods:
+    base_price: 10.0
+    subsistence_consumption: 1.0
+  labor:
+    base_wage: 80.0
+    government_jobs: 20
+  finance:
+    deposit_rate: 0.01
+    loan_rate: 0.05
+policies:
+  tax_rate: 0.15
+  unemployment_benefit: 50.0
+  government_spending: 10000.0
+  central_bank:
+    inflation_target: 0.02
+    unemployment_target: 0.05

@@ -25,6 +25,45 @@
 
 ## 项目状态
 
-**当前阶段：** 架构与模型设计。
+**当前阶段：** 核心框架与基础策略已完成，包含完整的 API、编排引擎、数据访问层以及商品/劳动/金融市场的出清逻辑。内置的基准策略可用于快速烟雾测试。
 
-详细的经济和技术设计文档位于 `/docs` 目录下。代码实现尚未开始。
+详细的经济和技术设计文档位于 `/docs` 目录下，代码实现对应目录 `econ_sim/`。
+
+## 快速开始
+
+1. 激活虚拟环境并安装依赖：
+
+	```bash
+	conda activate econsim
+	pip install -r requirements.txt
+	```
+
+2. 运行内置的演示脚本（执行 3 个 Tick）：
+
+		```bash
+		python scripts/run_simulation.py
+		```
+
+3. 启动 FastAPI 服务：
+
+		```bash
+		uvicorn econ_sim.main:app --reload
+		```
+
+4. 运行测试套件：
+
+		```bash
+		pytest
+		```
+
+## API 速览
+
+| 方法 | 路径 | 描述 |
+| ---- | ---- | ---- |
+| `POST` | `/simulations` | 创建新的仿真实例 |
+| `GET` | `/simulations/{id}` | 查询仿真状态 |
+| `POST` | `/simulations/{id}/run_tick` | 执行下一 Tick，可附带决策覆盖 |
+| `GET` | `/simulations/{id}/state/full` | 返回完整世界状态快照 |
+| `GET` | `/simulations/{id}/state/agents` | 查询指定代理人（默认全部家户） |
+
+更多细节请参考 `econ_sim/api/endpoints.py`。
