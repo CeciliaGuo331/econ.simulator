@@ -11,11 +11,13 @@
 ```json
 {
   "email": "player@example.com",
-  "password": "StrongPass123"
+  "password": "StrongPass123",
+  "user_type": "individual"
 }
 ```
 
 - 密码长度要求 8~128 个字符。
+- `user_type` 取值范围：`individual`、`firm`、`government`、`commercial_bank`、`central_bank`。
 - 邮箱将被归一化为小写并作为唯一标识。
 - 如邮箱已存在，返回 `409 Conflict`。
 
@@ -24,6 +26,7 @@
 ```json
 {
   "user_id": "player@example.com",
+  "user_type": "individual",
   "message": "Registration successful."
 }
 ```
@@ -60,6 +63,16 @@
 | 400    | 请求体字段缺失或非法    | Pydantic 自动生成的错误描述   |
 | 409    | 邮箱重复注册            | `Email already registered`   |
 | 401    | 邮箱或密码不匹配        | `Invalid email or password`  |
+
+## 4. 默认管理员账号
+
+| 字段   | 默认值           |
+| ------ | ---------------- |
+| 邮箱   | `admin@econ.sim` |
+| 密码   | `ChangeMe123!`   |
+| 类型   | `admin`          |
+
+系统启动或数据重置时会自动确保该账号存在，后续可通过配置文件覆盖。
 
 ---
 未来可在此基础上扩展邮箱验证、密码找回、多因素认证等能力。

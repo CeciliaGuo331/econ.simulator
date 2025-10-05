@@ -11,7 +11,12 @@ from typing import Dict, Optional, Protocol
 
 from pydantic import BaseModel, field_validator
 
-from .validators import validate_email
+from .validators import (
+    ADMIN_USER_TYPE,
+    PUBLIC_USER_TYPES,
+    validate_email,
+    validate_user_type,
+)
 
 from .passwords import hash_password, verify_password
 
@@ -24,6 +29,10 @@ class AuthenticationError(RuntimeError):
     """登录失败时的统一异常。"""
 
 
+DEFAULT_ADMIN_EMAIL = "admin@econ.sim"
+DEFAULT_ADMIN_PASSWORD = "ChangeMe123!"
+
+
 @dataclass
 class UserRecord:
     """存储用户的持久化信息。"""
@@ -31,6 +40,7 @@ class UserRecord:
     email: str
     password_hash: str
     created_at: datetime
+    user_type: str
 
 
 class UserStore(Protocol):
@@ -79,6 +89,9 @@ class RedisUserStore:
             email=payload["email"],
             password_hash=payload["password_hash"],
             created_at=datetime.fromisoformat(payload["created_at"]),
+            user_type=validate_user_type(
+                payload.get("user_type", "individual"), allow_admin=True
+            ),
         )
 
     async def save_user(self, record: UserRecord) -> None:
@@ -87,6 +100,7 @@ class RedisUserStore:
                 "email": record.email,
                 "password_hash": record.password_hash,
                 "created_at": record.created_at.isoformat(),
+                "user_type": record.user_type,
             }
         )
         async with self._lock:
@@ -122,12 +136,18 @@ class SessionManager:
 class UserProfile(BaseModel):
     email: str
     created_at: datetime
+    user_type: str
 
     @field_validator("email")
     @classmethod
     def _validate_email(cls, value: str) -> str:
         validate_email(value)
         return value
+
+    @field_validator("user_type")
+    @classmethod
+    def _validate_user_type(cls, value: str) -> str:
+        return validate_user_type(value, allow_admin=True)
 
 
 class UserManager:
@@ -136,14 +156,34 @@ class UserManager:
     def __init__(self, store: UserStore) -> None:
         self._store = store
         self._sessions = SessionManager()
+        self._admin_seeded = False
 
     @staticmethod
     def _normalize_email(email: str) -> str:
         return email.strip().lower()
 
-    async def register_user(self, email: str, password: str) -> UserProfile:
+    async def _ensure_admin_exists(self) -> None:
+        if self._admin_seeded:
+            return
+        normalized_email = self._normalize_email(DEFAULT_ADMIN_EMAIL)
+        existing = await self._store.get_user(normalized_email)
+        if existing is None:
+            record = UserRecord(
+                email=normalized_email,
+                password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+                created_at=datetime.now(timezone.utc),
+                user_type=validate_user_type(ADMIN_USER_TYPE, allow_admin=True),
+            )
+            await self._store.save_user(record)
+        self._admin_seeded = True
+
+    async def register_user(
+        self, email: str, password: str, user_type: str
+    ) -> UserProfile:
+        await self._ensure_admin_exists()
         validate_email(email)
         normalized = self._normalize_email(email)
+        normalized_type = validate_user_type(user_type)
         existing = await self._store.get_user(normalized)
         if existing is not None:
             raise UserAlreadyExistsError("Email already registered")
@@ -152,11 +192,15 @@ class UserManager:
             email=normalized,
             password_hash=hash_password(password),
             created_at=datetime.now(timezone.utc),
+            user_type=normalized_type,
         )
         await self._store.save_user(record)
-        return UserProfile(email=record.email, created_at=record.created_at)
+        return UserProfile(
+            email=record.email, created_at=record.created_at, user_type=record.user_type
+        )
 
     async def authenticate_user(self, email: str, password: str) -> str:
+        await self._ensure_admin_exists()
         validate_email(email)
         normalized = self._normalize_email(email)
         record = await self._store.get_user(normalized)
@@ -169,6 +213,8 @@ class UserManager:
     async def reset(self) -> None:
         await self._store.clear()
         await self._sessions.clear()
+        self._admin_seeded = False
+        await self._ensure_admin_exists()
 
 
 __all__ = [
@@ -178,4 +224,5 @@ __all__ = [
     "AuthenticationError",
     "InMemoryUserStore",
     "RedisUserStore",
+    "PUBLIC_USER_TYPES",
 ]

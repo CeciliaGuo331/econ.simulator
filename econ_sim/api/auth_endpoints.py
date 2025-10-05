@@ -6,8 +6,12 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from ..auth import user_manager
-from ..auth.user_manager import AuthenticationError, UserAlreadyExistsError
-from ..auth.validators import validate_email
+from ..auth.user_manager import (
+    AuthenticationError,
+    PUBLIC_USER_TYPES,
+    UserAlreadyExistsError,
+)
+from ..auth.validators import validate_email, validate_user_type
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -15,6 +19,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class RegisterRequest(BaseModel):
     email: str
     password: str = Field(min_length=8, max_length=128)
+    user_type: str = Field(
+        description="用户类型，可选值：" + ", ".join(sorted(PUBLIC_USER_TYPES))
+    )
 
     @field_validator("email")
     @classmethod
@@ -22,10 +29,16 @@ class RegisterRequest(BaseModel):
         validate_email(value)
         return value
 
+    @field_validator("user_type")
+    @classmethod
+    def _validate_user_type(cls, value: str) -> str:
+        return validate_user_type(value)
+
 
 class RegisterResponse(BaseModel):
     user_id: str
     message: str
+    user_type: str
 
 
 class LoginRequest(BaseModel):
@@ -51,10 +64,16 @@ async def register_user(payload: RegisterRequest) -> RegisterResponse:
     """注册新用户，默认使用邮箱作为唯一标识。"""
 
     try:
-        profile = await user_manager.register_user(payload.email, payload.password)
+        profile = await user_manager.register_user(
+            payload.email, payload.password, payload.user_type
+        )
     except UserAlreadyExistsError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    return RegisterResponse(user_id=profile.email, message="Registration successful.")
+    return RegisterResponse(
+        user_id=profile.email,
+        user_type=profile.user_type,
+        message="Registration successful.",
+    )
 
 
 @router.post("/login", response_model=LoginResponse)
