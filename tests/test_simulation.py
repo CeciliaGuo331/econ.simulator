@@ -45,6 +45,44 @@ async def test_overrides_affect_decisions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reset_simulation_restores_initial_state() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "reset-sim"
+
+    await orchestrator.create_simulation(simulation_id)
+    await orchestrator.register_participant(simulation_id, "player@example.com")
+
+    script_registry.clear()
+    try:
+        script_registry.register_script(
+            simulation_id=simulation_id,
+            user_id="player@example.com",
+            script_code="""
+def generate_decisions(context):
+    return {}
+""",
+            description="noop",
+        )
+
+        await orchestrator.run_tick(simulation_id)
+
+        reset_state = await orchestrator.reset_simulation(simulation_id)
+
+        config = orchestrator.config.simulation
+        assert reset_state.tick == config.initial_tick
+        assert reset_state.day == config.initial_day
+
+        participants = await orchestrator.list_participants(simulation_id)
+        assert participants == ["player@example.com"]
+
+        scripts = script_registry.list_scripts(simulation_id)
+        assert len(scripts) == 1
+        assert scripts[0].description == "noop"
+    finally:
+        script_registry.clear()
+
+
+@pytest.mark.asyncio
 async def test_admin_restrictions_for_simulation_control() -> None:
     await user_manager.reset()
     script_registry.clear()
@@ -168,3 +206,22 @@ def generate_decisions(context):
         assert upload.status_code == 200
         payload = upload.json()
         assert payload["message"] == "Script registered successfully."
+
+
+@pytest.mark.asyncio
+async def test_day_rollover_starting_from_tick_one() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "day-rollover"
+    initial = await orchestrator.create_simulation(simulation_id)
+
+    first_tick = await orchestrator.run_tick(simulation_id)
+    assert first_tick.world_state.day == initial.day + 1
+
+    second_tick = await orchestrator.run_tick(simulation_id)
+    assert second_tick.world_state.day == first_tick.world_state.day
+
+    third_tick = await orchestrator.run_tick(simulation_id)
+    assert third_tick.world_state.day == first_tick.world_state.day
+
+    fourth_tick = await orchestrator.run_tick(simulation_id)
+    assert fourth_tick.world_state.day == first_tick.world_state.day + 1

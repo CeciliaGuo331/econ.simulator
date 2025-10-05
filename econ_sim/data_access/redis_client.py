@@ -120,6 +120,13 @@ class DataAccessLayer:
         await self._persist_state(world_state)
         return world_state
 
+    async def reset_simulation(self, simulation_id: str) -> WorldState:
+        """无论当前状态如何，重新生成初始世界状态并覆盖存储。"""
+
+        world_state = self._build_initial_world_state(simulation_id)
+        await self._persist_state(world_state)
+        return world_state
+
     async def get_world_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的最新世界状态。"""
         payload = await self.store.load(simulation_id)

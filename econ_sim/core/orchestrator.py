@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from ..data_access.models import (
@@ -83,11 +84,15 @@ class SimulationOrchestrator:
         updates, logs = execute_tick_logic(world_state, decisions, self.config)
 
         next_tick = world_state.tick + 1
-        next_day = world_state.day
-        if (
-            next_tick - self.config.simulation.initial_tick
-        ) % self.config.simulation.ticks_per_day == 0:
-            next_day += 1
+        sim_config = self.config.simulation
+        ticks_since_start = next_tick - sim_config.initial_tick
+        if ticks_since_start <= 0:
+            next_day = sim_config.initial_day
+        else:
+            next_day = sim_config.initial_day + math.ceil(
+                ticks_since_start / sim_config.ticks_per_day
+            )
+        next_day = max(next_day, world_state.day)
 
         updates.append(
             StateUpdateCommand.assign(
@@ -106,10 +111,10 @@ class SimulationOrchestrator:
     async def reset_simulation(self, simulation_id: str) -> WorldState:
         """将仿真实例恢复到初始状态。
 
-        当前实现与 `create_simulation` 共用逻辑，即重新初始化并返回初始快照。
+        该操作会重建世界状态的初始快照，但不会影响脚本注册或参与者信息。
         """
 
-        return await self.create_simulation(simulation_id)
+        return await self.data_access.reset_simulation(simulation_id)
 
 
 __all__ = ["SimulationOrchestrator", "SimulationNotFoundError"]
