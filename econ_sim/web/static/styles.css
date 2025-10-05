@@ -1,0 +1,457 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f172a;
+  --bg-alt: #1e293b;
+  --panel: rgba(15, 23, 42, 0.72);
+  --text: #e2e8f0;
+  --accent: #38bdf8;
+  --error: #f87171;
+  font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(160deg, #0f172a, #1d3557);
+  color: var(--text);
+}
+
+.hidden {
+  display: none !important;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 2rem;
+  background-color: rgba(15, 23, 42, 0.9);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.top-bar .brand {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.nav-links a {
+  margin-left: 1rem;
+  color: var(--text);
+  text-decoration: none;
+  padding: 0.4rem 0.8rem;
+  border-radius: 0.5rem;
+  transition: background-color 0.2s ease;
+}
+
+.nav-links a:hover {
+  background-color: rgba(56, 189, 248, 0.2);
+}
+
+.content {
+  padding: 2rem;
+  max-width: 960px;
+  margin: 0 auto 4rem;
+}
+
+.panel {
+  background: var(--panel);
+  padding: 1.5rem;
+  border-radius: 1rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.3);
+  margin-bottom: 1.5rem;
+}
+
+.role-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.2rem;
+  margin-top: 1rem;
+}
+
+.role-grid article {
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 0.9rem;
+  padding: 1rem 1.25rem;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.1);
+}
+
+.role-grid h4 {
+  margin-top: 0;
+  margin-bottom: 0.6rem;
+  font-size: 1.05rem;
+}
+
+.role-grid ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.role-grid ul ul {
+  margin-top: 0.4rem;
+  padding-left: 1rem;
+  opacity: 0.9;
+}
+
+.role-grid li {
+  margin-bottom: 0.35rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.card {
+  background: var(--panel);
+  padding: 1.5rem;
+  border-radius: 1rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.3);
+}
+
+.card.wide {
+  grid-column: 1 / -1;
+}
+
+.json-preview {
+  white-space: pre-wrap;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.85rem;
+  background-color: rgba(15, 23, 42, 0.6);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.script-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.script-list li {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.script-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.8);
+}
+
+.script-desc {
+  margin: 0.4rem 0 0;
+}
+
+.script-desc.empty,
+.empty {
+  font-style: italic;
+  color: rgba(226, 232, 240, 0.6);
+}
+
+.script-form label {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+.script-form input,
+.script-form textarea {
+  width: 100%;
+  padding: 0.8rem;
+  border-radius: 0.6rem;
+  border: none;
+  margin-top: 0.4rem;
+  background-color: rgba(15, 23, 42, 0.6);
+  color: var(--text);
+}
+
+.script-form button,
+.login-form button {
+  background: var(--accent);
+  border: none;
+  color: #0f172a;
+  font-weight: 600;
+  padding: 0.8rem 1.6rem;
+  border-radius: 0.6rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.script-form button:hover,
+.login-form button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 15px 30px rgba(56, 189, 248, 0.3);
+}
+
+.error {
+  background-color: rgba(248, 113, 113, 0.2);
+  color: var(--error);
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.message {
+  background-color: rgba(94, 234, 212, 0.2);
+  color: #5eead4;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.login-body {
+  background: radial-gradient(circle at top, rgba(56, 189, 248, 0.25), transparent),
+              linear-gradient(160deg, #0f172a, #1d3557);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.login-panel {
+  background: rgba(15, 23, 42, 0.85);
+  padding: 2.5rem;
+  border-radius: 1.2rem;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.4);
+}
+
+.login-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  text-align: left;
+  font-weight: 500;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.login-form input {
+  width: 100%;
+  padding: 0.8rem;
+  border-radius: 0.6rem;
+  border: none;
+  background-color: rgba(148, 163, 184, 0.2);
+  color: var(--text);
+}
+
+.login-form select {
+  width: 100%;
+  padding: 0.8rem;
+  border-radius: 0.6rem;
+  border: none;
+  background-color: rgba(148, 163, 184, 0.2);
+  color: var(--text);
+}
+
+.login-form input,
+.login-form select,
+.login-form button {
+  box-sizing: border-box;
+}
+
+.login-form button {
+  width: 100%;
+  padding: 0.8rem;
+  justify-self: stretch;
+}
+
+.login-hint {
+  margin-top: 1.5rem;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.7);
+  text-align: center;
+}
+
+.script-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: rgba(15, 23, 42, 0.6);
+  border-radius: 0.8rem;
+  overflow: hidden;
+}
+
+.script-table th,
+.script-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  text-align: left;
+}
+
+.script-table th {
+  background-color: rgba(15, 23, 42, 0.8);
+  font-weight: 600;
+}
+
+.hint {
+  color: rgba(226, 232, 240, 0.7);
+  font-size: 0.85rem;
+  margin-top: 1rem;
+}
+
+.api-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.api-list li {
+  margin: 0.5rem 0;
+}
+
+.admin-form {
+  display: grid;
+  gap: 0.8rem;
+  margin-bottom: 1.2rem;
+}
+
+.admin-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.admin-form input[type="text"] {
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.6rem;
+  border: none;
+  background-color: rgba(15, 23, 42, 0.6);
+  color: var(--text);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: rgba(15, 23, 42, 0.6);
+  border-radius: 0.8rem;
+  overflow: hidden;
+  margin-top: 1rem;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.admin-table th {
+  background-color: rgba(15, 23, 42, 0.8);
+  font-weight: 600;
+}
+
+.inline-form {
+  display: inline-flex;
+  gap: 0.4rem;
+  margin-right: 0.5rem;
+}
+
+.auto-run-form {
+  gap: 0.6rem;
+}
+
+.auto-run-form .auto-run-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem 1.2rem;
+}
+
+.auto-run-form .auto-run-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background-color: rgba(15, 23, 42, 0.25);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  cursor: text;
+}
+
+.auto-run-form input[type="number"] {
+  width: 3rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  text-align: center;
+}
+
+.auto-run-form input[type="number"]::-webkit-outer-spin-button,
+.auto-run-form input[type="number"]::-webkit-inner-spin-button {
+  height: 1rem;
+}
+
+.auto-run-form .auto-run-suffix {
+  font-size: 0.8rem;
+  color: rgba(226, 232, 240, 0.75);
+  font-weight: 500;
+}
+
+.inline-form button,
+.admin-form button {
+  background: var(--accent);
+  border: none;
+  color: #0f172a;
+  font-weight: 600;
+  padding: 0.6rem 1.2rem;
+  border-radius: 0.6rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.inline-form button.is-loading,
+.admin-form button.is-loading {
+  position: relative;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.inline-form button:hover,
+.admin-form button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 15px 30px rgba(56, 189, 248, 0.3);
+}
+
+.inline-form button.danger {
+  background: rgba(248, 113, 113, 0.9);
+  color: #0f172a;
+}
+
+.inline-form button.danger:hover {
+  box-shadow: 0 15px 30px rgba(248, 113, 113, 0.35);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.status {
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-top: 1rem;
+  font-weight: 500;
+}
+
+.status.success {
+  background-color: rgba(94, 234, 212, 0.2);
+  color: #5eead4;
+}
+
+.status + .error,
+.error + .status {
+  margin-top: 0.6rem;
+}

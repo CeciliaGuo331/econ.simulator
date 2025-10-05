@@ -1,0 +1,470 @@
+{% extends "base.html" %}
+{% block title %}管理员仪表盘 - Econ Simulator{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>管理员中心</h2>
+    <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
+    <p>管理员账户可查看完整世界状态和所有脚本。</p>
+    <div
+        class="status success{% if not message %} hidden{% endif %}"
+        data-status-box
+        {% if not message %}style="display: none;"{% endif %}
+    >
+        {{ message or "" }}
+    </div>
+    <div
+        class="error{% if not error %} hidden{% endif %}"
+        data-error-box
+        {% if not error %}style="display: none;"{% endif %}
+    >
+        {{ error or "" }}
+    </div>
+</section>
+
+<section class="panel">
+    <h3>仿真实例管理</h3>
+    <form method="post" action="/web/admin/simulations/create" class="admin-form">
+        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+        <label>新仿真实例 ID（留空自动生成）
+            <input type="text" name="simulation_id" placeholder="sim-2025">
+        </label>
+        <button type="submit">创建仿真实例</button>
+    </form>
+    {% if all_simulations %}
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>仿真实例 ID</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sid in all_simulations %}
+            <tr>
+                <td>
+                    {% if sid == simulation_id %}
+                    <strong>{{ sid }}</strong>
+                    {% else %}
+                    <a href="/web/dashboard?simulation_id={{ sid }}">{{ sid }}</a>
+                    {% endif %}
+                </td>
+                <td class="actions">
+                    <form method="post" action="/web/admin/simulations/run" class="inline-form" data-async="true" data-action-type="run-tick" data-reload="true" data-reload-delay="1200">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit">执行 Tick</button>
+                    </form>
+                    <form method="post" action="/web/admin/simulations/run_days" class="inline-form auto-run-form" data-async="true" data-action-type="run-days" data-reload="true" data-reload-delay="1600">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit" class="auto-run-button">自动执行</button>
+                        <label class="auto-run-input-wrap">
+                            <input type="number" name="days" min="1" value="1" required>
+                            <span class="auto-run-suffix">day</span>
+                        </label>
+                    </form>
+                    <form method="post" action="/web/admin/simulations/reset" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <button type="submit">重置</button>
+                    </form>
+                    <form method="post" action="/web/admin/simulations/delete" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit" class="danger">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">尚未创建任何仿真实例。</p>
+    {% endif %}
+</section>
+
+<section class="grid">
+    <article class="card wide">
+        <h3>世界状态快照</h3>
+        <pre class="json-preview">{{ context.world | tojson(indent=2) }}</pre>
+    </article>
+</section>
+
+<section class="panel">
+    <h3>用户管理</h3>
+    {% if all_users %}
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>邮箱</th>
+                <th>角色</th>
+                <th>注册时间 (UTC)</th>
+                <th>脚本数</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in all_users %}
+            <tr>
+                <td>{{ item.email }}</td>
+                <td>{{ item.user_type }}</td>
+                <td>{{ item.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td>{{ item.script_count }}</td>
+                <td>
+                    {% if item.email == user.email %}
+                    <span class="hint">当前账号</span>
+                    {% else %}
+                    <form method="post" action="/web/admin/users/delete" class="inline-form">
+                        <input type="hidden" name="email" value="{{ item.email }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit">删除</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">暂无注册用户。</p>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h3>脚本管理</h3>
+    {% if all_scripts %}
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>脚本 ID</th>
+                <th>仿真实例</th>
+                <th>用户</th>
+                <th>描述</th>
+                <th>上传时间 (UTC)</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for script in all_scripts %}
+            <tr>
+                <td>{{ script.script_id }}</td>
+                <td>
+                    {% if script.simulation_id == simulation_id %}
+                    <strong>{{ script.simulation_id }}</strong>
+                    {% else %}
+                    <a href="/web/dashboard?simulation_id={{ script.simulation_id }}">{{ script.simulation_id }}</a>
+                    {% endif %}
+                </td>
+                <td>{{ script.user_id }}</td>
+                <td>{% if script.description %}{{ script.description }}{% else %}<span class="empty">无</span>{% endif %}</td>
+                <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td>
+                    <form method="post" action="/web/admin/scripts/delete" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ script.simulation_id }}">
+                        <input type="hidden" name="script_id" value="{{ script.script_id }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">暂时没有上传脚本。</p>
+    {% endif %}
+</section>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const successBox = document.querySelector("[data-status-box]");
+    const errorBox = document.querySelector("[data-error-box]");
+    const storageKeys = {
+        message: "adminStatusMessage",
+        type: "adminStatusType",
+        scroll: "adminDashboardScrollY",
+    };
+
+    const rememberScroll = () => {
+        sessionStorage.setItem(
+            storageKeys.scroll,
+            String(window.scrollY || window.pageYOffset || 0)
+        );
+    };
+
+    const restoreScroll = () => {
+        const stored = sessionStorage.getItem(storageKeys.scroll);
+        if (stored !== null) {
+            const value = Number(stored);
+            if (Number.isFinite(value)) {
+                window.scrollTo({ top: value, behavior: "auto" });
+            }
+            sessionStorage.removeItem(storageKeys.scroll);
+        }
+    };
+
+    const showBox = (box, text) => {
+        if (!box) {
+            return;
+        }
+        const content = typeof text === "string" ? text.trim() : "";
+        if (content) {
+            box.textContent = content;
+            box.classList.remove("hidden");
+            box.style.removeProperty("display");
+        } else {
+            box.textContent = "";
+            box.classList.add("hidden");
+            box.style.display = "none";
+        }
+    };
+
+    const showStatus = (text) => {
+        showBox(errorBox, "");
+        showBox(successBox, text);
+    };
+
+    const showError = (text) => {
+        showBox(successBox, "");
+        showBox(errorBox, text);
+    };
+
+    const persistMessage = (type, text) => {
+        if (!text) {
+            return;
+        }
+        sessionStorage.setItem(storageKeys.message, text);
+        sessionStorage.setItem(storageKeys.type, type);
+    };
+
+    const restorePersistedMessage = () => {
+        const text = sessionStorage.getItem(storageKeys.message);
+        if (!text) {
+            return;
+        }
+        const type = sessionStorage.getItem(storageKeys.type) || "success";
+        if (type === "error") {
+            showError(text);
+        } else {
+            showStatus(text);
+        }
+        sessionStorage.removeItem(storageKeys.message);
+        sessionStorage.removeItem(storageKeys.type);
+    };
+
+    const clearFlashParams = () => {
+        const url = new URL(window.location.href);
+        let mutated = false;
+        ["message", "error"].forEach((param) => {
+            if (url.searchParams.has(param)) {
+                url.searchParams.delete(param);
+                mutated = true;
+            }
+        });
+        if (mutated) {
+            const query = url.searchParams.toString();
+            const nextUrl = query ? `${url.pathname}?${query}` : url.pathname;
+            window.history.replaceState({}, document.title, nextUrl);
+        }
+    };
+
+    const buildReloadUrl = (simulationId) => {
+        const url = new URL(window.location.href);
+        if (simulationId) {
+            url.searchParams.set("simulation_id", simulationId);
+        }
+        ["message", "error"].forEach((param) => url.searchParams.delete(param));
+        const query = url.searchParams.toString();
+        return query ? `${url.pathname}?${query}` : url.pathname;
+    };
+
+    restorePersistedMessage();
+    restoreScroll();
+    clearFlashParams();
+
+    const jobPollers = new Map();
+
+    const navigateWithRememberedScroll = (url) => {
+        rememberScroll();
+        window.location.assign(url);
+    };
+
+    const pollJobStatus = (
+        jobId,
+        { reloadDelay = 1400, simulationId = "", onFinally } = {}
+    ) => {
+        if (!jobId || jobPollers.has(jobId)) {
+            return;
+        }
+
+        const cleanup = () => {
+            const handle = jobPollers.get(jobId);
+            if (handle) {
+                window.clearInterval(handle);
+                jobPollers.delete(jobId);
+            }
+            if (typeof onFinally === "function") {
+                onFinally();
+            }
+        };
+
+        const fetchStatus = async () => {
+            try {
+                const response = await fetch(`/web/admin/jobs/${jobId}`, {
+                    headers: { Accept: "application/json" },
+                });
+                if (!response.ok) {
+                    throw new Error(`status ${response.status}`);
+                }
+                const data = await response.json();
+                const status = data.status;
+                if (status === "queued" || status === "running") {
+                    const progress =
+                        data.message ||
+                        `后台任务 ${jobId.slice(0, 8)}… 正在执行，请稍候…`;
+                    showStatus(progress);
+                    return false;
+                }
+                if (status === "succeeded") {
+                    const message =
+                        data.message ||
+                        `后台任务 ${jobId.slice(0, 8)}… 已完成。`;
+                    showStatus(message);
+                    persistMessage("success", message);
+                    const targetSimulation =
+                        data.simulation_id || simulationId || "";
+                    const delay = Number(reloadDelay);
+                    window.setTimeout(() => {
+                        navigateWithRememberedScroll(
+                            buildReloadUrl(targetSimulation)
+                        );
+                    }, Number.isFinite(delay) ? delay : 1200);
+                    return true;
+                }
+                if (status === "failed") {
+                    const errorText =
+                        data.error ||
+                        `后台任务 ${jobId.slice(0, 8)}… 执行失败。`;
+                    showError(errorText);
+                    persistMessage("error", errorText);
+                    return true;
+                }
+                showStatus(`后台任务 ${jobId.slice(0, 8)}… 状态：${status}`);
+                return false;
+            } catch (error) {
+                showError("无法获取后台任务状态，请稍后重试。");
+                return true;
+            }
+        };
+
+        const poll = async () => {
+            const finished = await fetchStatus();
+            if (finished) {
+                cleanup();
+            }
+        };
+
+        const handle = window.setInterval(poll, 1000);
+        jobPollers.set(jobId, handle);
+        poll();
+    };
+
+    const forms = document.querySelectorAll("form[data-async='true']");
+    forms.forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
+            const submitButton = form.querySelector("button[type='submit']");
+            const originalLabel = submitButton ? submitButton.textContent : "";
+            const simulationField = form.querySelector(
+                "input[name='simulation_id']"
+            );
+            const daysField = form.querySelector("input[name='days']");
+            const simId = simulationField ? simulationField.value.trim() : "";
+            const daysValue = daysField ? daysField.value.trim() : "";
+            const actionType = form.dataset.actionType || "action";
+
+            if (submitButton) {
+                submitButton.disabled = true;
+                submitButton.classList.add("is-loading");
+                submitButton.textContent = "执行中";
+            }
+
+            let pendingMessage = "操作进行中，请稍候...";
+            if (actionType === "run-days") {
+                pendingMessage = `正在执行仿真实例 ${
+                    simId || "?"
+                } 的 ${daysValue || "?"} day(s)，请稍候...`;
+            } else if (simId) {
+                pendingMessage = `正在执行仿真实例 ${simId}，请稍候...`;
+            }
+            showStatus(pendingMessage);
+
+            const formData = new FormData(form);
+
+            try {
+                const response = await fetch(form.action, {
+                    method: form.method || "POST",
+                    body: formData,
+                    headers: {
+                        "X-Requested-With": "fetch",
+                        Accept: "application/json",
+                    },
+                });
+
+                const data = await response
+                    .json()
+                    .catch(() => ({ message: "", error: "" }));
+
+                if (!response.ok) {
+                    const errorText =
+                        (data && data.error) || "操作失败，请稍后重试。";
+                    showError(errorText);
+                    if (data && data.job_id) {
+                        pollJobStatus(data.job_id, {
+                            simulationId: data.simulation_id || simId,
+                            reloadDelay: Number(
+                                form.dataset.reloadDelay || 1400
+                            ),
+                        });
+                    }
+                    persistMessage("error", errorText);
+                } else {
+                    const successText =
+                        (data && data.message) || "操作完成。";
+                    showStatus(successText);
+
+                    if (data && data.job_id) {
+                        pollJobStatus(data.job_id, {
+                            simulationId: data.simulation_id || simId,
+                            reloadDelay: Number(
+                                form.dataset.reloadDelay || 1600
+                            ),
+                        });
+                    } else if (form.dataset.reload === "true") {
+                        const delay = Number(form.dataset.reloadDelay || 1200);
+                        persistMessage("success", successText);
+                        window.setTimeout(() => {
+                            const targetSimulation =
+                                data && data.simulation_id
+                                    ? data.simulation_id
+                                    : simId;
+                            navigateWithRememberedScroll(
+                                buildReloadUrl(targetSimulation)
+                            );
+                        }, Number.isFinite(delay) ? delay : 1200);
+                    }
+                }
+            } catch (err) {
+                showError("网络错误，稍后重试。");
+            } finally {
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.classList.remove("is-loading");
+                    submitButton.textContent = originalLabel;
+                }
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

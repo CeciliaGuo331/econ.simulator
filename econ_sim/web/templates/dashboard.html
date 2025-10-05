@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 - Econ Simulator{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
+    <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
+    {% if message %}
+    <div class="status success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+</section>
+
+<section class="grid">
+    <article class="card">
+        <h3>角色视角数据</h3>
+        <pre class="json-preview">{{ context | tojson(indent=2) }}</pre>
+    </article>
+    <article class="card">
+        <h3>已上传脚本</h3>
+        {% if scripts %}
+        <ul class="script-list">
+            {% for script in scripts %}
+            <li>
+                <div class="script-meta">
+                    <span class="script-owner">{{ script.user_id }}</span>
+                    <span class="script-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                </div>
+                {% if script.description %}
+                <p class="script-desc">{{ script.description }}</p>
+                {% else %}
+                <p class="script-desc empty">（无描述）</p>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="empty">尚未有脚本上传。</p>
+        {% endif %}
+    </article>
+</section>
+
+<section class="panel">
+    <h3>上传脚本</h3>
+    <form method="post" action="/web/scripts" class="script-form">
+        <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
+        <label>脚本说明（可选）
+            <input type="text" name="description" placeholder="简单描述脚本用途">
+        </label>
+        <label>脚本代码（必须包含 generate_decisions(context)）
+            <textarea name="code" rows="12" placeholder="def generate_decisions(context):
+    return {}" required></textarea>
+        </label>
+        <button type="submit">提交脚本</button>
+    </form>
+</section>
+{% endblock %}

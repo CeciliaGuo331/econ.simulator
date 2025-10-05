@@ -9,6 +9,8 @@
 *   **无状态逻辑 (Stateless Logic):** 所有执行计算的逻辑模块（如市场结算）自身不保存任何状态。它们接收数据，进行计算，然后返回结果，是纯粹的计算单元。
 *   **集中式数据访问 (Centralized Data Access):** 所有对数据库（Redis）的读写操作都必须通过一个专用的“数据访问层”来完成。任何业务逻辑模块都**禁止**直接与数据库交互。
 *   **异步优先 (Async First):** 整个应用基于 `FastAPI` 和 `asyncio` 构建，以实现高并发I/O，高效地与外部API和Redis进行通信。
+*   **会话共享 (Shared Sessions):** 通过统一的 `simulation_id` 将多个用户纳入同一仿真实例，参与者列表由数据访问层集中登记。
+*   **脚本驱动 (Script Driven):** 用户脚本在沙箱中执行，产出的决策覆盖与内置策略合并，从而实现个性化或协作式策略开发。
 
 ## **2. 系统组件图 (模块化单体)**
 
@@ -18,33 +20,40 @@ graph TD
         A[玩家策略]
     end
 
-    subgraph "仿真引擎 (单一FastAPI应用)"
-        B[API层]
-        C[核心编排器 (Orchestrator)]
+    subgraph "仿真引擎（单一FastAPI应用）"
+    B[API层]
+    K[认证模块]
+        C[核心编排器（Orchestrator）]
         
-        subgraph "逻辑模块 (Logic Modules)"
+        subgraph "逻辑模块（Logic Modules）"
             E[市场逻辑模块]
             F[代理人逻辑模块]
         end
 
-        D[数据访问层 (Data Access Layer)]
+        subgraph "脚本引擎（Script Engine）"
+            J[脚本注册中心]
+        end
+
+        D[数据访问层（Data Access Layer）]
     end
     
     subgraph "基础设施"
-        H[数据存储 (Redis)]
-        I[数据仓库 (Parquet Files)]
+        H[数据存储（Redis）]
+        I[数据仓库（Parquet Files）]
     end
 
     A -- 1. HTTP API --> B
     B -- 2. 函数调用 --> C
+    B -- "用户注册/登录" --> K
     
     C -- "3. 获取状态" --> D
     C -- "4. 调用逻辑" --> E
     C -- "5. 调用逻辑" --> F
+    C -- "6. 合并脚本覆盖" --> J
     C -- "7. 更新状态" --> D
     C -- "8. 记录日志" --> I
 
-    D -- 6. 读/写 --> H
+    D -- "3a. 读/写" --> H
 
     style C fill:#f9f,stroke:#333,stroke-width:2px
     style D fill:#bbf,stroke:#333,stroke-width:2px
@@ -63,6 +72,8 @@ graph TD
 
 *   **逻辑模块 (Logic Modules):**
     *   **职责:** 具体的“计算单元”。每个模块负责一块独立的业务逻辑（如`市场逻辑模块`负责所有市场的结算）。它们是无状态的纯函数集合。
+*   **认证模块 (Auth Module):**
+    *   **职责:** 提供邮箱+密码的注册与登录接口，记录用户类型并为未来的权限控制奠定基础，同时托管默认管理员账号。
 
 ## **4. 技术选型**
 
