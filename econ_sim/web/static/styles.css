@@ -354,6 +354,47 @@ body {
   margin-right: 0.5rem;
 }
 
+.auto-run-form {
+  gap: 0.6rem;
+}
+
+.auto-run-form .auto-run-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem 1.2rem;
+}
+
+.auto-run-form .auto-run-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background-color: rgba(15, 23, 42, 0.25);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  cursor: text;
+}
+
+.auto-run-form input[type="number"] {
+  width: 3rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  text-align: center;
+}
+
+.auto-run-form input[type="number"]::-webkit-outer-spin-button,
+.auto-run-form input[type="number"]::-webkit-inner-spin-button {
+  height: 1rem;
+}
+
+.auto-run-form .auto-run-suffix {
+  font-size: 0.8rem;
+  color: rgba(226, 232, 240, 0.75);
+  font-weight: 500;
+}
+
 .inline-form button,
 .admin-form button {
   background: var(--accent);

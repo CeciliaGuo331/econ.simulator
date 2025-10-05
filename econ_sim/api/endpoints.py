@@ -6,7 +6,7 @@ import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import user_manager
 from ..auth.user_manager import UserProfile
@@ -150,6 +150,23 @@ class RunTickResponse(BaseModel):
     macro: dict
 
 
+class RunDaysRequest(BaseModel):
+    """批量执行多个天数时提交的请求体。"""
+
+    days: int = Field(gt=0, description="需要自动推进的天数，必须为正整数")
+
+
+class RunDaysResponse(BaseModel):
+    """批量执行多个 Tick 后的结果摘要。"""
+
+    message: str
+    days_requested: int
+    ticks_executed: int
+    final_tick: int
+    final_day: int
+    logs: List[TickLogEntry]
+
+
 @router.post("", response_model=SimulationCreateResponse)
 async def create_simulation(
     payload: SimulationCreateRequest,
@@ -228,6 +245,31 @@ async def run_tick(
         new_day=result.world_state.day,
         logs=result.logs,
         macro=result.world_state.macro.model_dump(),
+    )
+
+
+@router.post("/{simulation_id}/run_days", response_model=RunDaysResponse)
+async def run_days(
+    simulation_id: str,
+    payload: RunDaysRequest,
+    admin: UserProfile = Depends(require_admin_user),
+) -> RunDaysResponse:
+    """按照指定天数自动执行多个 Tick。"""
+
+    try:
+        result = await _orchestrator.run_until_day(simulation_id, payload.days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:  # pragma: no cover - defensive guard
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return RunDaysResponse(
+        message=f"Simulation advanced by {payload.days} day(s).",
+        days_requested=payload.days,
+        ticks_executed=result.ticks_executed,
+        final_tick=result.world_state.tick,
+        final_day=result.world_state.day,
+        logs=result.logs,
     )
 
 

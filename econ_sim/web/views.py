@@ -182,6 +182,19 @@ def _redirect_to_dashboard(
     return RedirectResponse(url=f"/web/dashboard?{query}", status_code=303)
 
 
+def _format_tick_progress_message(
+    simulation_id: str,
+    *,
+    tick: int,
+    day: int,
+    ticks_executed: int,
+) -> str:
+    return (
+        f"仿真实例 {simulation_id} 当前 Tick {tick} (Day {day})，"
+        f"本次执行 {ticks_executed} 个 Tick。"
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
 async def landing(request: Request) -> HTMLResponse:
     if _get_session_user(request):
@@ -363,9 +376,51 @@ async def admin_run_tick(
             error=f"仿真实例 {target} 不存在，无法执行 Tick。",
         )
 
-    note = (
-        f"仿真实例 {target} 已推进到 Tick {result.world_state.tick} "
-        f"(Day {result.world_state.day})."
+    note = _format_tick_progress_message(
+        target,
+        tick=result.world_state.tick,
+        day=result.world_state.day,
+        ticks_executed=1,
+    )
+    return _redirect_to_dashboard(target, message=note)
+
+
+@router.post("/admin/simulations/run_days")
+async def admin_run_days(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    days: str = Form(...),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    target = simulation_id.strip() or current_simulation_id or "default-simulation"
+    try:
+        days_required = int(days)
+    except (TypeError, ValueError):
+        return _redirect_to_dashboard(
+            target,
+            error="请输入合法的天数（正整数）。",
+        )
+
+    if days_required <= 0:
+        return _redirect_to_dashboard(target, error="天数必须大于 0。")
+
+    try:
+        result = await _orchestrator.run_until_day(target, days_required)
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            current_simulation_id or target,
+            error=f"仿真实例 {target} 不存在，无法执行自动运行。",
+        )
+    except ValueError as exc:
+        return _redirect_to_dashboard(target, error=str(exc))
+    except RuntimeError as exc:  # pragma: no cover - 防御性分支
+        return _redirect_to_dashboard(target, error=str(exc))
+
+    note = _format_tick_progress_message(
+        target,
+        tick=result.world_state.tick,
+        day=result.world_state.day,
+        ticks_executed=result.ticks_executed,
     )
     return _redirect_to_dashboard(target, message=note)
 

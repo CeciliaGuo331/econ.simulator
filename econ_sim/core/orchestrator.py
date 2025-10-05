@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 from ..data_access.models import (
     AgentKind,
     StateUpdateCommand,
     TickDecisionOverrides,
     TickResult,
+    TickLogEntry,
     WorldState,
 )
 from ..data_access.redis_client import DataAccessLayer, SimulationNotFoundError
@@ -18,6 +20,15 @@ from ..logic_modules.market_logic import execute_tick_logic
 from ..strategies.base import StrategyBundle
 from ..utils.settings import get_world_config
 from ..script_engine import script_registry
+
+
+@dataclass
+class BatchRunResult:
+    """批量执行 Tick 后的结果封装。"""
+
+    world_state: WorldState
+    ticks_executed: int
+    logs: List[TickLogEntry]
 
 
 class SimulationOrchestrator:
@@ -116,6 +127,42 @@ class SimulationOrchestrator:
 
         return await self.data_access.reset_simulation(simulation_id)
 
+    async def run_until_day(self, simulation_id: str, days: int) -> BatchRunResult:
+        """自动执行多个 Tick，直到完成指定天数的全部 Tick。"""
+
+        if days <= 0:
+            raise ValueError("days must be a positive integer")
+
+        state = await self.create_simulation(simulation_id)
+        ticks_per_day = self.config.simulation.ticks_per_day
+        target_tick = state.tick + days * ticks_per_day
+
+        ticks_executed = 0
+        aggregated_logs: List[TickLogEntry] = []
+        last_result: Optional[TickResult] = None
+
+        safety_limit = max(days * ticks_per_day * 5, ticks_per_day * 2)
+
+        while True:
+            if state.tick >= target_tick:
+                break
+
+            last_result = await self.run_tick(simulation_id)
+            state = last_result.world_state
+            ticks_executed += 1
+            aggregated_logs.extend(last_result.logs)
+
+            if ticks_executed > safety_limit:
+                raise RuntimeError(
+                    "Exceeded expected number of ticks while advancing simulation"
+                )
+
+        return BatchRunResult(
+            world_state=state,
+            ticks_executed=ticks_executed,
+            logs=aggregated_logs,
+        )
+
     async def delete_simulation(self, simulation_id: str) -> dict[str, int]:
         """删除仿真实例的世界状态，并解除与参与者、脚本的关联。"""
 
@@ -127,4 +174,4 @@ class SimulationOrchestrator:
         }
 
 
-__all__ = ["SimulationOrchestrator", "SimulationNotFoundError"]
+__all__ = ["SimulationOrchestrator", "SimulationNotFoundError", "BatchRunResult"]

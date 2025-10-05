@@ -46,6 +46,15 @@
                         <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
                         <button type="submit">执行 Tick</button>
                     </form>
+                    <form method="post" action="/web/admin/simulations/run_days" class="inline-form auto-run-form">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit" class="auto-run-button">自动执行</button>
+                        <label class="auto-run-input-wrap">
+                            <input type="number" name="days" min="1" value="1" required>
+                            <span class="auto-run-suffix">day</span>
+                        </label>
+                    </form>
                     <form method="post" action="/web/admin/simulations/reset" class="inline-form">
                         <input type="hidden" name="simulation_id" value="{{ sid }}">
                         <button type="submit">重置</button>

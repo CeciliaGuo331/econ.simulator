@@ -10,6 +10,7 @@ from econ_sim.data_access.models import (
     TickDecisionOverrides,
 )
 from econ_sim.main import app
+from econ_sim.utils.settings import get_world_config
 from econ_sim.script_engine import script_registry
 
 
@@ -42,6 +43,30 @@ async def test_overrides_affect_decisions() -> None:
 
     assert result.world_state.households[0].last_consumption <= 0.5
     assert abs(result.world_state.firm.price - 25.0) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_run_until_day_executes_required_ticks() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "run-days"
+
+    initial_state = await orchestrator.create_simulation(simulation_id)
+    batch = await orchestrator.run_until_day(simulation_id, 2)
+
+    ticks_per_day = orchestrator.config.simulation.ticks_per_day
+    assert batch.world_state.day >= initial_state.day + 2
+    assert batch.ticks_executed == 2 * ticks_per_day
+    assert batch.world_state.tick == initial_state.tick + batch.ticks_executed
+
+
+@pytest.mark.asyncio
+async def test_run_until_day_rejects_non_positive_days() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "run-days-invalid"
+    await orchestrator.create_simulation(simulation_id)
+
+    with pytest.raises(ValueError):
+        await orchestrator.run_until_day(simulation_id, 0)
 
 
 @pytest.mark.asyncio
@@ -243,6 +268,47 @@ def generate_decisions(context):
         assert upload.status_code == 200
         payload = upload.json()
         assert payload["message"] == "Script registered successfully."
+
+
+@pytest.mark.asyncio
+async def test_run_days_endpoint_advances_day() -> None:
+    await user_manager.reset()
+    script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "run-days-endpoint"
+        created = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+        assert created.status_code == 200
+        initial_payload = created.json()
+        assert initial_payload["current_day"] == 0
+
+        response = await client.post(
+            f"/simulations/{simulation_id}/run_days",
+            json={"days": 2},
+            headers=headers_admin,
+        )
+        assert response.status_code == 200
+    payload = response.json()
+    assert payload["days_requested"] == 2
+    ticks_per_day = get_world_config().simulation.ticks_per_day
+    assert payload["ticks_executed"] == 2 * ticks_per_day
+    assert payload["final_day"] >= 2
+    assert payload["final_tick"] >= payload["ticks_executed"]
 
 
 @pytest.mark.asyncio
