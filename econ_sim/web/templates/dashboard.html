@@ -66,15 +66,15 @@
 <section class="panel">
     <h3>上传脚本</h3>
     {% if simulation_id %}
-    <form method="post" action="/web/scripts" class="script-form">
+    <form method="post" action="/web/scripts" class="script-form" enctype="multipart/form-data">
         <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
         <label>脚本说明（可选）
             <input type="text" name="description" placeholder="简单描述脚本用途">
         </label>
-        <label>脚本代码（必须包含 generate_decisions(context)）
-            <textarea name="code" rows="12" placeholder="def generate_decisions(context):
-    return {}" required></textarea>
+        <label>脚本文件（仅支持 .py 扩展名）
+            <input type="file" name="script_file" accept=".py" required>
         </label>
+        <p class="form-hint">脚本必须定义 <code>generate_decisions(context)</code> 函数。</p>
         <button type="submit">提交脚本</button>
     </form>
     {% else %}

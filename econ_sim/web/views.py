@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
@@ -744,7 +744,7 @@ async def upload_script(
     user: Dict[str, Any] = Depends(_require_session_user),
     simulation_id: str = Form(...),
     description: str = Form(""),
-    code: str = Form(...),
+    script_file: UploadFile = File(...),
 ) -> HTMLResponse:
     if user["user_type"] == "admin":
         return _templates.TemplateResponse(
@@ -760,13 +760,80 @@ async def upload_script(
             status_code=403,
         )
 
+    async def render_dashboard_error(
+        message: str,
+        *,
+        status_code: int = 400,
+    ) -> HTMLResponse:
+        scripts_list = (
+            script_registry.list_scripts(simulation_id) if simulation_id else []
+        )
+        context_payload: Dict[str, Any] = {}
+        if simulation_id:
+            try:
+                world_state = await _orchestrator.get_state(simulation_id)
+            except SimulationNotFoundError:
+                context_payload = {}
+            else:
+                context_payload = _extract_view_data(
+                    world_state.model_dump(mode="json"),
+                    user["user_type"],
+                )
+
+        return _templates.TemplateResponse(
+            "dashboard.html",
+            {
+                "request": request,
+                "user": user,
+                "simulation_id": simulation_id,
+                "scripts": scripts_list,
+                "context": context_payload,
+                "error": message,
+            },
+            status_code=status_code,
+        )
+
+    filename = (script_file.filename or "").strip()
+    if not filename:
+        await script_file.close()
+        return await render_dashboard_error("请选择一个 .py 脚本文件后再提交。")
+    if not filename.lower().endswith(".py"):
+        await script_file.close()
+        return await render_dashboard_error("仅支持上传 .py 文件，请检查文件扩展名。")
+
+    try:
+        raw_bytes = await script_file.read()
+    except Exception:
+        await script_file.close()
+        return await render_dashboard_error(
+            "上传脚本文件失败，请稍后重试。", status_code=500
+        )
+    await script_file.close()
+
+    if not raw_bytes:
+        return await render_dashboard_error("上传的脚本文件为空，请确认内容后重试。")
+
+    try:
+        code = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return await render_dashboard_error(
+            "脚本文件必须使用 UTF-8 编码，请重新保存后上传。"
+        )
+
+    if not code.strip():
+        return await render_dashboard_error(
+            "脚本文件内容为空，请填写有效的 generate_decisions 实现。"
+        )
+
+    description_text = (description or "").strip()
+
     try:
         await _orchestrator.register_participant(simulation_id, user["email"])
         script_registry.register_script(
             simulation_id=simulation_id,
             user_id=user["email"],
             script_code=code,
-            description=description or None,
+            description=description_text or None,
         )
     except SimulationNotFoundError:
         return _templates.TemplateResponse(
@@ -782,22 +849,7 @@ async def upload_script(
             status_code=404,
         )
     except ScriptExecutionError as exc:
-        world_state = (await _orchestrator.get_state(simulation_id)).model_dump(
-            mode="json"
-        )
-        context = _extract_view_data(world_state, user["user_type"])
-        return _templates.TemplateResponse(
-            "dashboard.html",
-            {
-                "request": request,
-                "user": user,
-                "simulation_id": simulation_id,
-                "scripts": script_registry.list_scripts(simulation_id),
-                "context": context,
-                "error": str(exc),
-            },
-            status_code=400,
-        )
+        return await render_dashboard_error(str(exc), status_code=400)
 
     return RedirectResponse(
         url=f"/web/dashboard?simulation_id={simulation_id}", status_code=303

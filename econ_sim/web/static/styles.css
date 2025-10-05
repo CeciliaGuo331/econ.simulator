@@ -169,6 +169,12 @@ body {
   color: var(--text);
 }
 
+.script-form .form-hint {
+  margin: -0.4rem 0 1rem;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.75);
+}
+
 .script-form button,
 .login-form button {
   background: var(--accent);
