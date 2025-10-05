@@ -191,3 +191,34 @@
 - **`docs/api/` 文档**：了解用户注册、仿真控制等 API 如何消费上述数据结构。
 
 通过以上设计，`econ.simulator` 在保持轻量内存实现的同时，也明确了各数据表的字段与关系，为未来的持久化与扩展打下基础。
+
+## 9. Redis + PostgreSQL 重构目标
+
+选择 “Redis + PostgreSQL” 组合后，我们将 Redis 作为高频读写的实时缓存层，PostgreSQL 作为权威持久层。以下目标用于指导逐步重构：
+
+### 9.1 架构抽象
+- **统一接口层**：扩展 `DataAccessLayer`，通过配置同时实例化 `RedisStateStore` 与即将新增的 `PostgresStateStore`，暴露读写接口而不泄露底层差异。
+- **写入策略**：对仿真世界状态采用写穿（write-through）策略，保证 Redis 写入成功后立即持久化到 PostgreSQL；低频数据（用户、脚本元数据）可使用写回队列。
+- **读取策略**：优先命中 Redis；缓存未命中时，从 PostgreSQL 回源并回填缓存，确保单一代码路径即可完成读流程。
+
+### 9.2 数据建模
+- **PostgreSQL 架构**：设计 `world_state_snapshots`、`participants`, `users`, `scripts`, `sessions` 等表；使用 JSONB 字段存储世界状态快照，关系型字段维护索引与约束。
+- **迁移脚本**：提供 Alembic（或同类工具）迁移，包含表结构、索引、默认值；同时准备数据导入脚本，从 Redis 批量同步到 PostgreSQL。
+- **一致性元数据**：为 Redis 键设计与表名一致的命名规范（如 `econ_sim:sim:{id}:world_state` ↔ `world_state_snapshots.simulation_id`）。
+
+### 9.3 同步与后台任务
+- **刷新调度**：实现独立的异步任务（如 `state_flush_worker`），在写回模式下定期从 Redis 消费变更队列批量写入 PostgreSQL，并记录回执。
+- **事件追踪**：为关键写操作记录事件表或使用消息队列（Outbox Pattern），以便审计与重放。
+- **故障恢复**：定义启动流程：若 Redis 丢失数据，则自动从 PostgreSQL 最新快照回填；反之若 Postgres 临时不可用，则在 Redis 内部排队等待重试。
+
+### 9.4 运维支持
+- **配置统一化**：在 `.env` 或设置模块中补充 PostgreSQL 连接串、连接池参数、Redis 集群/哨兵配置，并在 `deployment.md` 中记录部署步骤。
+- **监控告警**：接入指标（缓存命中率、写入延迟、重试次数），输出到 Prometheus/OpenTelemetry；设置慢查询与队列积压告警。
+- **备份策略**：制定 PostgreSQL 定期备份与 Redis 快照（RDB/AOF）策略，文档化恢复流程。
+
+### 9.5 迭代与测试
+- **兼容性阶段**：保持内存实现作为开发 fallback；通过特性标志（feature flag）允许逐步切换到 Redis + PostgreSQL。
+- **测试矩阵**：新增集成测试，覆盖缓存命中/未命中、写穿失败回退、并发加入仿真等场景；在 CI 中引入 Docker Compose 或 Testcontainers 启动 Redis & PostgreSQL。
+- **性能基线**：制定基准测试（大规模 Tick 更新、上百并发用户加入），记录当前指标与重构后改进幅度。
+
+通过以上目标，团队可以分阶段落地 Redis + PostgreSQL 架构，兼顾实时响应能力与强一致的持久化需求，同时为未来的横向扩展与运维自动化打下基础。
