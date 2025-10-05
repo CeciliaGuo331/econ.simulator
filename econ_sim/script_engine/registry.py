@@ -126,6 +126,14 @@ class ScriptRegistry:
 
         self._scripts.clear()
 
+    def detach_simulation(self, simulation_id: str) -> int:
+        """移除与指定仿真实例关联的所有脚本，返回解除数量。"""
+
+        bucket = self._scripts.pop(simulation_id, None)
+        if not bucket:
+            return 0
+        return len(bucket)
+
     def generate_overrides(
         self,
         simulation_id: str,

@@ -372,6 +372,15 @@ body {
   box-shadow: 0 15px 30px rgba(56, 189, 248, 0.3);
 }
 
+.inline-form button.danger {
+  background: rgba(248, 113, 113, 0.9);
+  color: #0f172a;
+}
+
+.inline-form button.danger:hover {
+  box-shadow: 0 15px 30px rgba(248, 113, 113, 0.35);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

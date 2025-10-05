@@ -3,7 +3,7 @@ from httpx import ASGITransport, AsyncClient
 
 from econ_sim.auth import user_manager
 from econ_sim.auth.user_manager import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
-from econ_sim.core.orchestrator import SimulationOrchestrator
+from econ_sim.core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
 from econ_sim.data_access.models import (
     FirmDecisionOverride,
     HouseholdDecisionOverride,
@@ -78,6 +78,43 @@ def generate_decisions(context):
         scripts = script_registry.list_scripts(simulation_id)
         assert len(scripts) == 1
         assert scripts[0].description == "noop"
+    finally:
+        script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_delete_simulation_detaches_associations() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "delete-sim"
+
+    await orchestrator.create_simulation(simulation_id)
+    await orchestrator.register_participant(simulation_id, "player@example.com")
+
+    script_registry.clear()
+    try:
+        metadata = script_registry.register_script(
+            simulation_id=simulation_id,
+            user_id="player@example.com",
+            script_code="""
+def generate_decisions(context):
+    return {}
+""",
+        )
+
+        result = await orchestrator.delete_simulation(simulation_id)
+
+        assert result["participants_removed"] == 1
+        assert result["scripts_detached"] == 1
+
+        with pytest.raises(SimulationNotFoundError):
+            await orchestrator.get_state(simulation_id)
+
+        assert script_registry.list_scripts(simulation_id) == []
+
+        # ensure metadata reference is no longer tracked
+        assert metadata.script_id not in {
+            m.script_id for m in script_registry.list_all_scripts()
+        }
     finally:
         script_registry.clear()
 

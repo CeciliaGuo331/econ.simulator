@@ -43,6 +43,9 @@ class StateStore(Protocol):
     async def store(self, simulation_id: str, payload: Dict) -> None:
         """将状态快照持久化到存储介质。"""
 
+    async def delete(self, simulation_id: str) -> None:
+        """删除指定仿真实例的状态快照。"""
+
 
 class InMemoryStateStore:
     """使用内存字典保存数据，主要用于测试或本地运行。"""
@@ -62,6 +65,11 @@ class InMemoryStateStore:
         """将仿真状态深拷贝后写入内存字典。"""
         async with self._lock:
             self._storage[simulation_id] = json.loads(json.dumps(payload))
+
+    async def delete(self, simulation_id: str) -> None:
+        """从内存存储中移除指定仿真实例的状态。"""
+        async with self._lock:
+            self._storage.pop(simulation_id, None)
 
 
 class RedisStateStore:
@@ -90,6 +98,10 @@ class RedisStateStore:
     async def store(self, simulation_id: str, payload: Dict) -> None:
         """将仿真状态序列化为 JSON 并写入 Redis。"""
         await self._redis.set(self._key(simulation_id), json.dumps(payload))
+
+    async def delete(self, simulation_id: str) -> None:
+        """从 Redis 中删除指定仿真实例的状态。"""
+        await self._redis.delete(self._key(simulation_id))
 
 
 @dataclass
@@ -126,6 +138,18 @@ class DataAccessLayer:
         world_state = self._build_initial_world_state(simulation_id)
         await self._persist_state(world_state)
         return world_state
+
+    async def delete_simulation(self, simulation_id: str) -> int:
+        """彻底移除指定仿真实例的世界状态，并返回解除关联的参与者数量。"""
+
+        existing = await self.store.load(simulation_id)
+        if existing is None:
+            raise SimulationNotFoundError(f"Simulation '{simulation_id}' not found")
+
+        await self.store.delete(simulation_id)
+        participants = self._participants.pop(simulation_id, set())
+        self._known_simulations.discard(simulation_id)
+        return len(participants)
 
     async def get_world_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的最新世界状态。"""

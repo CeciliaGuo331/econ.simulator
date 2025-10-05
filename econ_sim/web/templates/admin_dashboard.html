@@ -50,6 +50,11 @@
                         <input type="hidden" name="simulation_id" value="{{ sid }}">
                         <button type="submit">重置</button>
                     </form>
+                    <form method="post" action="/web/admin/simulations/delete" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit" class="danger">删除</button>
+                    </form>
                 </td>
             </tr>
             {% endfor %}

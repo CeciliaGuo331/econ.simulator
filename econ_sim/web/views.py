@@ -391,6 +391,41 @@ async def admin_reset_simulation(
     return _redirect_to_dashboard(target, message=note)
 
 
+@router.post("/admin/simulations/delete")
+async def admin_delete_simulation(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    target = simulation_id.strip()
+    if not target:
+        return _redirect_to_dashboard(
+            current_simulation_id or "default-simulation",
+            error="请指定仿真实例 ID。",
+        )
+
+    try:
+        result = await _orchestrator.delete_simulation(target)
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            current_simulation_id or "default-simulation",
+            error=f"仿真实例 {target} 不存在或已删除。",
+        )
+
+    message = f"仿真实例 {target} 已删除。"
+    if result["participants_removed"]:
+        message += f" 解除 {result['participants_removed']} 个参与者关联。"
+    if result["scripts_detached"]:
+        message += f" 移除 {result['scripts_detached']} 个脚本关联。"
+
+    redirect_target = current_simulation_id or "default-simulation"
+    if target == redirect_target:
+        remaining = await _orchestrator.list_simulations()
+        redirect_target = remaining[0] if remaining else "default-simulation"
+
+    return _redirect_to_dashboard(redirect_target, message=message)
+
+
 @router.post("/admin/scripts/delete")
 async def admin_delete_script(
     user: Dict[str, Any] = Depends(_require_admin_user),

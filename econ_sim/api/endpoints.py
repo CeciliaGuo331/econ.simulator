@@ -86,6 +86,15 @@ class SimulationStatusResponse(BaseModel):
     current_day: int
 
 
+class SimulationDeleteResponse(BaseModel):
+    """删除仿真实例后的反馈信息。"""
+
+    simulation_id: str
+    message: str
+    participants_unlinked: int
+    scripts_detached: int
+
+
 class RunTickRequest(BaseModel):
     """执行单个 Tick 时可选提供决策覆盖输入。"""
 
@@ -176,6 +185,27 @@ async def get_simulation(simulation_id: str) -> SimulationStatusResponse:
         status="running",
         current_tick=state.tick,
         current_day=state.day,
+    )
+
+
+@router.delete("/{simulation_id}", response_model=SimulationDeleteResponse)
+async def delete_simulation(
+    simulation_id: str,
+    admin: UserProfile = Depends(require_admin_user),
+) -> SimulationDeleteResponse:
+    """删除指定仿真实例，并解除与参与者和脚本的关联。"""
+
+    try:
+        result = await _orchestrator.delete_simulation(simulation_id)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    message = "Simulation deleted successfully."
+    return SimulationDeleteResponse(
+        simulation_id=simulation_id,
+        message=message,
+        participants_unlinked=result["participants_removed"],
+        scripts_detached=result["scripts_detached"],
     )
 
 

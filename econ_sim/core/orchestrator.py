@@ -116,5 +116,15 @@ class SimulationOrchestrator:
 
         return await self.data_access.reset_simulation(simulation_id)
 
+    async def delete_simulation(self, simulation_id: str) -> dict[str, int]:
+        """删除仿真实例的世界状态，并解除与参与者、脚本的关联。"""
+
+        participants_removed = await self.data_access.delete_simulation(simulation_id)
+        scripts_removed = script_registry.detach_simulation(simulation_id)
+        return {
+            "participants_removed": participants_removed,
+            "scripts_detached": scripts_removed,
+        }
+
 
 __all__ = ["SimulationOrchestrator", "SimulationNotFoundError"]
