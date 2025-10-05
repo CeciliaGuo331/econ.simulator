@@ -181,6 +181,25 @@ document.addEventListener("DOMContentLoaded", () => {
     const storageKeys = {
         message: "adminStatusMessage",
         type: "adminStatusType",
+        scroll: "adminDashboardScrollY",
+    };
+
+    const rememberScroll = () => {
+        sessionStorage.setItem(
+            storageKeys.scroll,
+            String(window.scrollY || window.pageYOffset || 0)
+        );
+    };
+
+    const restoreScroll = () => {
+        const stored = sessionStorage.getItem(storageKeys.scroll);
+        if (stored !== null) {
+            const value = Number(stored);
+            if (Number.isFinite(value)) {
+                window.scrollTo({ top: value, behavior: "auto" });
+            }
+            sessionStorage.removeItem(storageKeys.scroll);
+        }
     };
 
     const showBox = (box, text) => {
@@ -259,9 +278,15 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     restorePersistedMessage();
+    restoreScroll();
     clearFlashParams();
 
     const jobPollers = new Map();
+
+    const navigateWithRememberedScroll = (url) => {
+        rememberScroll();
+        window.location.assign(url);
+    };
 
     const pollJobStatus = (
         jobId,
@@ -309,7 +334,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         data.simulation_id || simulationId || "";
                     const delay = Number(reloadDelay);
                     window.setTimeout(() => {
-                        window.location.assign(
+                        navigateWithRememberedScroll(
                             buildReloadUrl(targetSimulation)
                         );
                     }, Number.isFinite(delay) ? delay : 1200);
@@ -423,7 +448,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                 data && data.simulation_id
                                     ? data.simulation_id
                                     : simId;
-                            window.location.assign(
+                            navigateWithRememberedScroll(
                                 buildReloadUrl(targetSimulation)
                             );
                         }, Number.isFinite(delay) ? delay : 1200);
