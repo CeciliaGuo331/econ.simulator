@@ -10,6 +10,11 @@ from ..data_access.models import (
     FirmDecision,
     GovernmentDecision,
     HouseholdDecision,
+    HouseholdDecisionOverride,
+    FirmDecisionOverride,
+    GovernmentDecisionOverride,
+    BankDecisionOverride,
+    CentralBankDecisionOverride,
     TickDecisionOverrides,
     TickDecisions,
     WorldState,
@@ -94,3 +99,54 @@ def collect_tick_decisions(
         government=government_decision,
         central_bank=central_bank_decision,
     )
+
+
+def merge_tick_overrides(
+    base: Optional[TickDecisionOverrides],
+    overlay: Optional[TickDecisionOverrides],
+) -> Optional[TickDecisionOverrides]:
+    """合并两个决策覆盖对象，后者优先级更高。"""
+
+    if overlay is None:
+        return base
+    if base is None:
+        return overlay
+
+    def _merge_model(base_model, overlay_model):
+        if overlay_model is None:
+            return base_model
+        if base_model is None:
+            return overlay_model
+        updates = {
+            key: value
+            for key, value in overlay_model.model_dump(exclude_unset=True).items()
+            if value is not None
+        }
+        if not updates:
+            return base_model
+        return base_model.model_copy(update=updates)
+
+    households: Dict[int, HouseholdDecisionOverride] = {
+        hid: decision for hid, decision in base.households.items()
+    }
+    for hid, decision in overlay.households.items():
+        current = households.get(hid)
+        households[hid] = _merge_model(current, decision)
+
+    merged = TickDecisionOverrides(
+        households=households,
+        firm=_merge_model(base.firm, overlay.firm),
+        bank=_merge_model(base.bank, overlay.bank),
+        government=_merge_model(base.government, overlay.government),
+        central_bank=_merge_model(base.central_bank, overlay.central_bank),
+    )
+
+    if (
+        not merged.households
+        and merged.firm is None
+        and merged.bank is None
+        and merged.government is None
+        and merged.central_bank is None
+    ):
+        return None
+    return merged

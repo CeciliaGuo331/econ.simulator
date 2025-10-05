@@ -1,4 +1,4 @@
-"""基于 FastAPI 暴露仿真引擎功能的接口定义。"""
+"""基于 FastAPI 暴露仿真引擎功能及脚本管理的接口定义。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from ..data_access.models import (
     TickLogEntry,
     WorldState,
 )
+from ..script_engine import script_registry
+from ..script_engine.registry import ScriptExecutionError, ScriptMetadata
 
 router = APIRouter(prefix="/simulations", tags=["simulations"])
 _orchestrator = SimulationOrchestrator()
@@ -25,6 +27,7 @@ class SimulationCreateRequest(BaseModel):
 
     simulation_id: Optional[str] = None
     config_path: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class SimulationCreateResponse(BaseModel):
@@ -51,6 +54,45 @@ class RunTickRequest(BaseModel):
     decisions: Optional[TickDecisionOverrides] = None
 
 
+class SimulationParticipantRequest(BaseModel):
+    """用于登记共享仿真会话参与者的请求体。"""
+
+    user_id: str
+
+
+class SimulationParticipantResponse(BaseModel):
+    """返回指定仿真实例的参与者列表。"""
+
+    participants: List[str]
+
+
+class ScriptUploadRequest(BaseModel):
+    """上传脚本时提供用户信息与脚本内容。"""
+
+    user_id: str
+    code: str
+    description: Optional[str] = None
+
+
+class ScriptUploadResponse(BaseModel):
+    """脚本上传成功后的反馈信息。"""
+
+    script_id: str
+    message: str
+
+
+class ScriptListResponse(BaseModel):
+    """返回当前仿真实例下的脚本元数据列表。"""
+
+    scripts: List[ScriptMetadata]
+
+
+class ScriptDeleteResponse(BaseModel):
+    """删除脚本后的操作反馈。"""
+
+    message: str
+
+
 class RunTickResponse(BaseModel):
     """执行单步仿真后的结果摘要与日志。"""
 
@@ -69,6 +111,8 @@ async def create_simulation(
     simulation_id = payload.simulation_id or str(uuid.uuid4())
     try:
         state = await _orchestrator.create_simulation(simulation_id)
+        if payload.user_id:
+            await _orchestrator.register_participant(simulation_id, payload.user_id)
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -146,3 +190,78 @@ async def get_agent_states(
         households = [state.households[i] for i in id_list if i in state.households]
 
     return AgentStateList(households=households)
+
+
+@router.post(
+    "/{simulation_id}/participants", response_model=SimulationParticipantResponse
+)
+async def register_participant(
+    simulation_id: str, payload: SimulationParticipantRequest
+) -> SimulationParticipantResponse:
+    """登记共享仿真实例的参与者信息。"""
+
+    try:
+        participants = await _orchestrator.register_participant(
+            simulation_id, payload.user_id
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=str(exc))
+    return SimulationParticipantResponse(participants=participants)
+
+
+@router.get(
+    "/{simulation_id}/participants", response_model=SimulationParticipantResponse
+)
+async def list_participants(simulation_id: str) -> SimulationParticipantResponse:
+    """查询当前仿真实例的参与者列表。"""
+
+    try:
+        participants = await _orchestrator.list_participants(simulation_id)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return SimulationParticipantResponse(participants=participants)
+
+
+@router.post("/{simulation_id}/scripts", response_model=ScriptUploadResponse)
+async def upload_script(
+    simulation_id: str, payload: ScriptUploadRequest
+) -> ScriptUploadResponse:
+    """上传并注册脚本，使其在 Tick 执行时参与决策。"""
+
+    try:
+        await _orchestrator.register_participant(simulation_id, payload.user_id)
+        metadata = script_registry.register_script(
+            simulation_id=simulation_id,
+            user_id=payload.user_id,
+            script_code=payload.code,
+            description=payload.description,
+        )
+    except ScriptExecutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return ScriptUploadResponse(
+        script_id=metadata.script_id,
+        message="Script registered successfully.",
+    )
+
+
+@router.get("/{simulation_id}/scripts", response_model=ScriptListResponse)
+async def list_scripts(simulation_id: str) -> ScriptListResponse:
+    """返回当前仿真实例下的脚本列表。"""
+
+    scripts = script_registry.list_scripts(simulation_id)
+    return ScriptListResponse(scripts=scripts)
+
+
+@router.delete(
+    "/{simulation_id}/scripts/{script_id}", response_model=ScriptDeleteResponse
+)
+async def delete_script(simulation_id: str, script_id: str) -> ScriptDeleteResponse:
+    """从指定仿真实例中移除脚本。"""
+
+    try:
+        script_registry.remove_script(simulation_id, script_id)
+    except ScriptExecutionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return ScriptDeleteResponse(message="Script removed.")

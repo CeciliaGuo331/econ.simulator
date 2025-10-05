@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
-from typing import Dict, Optional, Protocol
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Protocol, Set
 
 import numpy as np
 
@@ -98,6 +98,7 @@ class DataAccessLayer:
 
     config: WorldConfig
     store: StateStore
+    _participants: Dict[str, Set[str]] = field(default_factory=dict)
 
     @classmethod
     def with_default_store(
@@ -140,6 +141,17 @@ class DataAccessLayer:
     async def record_tick(self, tick_result: TickResult) -> None:
         """记录仿真步执行结果，当前仅持久化最新世界状态。"""
         await self._persist_state(tick_result.world_state)
+
+    def register_participant(self, simulation_id: str, user_id: str) -> None:
+        """登记参与同一仿真实例的用户，用于共享会话管理。"""
+
+        participants = self._participants.setdefault(simulation_id, set())
+        participants.add(user_id)
+
+    def list_participants(self, simulation_id: str) -> list[str]:
+        """返回已登记的参与者列表。"""
+
+        return sorted(self._participants.get(simulation_id, set()))
 
     async def _persist_state(self, world_state: WorldState) -> None:
         """将世界状态写回底层存储。"""

@@ -12,10 +12,11 @@ from ..data_access.models import (
     WorldState,
 )
 from ..data_access.redis_client import DataAccessLayer, SimulationNotFoundError
-from ..logic_modules.agent_logic import collect_tick_decisions
+from ..logic_modules.agent_logic import collect_tick_decisions, merge_tick_overrides
 from ..logic_modules.market_logic import execute_tick_logic
 from ..strategies.base import StrategyBundle
 from ..utils.settings import get_world_config
+from ..script_engine import script_registry
 
 
 class SimulationOrchestrator:
@@ -39,6 +40,19 @@ class SimulationOrchestrator:
 
         return await self.data_access.ensure_simulation(simulation_id)
 
+    async def register_participant(self, simulation_id: str, user_id: str) -> list[str]:
+        """登记共享仿真会话的参与者，并返回完整参与者列表。"""
+
+        await self.create_simulation(simulation_id)
+        self.data_access.register_participant(simulation_id, user_id)
+        return self.data_access.list_participants(simulation_id)
+
+    async def list_participants(self, simulation_id: str) -> list[str]:
+        """查询当前仿真实例的所有参与者。"""
+
+        await self.create_simulation(simulation_id)
+        return self.data_access.list_participants(simulation_id)
+
     async def get_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的当前世界状态。"""
         return await self.data_access.get_world_state(simulation_id)
@@ -55,7 +69,11 @@ class SimulationOrchestrator:
         """
         world_state = await self.create_simulation(simulation_id)
         strategies = StrategyBundle(self.config, world_state)
-        decisions = collect_tick_decisions(world_state, strategies, overrides)
+        script_overrides = script_registry.generate_overrides(
+            simulation_id, world_state, self.config
+        )
+        combined_overrides = merge_tick_overrides(script_overrides, overrides)
+        decisions = collect_tick_decisions(world_state, strategies, combined_overrides)
 
         updates, logs = execute_tick_logic(world_state, decisions, self.config)
 
