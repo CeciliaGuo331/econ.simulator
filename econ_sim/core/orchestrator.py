@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from typing import List, Optional
@@ -90,9 +91,19 @@ class SimulationOrchestrator:
             simulation_id, world_state, self.config
         )
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
-        decisions = collect_tick_decisions(world_state, strategies, combined_overrides)
+        decisions = await asyncio.to_thread(
+            collect_tick_decisions,
+            world_state,
+            strategies,
+            combined_overrides,
+        )
 
-        updates, logs = execute_tick_logic(world_state, decisions, self.config)
+        updates, logs = await asyncio.to_thread(
+            execute_tick_logic,
+            world_state,
+            decisions,
+            self.config,
+        )
 
         next_tick = world_state.tick + 1
         sim_config = self.config.simulation
@@ -151,6 +162,9 @@ class SimulationOrchestrator:
             state = last_result.world_state
             ticks_executed += 1
             aggregated_logs.extend(last_result.logs)
+
+            if ticks_executed % 5 == 0:
+                await asyncio.sleep(0)
 
             if ticks_executed > safety_limit:
                 raise RuntimeError(
