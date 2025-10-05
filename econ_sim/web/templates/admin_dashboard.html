@@ -5,12 +5,20 @@
     <h2>管理员中心</h2>
     <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
     <p>管理员账户可查看完整世界状态和所有脚本。</p>
-    {% if message %}
-    <div class="status success">{{ message }}</div>
-    {% endif %}
-    {% if error %}
-    <div class="error">{{ error }}</div>
-    {% endif %}
+    <div
+        class="status success{% if not message %} hidden{% endif %}"
+        data-status-box
+        {% if not message %}style="display: none;"{% endif %}
+    >
+        {{ message or "" }}
+    </div>
+    <div
+        class="error{% if not error %} hidden{% endif %}"
+        data-error-box
+        {% if not error %}style="display: none;"{% endif %}
+    >
+        {{ error or "" }}
+    </div>
 </section>
 
 <section class="panel">
@@ -41,12 +49,12 @@
                     {% endif %}
                 </td>
                 <td class="actions">
-                    <form method="post" action="/web/admin/simulations/run" class="inline-form">
+                    <form method="post" action="/web/admin/simulations/run" class="inline-form" data-async="true" data-action-type="run-tick" data-reload="true" data-reload-delay="1200">
                         <input type="hidden" name="simulation_id" value="{{ sid }}">
                         <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
                         <button type="submit">执行 Tick</button>
                     </form>
-                    <form method="post" action="/web/admin/simulations/run_days" class="inline-form auto-run-form">
+                    <form method="post" action="/web/admin/simulations/run_days" class="inline-form auto-run-form" data-async="true" data-action-type="run-days" data-reload="true" data-reload-delay="1600">
                         <input type="hidden" name="simulation_id" value="{{ sid }}">
                         <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
                         <button type="submit" class="auto-run-button">自动执行</button>
@@ -165,4 +173,273 @@
     <p class="empty">暂时没有上传脚本。</p>
     {% endif %}
 </section>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const successBox = document.querySelector("[data-status-box]");
+    const errorBox = document.querySelector("[data-error-box]");
+    const storageKeys = {
+        message: "adminStatusMessage",
+        type: "adminStatusType",
+    };
+
+    const showBox = (box, text) => {
+        if (!box) {
+            return;
+        }
+        const content = typeof text === "string" ? text.trim() : "";
+        if (content) {
+            box.textContent = content;
+            box.classList.remove("hidden");
+            box.style.removeProperty("display");
+        } else {
+            box.textContent = "";
+            box.classList.add("hidden");
+            box.style.display = "none";
+        }
+    };
+
+    const showStatus = (text) => {
+        showBox(errorBox, "");
+        showBox(successBox, text);
+    };
+
+    const showError = (text) => {
+        showBox(successBox, "");
+        showBox(errorBox, text);
+    };
+
+    const persistMessage = (type, text) => {
+        if (!text) {
+            return;
+        }
+        sessionStorage.setItem(storageKeys.message, text);
+        sessionStorage.setItem(storageKeys.type, type);
+    };
+
+    const restorePersistedMessage = () => {
+        const text = sessionStorage.getItem(storageKeys.message);
+        if (!text) {
+            return;
+        }
+        const type = sessionStorage.getItem(storageKeys.type) || "success";
+        if (type === "error") {
+            showError(text);
+        } else {
+            showStatus(text);
+        }
+        sessionStorage.removeItem(storageKeys.message);
+        sessionStorage.removeItem(storageKeys.type);
+    };
+
+    const clearFlashParams = () => {
+        const url = new URL(window.location.href);
+        let mutated = false;
+        ["message", "error"].forEach((param) => {
+            if (url.searchParams.has(param)) {
+                url.searchParams.delete(param);
+                mutated = true;
+            }
+        });
+        if (mutated) {
+            const query = url.searchParams.toString();
+            const nextUrl = query ? `${url.pathname}?${query}` : url.pathname;
+            window.history.replaceState({}, document.title, nextUrl);
+        }
+    };
+
+    const buildReloadUrl = (simulationId) => {
+        const url = new URL(window.location.href);
+        if (simulationId) {
+            url.searchParams.set("simulation_id", simulationId);
+        }
+        ["message", "error"].forEach((param) => url.searchParams.delete(param));
+        const query = url.searchParams.toString();
+        return query ? `${url.pathname}?${query}` : url.pathname;
+    };
+
+    restorePersistedMessage();
+    clearFlashParams();
+
+    const jobPollers = new Map();
+
+    const pollJobStatus = (
+        jobId,
+        { reloadDelay = 1400, simulationId = "", onFinally } = {}
+    ) => {
+        if (!jobId || jobPollers.has(jobId)) {
+            return;
+        }
+
+        const cleanup = () => {
+            const handle = jobPollers.get(jobId);
+            if (handle) {
+                window.clearInterval(handle);
+                jobPollers.delete(jobId);
+            }
+            if (typeof onFinally === "function") {
+                onFinally();
+            }
+        };
+
+        const fetchStatus = async () => {
+            try {
+                const response = await fetch(`/web/admin/jobs/${jobId}`, {
+                    headers: { Accept: "application/json" },
+                });
+                if (!response.ok) {
+                    throw new Error(`status ${response.status}`);
+                }
+                const data = await response.json();
+                const status = data.status;
+                if (status === "queued" || status === "running") {
+                    const progress =
+                        data.message ||
+                        `后台任务 ${jobId.slice(0, 8)}… 正在执行，请稍候…`;
+                    showStatus(progress);
+                    return false;
+                }
+                if (status === "succeeded") {
+                    const message =
+                        data.message ||
+                        `后台任务 ${jobId.slice(0, 8)}… 已完成。`;
+                    showStatus(message);
+                    persistMessage("success", message);
+                    const targetSimulation =
+                        data.simulation_id || simulationId || "";
+                    const delay = Number(reloadDelay);
+                    window.setTimeout(() => {
+                        window.location.assign(
+                            buildReloadUrl(targetSimulation)
+                        );
+                    }, Number.isFinite(delay) ? delay : 1200);
+                    return true;
+                }
+                if (status === "failed") {
+                    const errorText =
+                        data.error ||
+                        `后台任务 ${jobId.slice(0, 8)}… 执行失败。`;
+                    showError(errorText);
+                    persistMessage("error", errorText);
+                    return true;
+                }
+                showStatus(`后台任务 ${jobId.slice(0, 8)}… 状态：${status}`);
+                return false;
+            } catch (error) {
+                showError("无法获取后台任务状态，请稍后重试。");
+                return true;
+            }
+        };
+
+        const poll = async () => {
+            const finished = await fetchStatus();
+            if (finished) {
+                cleanup();
+            }
+        };
+
+        const handle = window.setInterval(poll, 1000);
+        jobPollers.set(jobId, handle);
+        poll();
+    };
+
+    const forms = document.querySelectorAll("form[data-async='true']");
+    forms.forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
+            const submitButton = form.querySelector("button[type='submit']");
+            const originalLabel = submitButton ? submitButton.textContent : "";
+            const simulationField = form.querySelector(
+                "input[name='simulation_id']"
+            );
+            const daysField = form.querySelector("input[name='days']");
+            const simId = simulationField ? simulationField.value.trim() : "";
+            const daysValue = daysField ? daysField.value.trim() : "";
+            const actionType = form.dataset.actionType || "action";
+
+            if (submitButton) {
+                submitButton.disabled = true;
+                submitButton.classList.add("is-loading");
+                submitButton.textContent = "执行中";
+            }
+
+            let pendingMessage = "操作进行中，请稍候...";
+            if (actionType === "run-days") {
+                pendingMessage = `正在执行仿真实例 ${
+                    simId || "?"
+                } 的 ${daysValue || "?"} day(s)，请稍候...`;
+            } else if (simId) {
+                pendingMessage = `正在执行仿真实例 ${simId}，请稍候...`;
+            }
+            showStatus(pendingMessage);
+
+            const formData = new FormData(form);
+
+            try {
+                const response = await fetch(form.action, {
+                    method: form.method || "POST",
+                    body: formData,
+                    headers: {
+                        "X-Requested-With": "fetch",
+                        Accept: "application/json",
+                    },
+                });
+
+                const data = await response
+                    .json()
+                    .catch(() => ({ message: "", error: "" }));
+
+                if (!response.ok) {
+                    const errorText =
+                        (data && data.error) || "操作失败，请稍后重试。";
+                    showError(errorText);
+                    if (data && data.job_id) {
+                        pollJobStatus(data.job_id, {
+                            simulationId: data.simulation_id || simId,
+                            reloadDelay: Number(
+                                form.dataset.reloadDelay || 1400
+                            ),
+                        });
+                    }
+                    persistMessage("error", errorText);
+                } else {
+                    const successText =
+                        (data && data.message) || "操作完成。";
+                    showStatus(successText);
+
+                    if (data && data.job_id) {
+                        pollJobStatus(data.job_id, {
+                            simulationId: data.simulation_id || simId,
+                            reloadDelay: Number(
+                                form.dataset.reloadDelay || 1600
+                            ),
+                        });
+                    } else if (form.dataset.reload === "true") {
+                        const delay = Number(form.dataset.reloadDelay || 1200);
+                        persistMessage("success", successText);
+                        window.setTimeout(() => {
+                            const targetSimulation =
+                                data && data.simulation_id
+                                    ? data.simulation_id
+                                    : simId;
+                            window.location.assign(
+                                buildReloadUrl(targetSimulation)
+                            );
+                        }, Number.isFinite(delay) ? delay : 1200);
+                    }
+                }
+            } catch (err) {
+                showError("网络错误，稍后重试。");
+            } finally {
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.classList.remove("is-loading");
+                    submitButton.textContent = originalLabel;
+                }
+            }
+        });
+    });
+});
+</script>
 {% endblock %}

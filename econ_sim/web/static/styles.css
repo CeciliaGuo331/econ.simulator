@@ -15,6 +15,10 @@ body {
   color: var(--text);
 }
 
+.hidden {
+  display: none !important;
+}
+
 .top-bar {
   display: flex;
   align-items: center;
@@ -407,6 +411,13 @@ body {
   transition: transform 0.15s ease, box-shadow 0.2s ease;
 }
 
+.inline-form button.is-loading,
+.admin-form button.is-loading {
+  position: relative;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
 .inline-form button:hover,
 .admin-form button:hover {
   transform: translateY(-2px);
@@ -438,4 +449,9 @@ body {
 .status.success {
   background-color: rgba(94, 234, 212, 0.2);
   color: #5eead4;
+}
+
+.status + .error,
+.error + .status {
+  margin-top: 0.6rem;
 }

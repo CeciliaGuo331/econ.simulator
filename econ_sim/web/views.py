@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
@@ -21,6 +21,7 @@ from ..auth.user_manager import (
 from ..core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
+from .background import BackgroundJobManager, JobConflictError
 
 router = APIRouter(prefix="/web", tags=["web"])
 
@@ -28,6 +29,7 @@ _templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
 _orchestrator = SimulationOrchestrator()
+_background_jobs = BackgroundJobManager()
 
 ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
     "individual": {
@@ -180,6 +182,38 @@ def _redirect_to_dashboard(
         params["error"] = error
     query = urlencode(params)
     return RedirectResponse(url=f"/web/dashboard?{query}", status_code=303)
+
+
+def _should_return_json(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    if "application/json" in accept:
+        return True
+    requested_with = (request.headers.get("x-requested-with") or "").lower()
+    return requested_with in {"fetch", "xmlhttprequest"}
+
+
+def _async_response(
+    request: Request,
+    simulation_id: str,
+    *,
+    message: Optional[str] = None,
+    error: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+    status_code: int = 200,
+):
+    if _should_return_json(request):
+        payload: Dict[str, Any] = {"simulation_id": simulation_id}
+        if message:
+            payload["message"] = message
+        if error:
+            payload["error"] = error
+            if status_code < 400:
+                status_code = 400
+        if extra:
+            payload.update(extra)
+        return JSONResponse(payload, status_code=status_code)
+
+    return _redirect_to_dashboard(simulation_id, message=message, error=error)
 
 
 def _format_tick_progress_message(
@@ -363,15 +397,17 @@ async def admin_create_simulation(
 
 @router.post("/admin/simulations/run")
 async def admin_run_tick(
+    request: Request,
     user: Dict[str, Any] = Depends(_require_admin_user),
     simulation_id: str = Form(""),
     current_simulation_id: str = Form("default-simulation"),
-) -> RedirectResponse:
+):
     target = simulation_id.strip() or current_simulation_id or "default-simulation"
     try:
         result = await _orchestrator.run_tick(target)
     except SimulationNotFoundError:
-        return _redirect_to_dashboard(
+        return _async_response(
+            request,
             current_simulation_id or target,
             error=f"仿真实例 {target} 不存在，无法执行 Tick。",
         )
@@ -382,47 +418,95 @@ async def admin_run_tick(
         day=result.world_state.day,
         ticks_executed=1,
     )
-    return _redirect_to_dashboard(target, message=note)
+    extra = {
+        "tick": result.world_state.tick,
+        "day": result.world_state.day,
+        "ticks_executed": 1,
+    }
+    return _async_response(request, target, message=note, extra=extra)
 
 
 @router.post("/admin/simulations/run_days")
 async def admin_run_days(
+    request: Request,
     user: Dict[str, Any] = Depends(_require_admin_user),
     simulation_id: str = Form(...),
     days: str = Form(...),
     current_simulation_id: str = Form("default-simulation"),
-) -> RedirectResponse:
+):
     target = simulation_id.strip() or current_simulation_id or "default-simulation"
     try:
         days_required = int(days)
     except (TypeError, ValueError):
-        return _redirect_to_dashboard(
+        return _async_response(
+            request,
             target,
             error="请输入合法的天数（正整数）。",
         )
 
     if days_required <= 0:
-        return _redirect_to_dashboard(target, error="天数必须大于 0。")
+        return _async_response(request, target, error="天数必须大于 0。")
 
     try:
-        result = await _orchestrator.run_until_day(target, days_required)
+        await _orchestrator.create_simulation(target)
     except SimulationNotFoundError:
-        return _redirect_to_dashboard(
+        return _async_response(
+            request,
             current_simulation_id or target,
             error=f"仿真实例 {target} 不存在，无法执行自动运行。",
         )
-    except ValueError as exc:
-        return _redirect_to_dashboard(target, error=str(exc))
-    except RuntimeError as exc:  # pragma: no cover - 防御性分支
-        return _redirect_to_dashboard(target, error=str(exc))
 
-    note = _format_tick_progress_message(
-        target,
-        tick=result.world_state.tick,
-        day=result.world_state.day,
-        ticks_executed=result.ticks_executed,
+    async def _job_factory() -> Dict[str, Any]:
+        try:
+            result = await _orchestrator.run_until_day(target, days_required)
+        except SimulationNotFoundError:
+            raise
+        note = _format_tick_progress_message(
+            target,
+            tick=result.world_state.tick,
+            day=result.world_state.day,
+            ticks_executed=result.ticks_executed,
+        )
+        return {
+            "message": note,
+            "extra": {
+                "tick": result.world_state.tick,
+                "day": result.world_state.day,
+                "ticks_executed": result.ticks_executed,
+            },
+        }
+
+    try:
+        job = await _background_jobs.enqueue(target, "run_days", _job_factory)
+    except JobConflictError as exc:
+        existing = await _background_jobs.get(exc.existing_job_id)
+        extra = {}
+        if existing:
+            extra["job_id"] = existing.job_id
+            extra["job_status"] = existing.status
+            extra["job_action"] = existing.action
+            if existing.message:
+                extra["job_message"] = existing.message
+        return _async_response(
+            request,
+            target,
+            error=f"仿真实例 {target} 已有正在执行的自动运行任务。",
+            extra=extra or None,
+        )
+
+    kickoff_message = (
+        f"仿真实例 {target} 的自动执行任务已启动（Job: {job.job_id[:8]}…）。"
     )
-    return _redirect_to_dashboard(target, message=note)
+    return _async_response(
+        request,
+        target,
+        message=kickoff_message,
+        extra={
+            "job_id": job.job_id,
+            "job_status": job.status,
+            "job_action": job.action,
+        },
+    )
 
 
 @router.post("/admin/simulations/reset")
@@ -444,6 +528,17 @@ async def admin_reset_simulation(
 
     note = f"仿真实例 {target} 已重置至 Tick {state.tick}。"
     return _redirect_to_dashboard(target, message=note)
+
+
+@router.get("/admin/jobs/{job_id}")
+async def admin_job_status(
+    job_id: str,
+    user: Dict[str, Any] = Depends(_require_admin_user),
+):
+    job = await _background_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return JSONResponse(job.as_dict())
 
 
 @router.post("/admin/simulations/delete")
