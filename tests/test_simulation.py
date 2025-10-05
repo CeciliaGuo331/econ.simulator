@@ -1,11 +1,16 @@
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+from econ_sim.auth import user_manager
+from econ_sim.auth.user_manager import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
 from econ_sim.core.orchestrator import SimulationOrchestrator
 from econ_sim.data_access.models import (
     FirmDecisionOverride,
     HouseholdDecisionOverride,
     TickDecisionOverrides,
 )
+from econ_sim.main import app
+from econ_sim.script_engine import script_registry
 
 
 @pytest.mark.asyncio
@@ -37,3 +42,129 @@ async def test_overrides_affect_decisions() -> None:
 
     assert result.world_state.households[0].last_consumption <= 0.5
     assert abs(result.world_state.firm.price - 25.0) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_admin_restrictions_for_simulation_control() -> None:
+    await user_manager.reset()
+    script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 普通用户注册并登录
+        await client.post(
+            "/auth/register",
+            json={
+                "email": "player@test.com",
+                "password": "StrongPass123",
+                "user_type": "individual",
+            },
+        )
+        user_login = await client.post(
+            "/auth/login",
+            json={"email": "player@test.com", "password": "StrongPass123"},
+        )
+        user_token = user_login.json()["access_token"]
+
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+
+        headers_user = {"Authorization": f"Bearer {user_token}"}
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "admin-permission-sim"
+
+        denied = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_user,
+        )
+        assert denied.status_code == 403
+
+        created = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+        assert created.status_code == 200
+
+        forbidden_run = await client.post(
+            f"/simulations/{simulation_id}/run_tick",
+            json={},
+            headers=headers_user,
+        )
+        assert forbidden_run.status_code == 403
+
+        allowed_run = await client.post(
+            f"/simulations/{simulation_id}/run_tick",
+            json={},
+            headers=headers_admin,
+        )
+        assert allowed_run.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_script_upload_requires_existing_simulation() -> None:
+    await user_manager.reset()
+    script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/auth/register",
+            json={
+                "email": "scripter@test.com",
+                "password": "StrongPass123",
+                "user_type": "firm",
+            },
+        )
+        user_login = await client.post(
+            "/auth/login",
+            json={"email": "scripter@test.com", "password": "StrongPass123"},
+        )
+        user_token = user_login.json()["access_token"]
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+
+        headers_user = {"Authorization": f"Bearer {user_token}"}
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        script_code = """
+def generate_decisions(context):
+    return {}
+"""
+
+        missing = await client.post(
+            "/simulations/missing-sim/scripts",
+            json={"code": script_code},
+            headers=headers_user,
+        )
+        assert missing.status_code == 404
+
+        simulation_id = "script-upload-sim"
+        await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+
+        upload = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json={"code": script_code, "description": "test"},
+            headers=headers_user,
+        )
+        assert upload.status_code == 200
+        payload = upload.json()
+        assert payload["message"] == "Script registered successfully."

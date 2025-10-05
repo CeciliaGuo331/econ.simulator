@@ -43,14 +43,14 @@ class SimulationOrchestrator:
     async def register_participant(self, simulation_id: str, user_id: str) -> list[str]:
         """登记共享仿真会话的参与者，并返回完整参与者列表。"""
 
-        await self.create_simulation(simulation_id)
+        await self.data_access.get_world_state(simulation_id)
         self.data_access.register_participant(simulation_id, user_id)
         return self.data_access.list_participants(simulation_id)
 
     async def list_participants(self, simulation_id: str) -> list[str]:
         """查询当前仿真实例的所有参与者。"""
 
-        await self.create_simulation(simulation_id)
+        await self.data_access.get_world_state(simulation_id)
         return self.data_access.list_participants(simulation_id)
 
     async def get_state(self, simulation_id: str) -> WorldState:

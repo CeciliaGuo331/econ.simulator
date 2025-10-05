@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
+from ..auth import user_manager
+from ..auth.user_manager import UserProfile
 from ..core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
 from ..data_access.models import (
     HouseholdState,
@@ -20,6 +22,42 @@ from ..script_engine.registry import ScriptExecutionError, ScriptMetadata
 
 router = APIRouter(prefix="/simulations", tags=["simulations"])
 _orchestrator = SimulationOrchestrator()
+
+
+async def get_current_user(authorization: str = Header(...)) -> UserProfile:
+    """根据 Access Token 获取当前登录用户。"""
+
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+        )
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header",
+        )
+    profile = await user_manager.get_profile_by_token(token.strip())
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired access token",
+        )
+    return profile
+
+
+async def require_admin_user(
+    user: UserProfile = Depends(get_current_user),
+) -> UserProfile:
+    """确保当前用户具备管理员权限。"""
+
+    if user.user_type != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return user
 
 
 class SimulationCreateRequest(BaseModel):
@@ -69,7 +107,7 @@ class SimulationParticipantResponse(BaseModel):
 class ScriptUploadRequest(BaseModel):
     """上传脚本时提供用户信息与脚本内容。"""
 
-    user_id: str
+    user_id: Optional[str] = None
     code: str
     description: Optional[str] = None
 
@@ -106,6 +144,7 @@ class RunTickResponse(BaseModel):
 @router.post("", response_model=SimulationCreateResponse)
 async def create_simulation(
     payload: SimulationCreateRequest,
+    admin: UserProfile = Depends(require_admin_user),
 ) -> SimulationCreateResponse:
     """新建仿真实例并返回初始世界状态的关键信息。"""
     simulation_id = payload.simulation_id or str(uuid.uuid4())
@@ -141,7 +180,11 @@ async def get_simulation(simulation_id: str) -> SimulationStatusResponse:
 
 
 @router.post("/{simulation_id}/run_tick", response_model=RunTickResponse)
-async def run_tick(simulation_id: str, payload: RunTickRequest) -> RunTickResponse:
+async def run_tick(
+    simulation_id: str,
+    payload: RunTickRequest,
+    admin: UserProfile = Depends(require_admin_user),
+) -> RunTickResponse:
     """执行指定仿真实例的单个 Tick，并返回更新后的摘要。"""
     overrides = payload.decisions if payload and payload.decisions else None
     try:
@@ -204,6 +247,8 @@ async def register_participant(
         participants = await _orchestrator.register_participant(
             simulation_id, payload.user_id
         )
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=str(exc))
     return SimulationParticipantResponse(participants=participants)
@@ -224,18 +269,28 @@ async def list_participants(simulation_id: str) -> SimulationParticipantResponse
 
 @router.post("/{simulation_id}/scripts", response_model=ScriptUploadResponse)
 async def upload_script(
-    simulation_id: str, payload: ScriptUploadRequest
+    simulation_id: str,
+    payload: ScriptUploadRequest,
+    user: UserProfile = Depends(get_current_user),
 ) -> ScriptUploadResponse:
     """上传并注册脚本，使其在 Tick 执行时参与决策。"""
 
+    if payload.user_id and payload.user_id != user.email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot upload script for other users",
+        )
+
     try:
-        await _orchestrator.register_participant(simulation_id, payload.user_id)
+        await _orchestrator.register_participant(simulation_id, user.email)
         metadata = script_registry.register_script(
             simulation_id=simulation_id,
-            user_id=payload.user_id,
+            user_id=user.email,
             script_code=payload.code,
             description=payload.description,
         )
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except ScriptExecutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -256,7 +311,11 @@ async def list_scripts(simulation_id: str) -> ScriptListResponse:
 @router.delete(
     "/{simulation_id}/scripts/{script_id}", response_model=ScriptDeleteResponse
 )
-async def delete_script(simulation_id: str, script_id: str) -> ScriptDeleteResponse:
+async def delete_script(
+    simulation_id: str,
+    script_id: str,
+    admin: UserProfile = Depends(require_admin_user),
+) -> ScriptDeleteResponse:
     """从指定仿真实例中移除脚本。"""
 
     try:

@@ -210,6 +210,22 @@ class UserManager:
             raise AuthenticationError("Invalid email or password")
         return await self._sessions.create_session(normalized)
 
+    async def get_profile_by_token(self, token: str) -> Optional[UserProfile]:
+        await self._ensure_admin_exists()
+        if not token:
+            return None
+        email = await self._sessions.get_email(token)
+        if email is None:
+            return None
+        record = await self._store.get_user(email)
+        if record is None:
+            return None
+        return UserProfile(
+            email=record.email,
+            created_at=record.created_at,
+            user_type=record.user_type,
+        )
+
     async def reset(self) -> None:
         await self._store.clear()
         await self._sessions.clear()

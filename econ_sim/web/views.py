@@ -16,7 +16,7 @@ from ..auth.user_manager import (
     PUBLIC_USER_TYPES,
     UserAlreadyExistsError,
 )
-from ..core.orchestrator import SimulationOrchestrator
+from ..core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
 
@@ -148,8 +148,13 @@ async def _require_session_user(request: Request) -> Dict[str, Any]:
     return session_user
 
 
-async def _load_world_state(simulation_id: str):
-    state = await _orchestrator.create_simulation(simulation_id)
+async def _load_world_state(
+    simulation_id: str, *, allow_create: bool
+) -> Dict[str, Any]:
+    if allow_create:
+        state = await _orchestrator.create_simulation(simulation_id)
+    else:
+        state = await _orchestrator.get_state(simulation_id)
     return state.model_dump(mode="json")
 
 
@@ -225,11 +230,32 @@ async def dashboard(
     user: Dict[str, Any] = Depends(_require_session_user),
     simulation_id: str = "default-simulation",
 ) -> HTMLResponse:
-    world_state = await _load_world_state(simulation_id)
+    allow_create = user["user_type"] == "admin"
+    try:
+        world_state = await _load_world_state(simulation_id, allow_create=allow_create)
+    except SimulationNotFoundError:
+        template_name = "dashboard.html"
+        context: Dict[str, Any] = {}
+        if allow_create:
+            template_name = "admin_dashboard.html"
+            context["world"] = {}
+        return _templates.TemplateResponse(
+            template_name,
+            {
+                "request": request,
+                "user": user,
+                "simulation_id": simulation_id,
+                "scripts": script_registry.list_scripts(simulation_id),
+                "context": context,
+                "error": "仿真实例不存在，请联系管理员创建后再访问。",
+            },
+            status_code=404,
+        )
+
     scripts = script_registry.list_scripts(simulation_id)
     context = _extract_view_data(world_state, user["user_type"])
     template_name = "dashboard.html"
-    if user["user_type"] == "admin":
+    if allow_create:
         template_name = "admin_dashboard.html"
         context["world"] = world_state
     return _templates.TemplateResponse(
@@ -240,6 +266,7 @@ async def dashboard(
             "simulation_id": simulation_id,
             "scripts": scripts,
             "context": context,
+            "error": None,
         },
     )
 
@@ -274,8 +301,23 @@ async def upload_script(
             script_code=code,
             description=description or None,
         )
+    except SimulationNotFoundError:
+        return _templates.TemplateResponse(
+            "dashboard.html",
+            {
+                "request": request,
+                "user": user,
+                "simulation_id": simulation_id,
+                "scripts": [],
+                "context": {},
+                "error": "仿真实例不存在，请联系管理员创建后再上传脚本。",
+            },
+            status_code=404,
+        )
     except ScriptExecutionError as exc:
-        world_state = await _load_world_state(simulation_id)
+        world_state = (await _orchestrator.get_state(simulation_id)).model_dump(
+            mode="json"
+        )
         context = _extract_view_data(world_state, user["user_type"])
         return _templates.TemplateResponse(
             "dashboard.html",
