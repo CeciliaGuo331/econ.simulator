@@ -4,6 +4,12 @@
 <section class="panel">
     <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
     <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
+    {% if message %}
+    <div class="status success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
 </section>
 
 <section class="grid">
@@ -37,9 +43,6 @@
 
 <section class="panel">
     <h3>上传脚本</h3>
-    {% if error %}
-    <div class="error">{{ error }}</div>
-    {% endif %}
     <form method="post" action="/web/scripts" class="script-form">
         <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
         <label>脚本说明（可选）

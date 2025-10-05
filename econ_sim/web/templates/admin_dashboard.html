@@ -5,6 +5,59 @@
     <h2>管理员中心</h2>
     <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
     <p>管理员账户可查看完整世界状态和所有脚本。</p>
+    {% if message %}
+    <div class="status success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h3>仿真实例管理</h3>
+    <form method="post" action="/web/admin/simulations/create" class="admin-form">
+        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+        <label>新仿真实例 ID（留空自动生成）
+            <input type="text" name="simulation_id" placeholder="sim-2025">
+        </label>
+        <button type="submit">创建仿真实例</button>
+    </form>
+    {% if all_simulations %}
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>仿真实例 ID</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sid in all_simulations %}
+            <tr>
+                <td>
+                    {% if sid == simulation_id %}
+                    <strong>{{ sid }}</strong>
+                    {% else %}
+                    <a href="/web/dashboard?simulation_id={{ sid }}">{{ sid }}</a>
+                    {% endif %}
+                </td>
+                <td class="actions">
+                    <form method="post" action="/web/admin/simulations/run" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit">执行 Tick</button>
+                    </form>
+                    <form method="post" action="/web/admin/simulations/reset" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                        <button type="submit">重置</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">尚未创建任何仿真实例。</p>
+    {% endif %}
 </section>
 
 <section class="grid">
@@ -15,24 +68,81 @@
 </section>
 
 <section class="panel">
-    <h3>全部脚本</h3>
-    {% if scripts %}
-    <table class="script-table">
+    <h3>用户管理</h3>
+    {% if all_users %}
+    <table class="admin-table">
         <thead>
             <tr>
-                <th>脚本 ID</th>
-                <th>用户</th>
-                <th>描述</th>
-                <th>上传时间 (UTC)</th>
+                <th>邮箱</th>
+                <th>角色</th>
+                <th>注册时间 (UTC)</th>
+                <th>脚本数</th>
+                <th>操作</th>
             </tr>
         </thead>
         <tbody>
-            {% for script in scripts %}
+            {% for item in all_users %}
+            <tr>
+                <td>{{ item.email }}</td>
+                <td>{{ item.user_type }}</td>
+                <td>{{ item.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td>{{ item.script_count }}</td>
+                <td>
+                    {% if item.email == user.email %}
+                    <span class="hint">当前账号</span>
+                    {% else %}
+                    <form method="post" action="/web/admin/users/delete" class="inline-form">
+                        <input type="hidden" name="email" value="{{ item.email }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit">删除</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">暂无注册用户。</p>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h3>脚本管理</h3>
+    {% if all_scripts %}
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>脚本 ID</th>
+                <th>仿真实例</th>
+                <th>用户</th>
+                <th>描述</th>
+                <th>上传时间 (UTC)</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for script in all_scripts %}
             <tr>
                 <td>{{ script.script_id }}</td>
+                <td>
+                    {% if script.simulation_id == simulation_id %}
+                    <strong>{{ script.simulation_id }}</strong>
+                    {% else %}
+                    <a href="/web/dashboard?simulation_id={{ script.simulation_id }}">{{ script.simulation_id }}</a>
+                    {% endif %}
+                </td>
                 <td>{{ script.user_id }}</td>
                 <td>{% if script.description %}{{ script.description }}{% else %}<span class="empty">无</span>{% endif %}</td>
                 <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td>
+                    <form method="post" action="/web/admin/scripts/delete" class="inline-form">
+                        <input type="hidden" name="simulation_id" value="{{ script.simulation_id }}">
+                        <input type="hidden" name="script_id" value="{{ script.script_id }}">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+                        <button type="submit">删除</button>
+                    </form>
+                </td>
             </tr>
             {% endfor %}
         </tbody>
@@ -40,6 +150,5 @@
     {% else %}
     <p class="empty">暂时没有上传脚本。</p>
     {% endif %}
-    <p class="hint">脚本审核和管理功能可在后续迭代中补充。</p>
 </section>
 {% endblock %}

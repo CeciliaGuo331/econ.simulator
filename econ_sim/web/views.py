@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -148,6 +150,13 @@ async def _require_session_user(request: Request) -> Dict[str, Any]:
     return session_user
 
 
+async def _require_admin_user(request: Request) -> Dict[str, Any]:
+    session_user = await _require_session_user(request)
+    if session_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="admin only")
+    return session_user
+
+
 async def _load_world_state(
     simulation_id: str, *, allow_create: bool
 ) -> Dict[str, Any]:
@@ -156,6 +165,21 @@ async def _load_world_state(
     else:
         state = await _orchestrator.get_state(simulation_id)
     return state.model_dump(mode="json")
+
+
+def _redirect_to_dashboard(
+    simulation_id: str,
+    *,
+    message: Optional[str] = None,
+    error: Optional[str] = None,
+) -> RedirectResponse:
+    params = {"simulation_id": simulation_id}
+    if message:
+        params["message"] = message
+    if error:
+        params["error"] = error
+    query = urlencode(params)
+    return RedirectResponse(url=f"/web/dashboard?{query}", status_code=303)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -229,16 +253,15 @@ async def dashboard(
     request: Request,
     user: Dict[str, Any] = Depends(_require_session_user),
     simulation_id: str = "default-simulation",
+    message: Optional[str] = None,
+    error: Optional[str] = None,
 ) -> HTMLResponse:
     allow_create = user["user_type"] == "admin"
     try:
         world_state = await _load_world_state(simulation_id, allow_create=allow_create)
     except SimulationNotFoundError:
-        template_name = "dashboard.html"
-        context: Dict[str, Any] = {}
-        if allow_create:
-            template_name = "admin_dashboard.html"
-            context["world"] = {}
+        template_name = "admin_dashboard.html" if allow_create else "dashboard.html"
+        context: Dict[str, Any] = {"world": {}} if allow_create else {}
         return _templates.TemplateResponse(
             template_name,
             {
@@ -247,7 +270,12 @@ async def dashboard(
                 "simulation_id": simulation_id,
                 "scripts": script_registry.list_scripts(simulation_id),
                 "context": context,
-                "error": "仿真实例不存在，请联系管理员创建后再访问。",
+                "error": error or "仿真实例不存在，请联系管理员创建后再访问。",
+                "message": message,
+                "all_simulations": [],
+                "all_users": [],
+                "all_scripts": [],
+                "scripts_by_user": {},
             },
             status_code=404,
         )
@@ -255,9 +283,30 @@ async def dashboard(
     scripts = script_registry.list_scripts(simulation_id)
     context = _extract_view_data(world_state, user["user_type"])
     template_name = "dashboard.html"
+    all_simulations: List[str] = []
+    all_users: List[Dict[str, Any]] = []
+    all_scripts = []
+    scripts_by_user: Dict[str, List] = {}
+
     if allow_create:
         template_name = "admin_dashboard.html"
         context["world"] = world_state
+        all_simulations = await _orchestrator.list_simulations()
+        user_profiles = await user_manager.list_users()
+        all_scripts = script_registry.list_all_scripts()
+        for metadata in all_scripts:
+            scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
+        script_counts = {email: len(items) for email, items in scripts_by_user.items()}
+        all_users = [
+            {
+                "email": profile.email,
+                "created_at": profile.created_at,
+                "user_type": profile.user_type,
+                "script_count": script_counts.get(profile.email, 0),
+            }
+            for profile in user_profiles
+        ]
+
     return _templates.TemplateResponse(
         template_name,
         {
@@ -266,9 +315,128 @@ async def dashboard(
             "simulation_id": simulation_id,
             "scripts": scripts,
             "context": context,
-            "error": None,
+            "error": error,
+            "message": message,
+            "all_simulations": all_simulations,
+            "all_users": all_users,
+            "all_scripts": all_scripts,
+            "scripts_by_user": scripts_by_user,
         },
     )
+
+
+@router.post("/admin/simulations/create")
+async def admin_create_simulation(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(""),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    desired_id = simulation_id.strip()
+    generated = False
+    if not desired_id:
+        desired_id = f"sim-{uuid.uuid4().hex[:8]}"
+        generated = True
+    try:
+        await _orchestrator.create_simulation(desired_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        fallback = current_simulation_id or "default-simulation"
+        return _redirect_to_dashboard(fallback, error=f"创建仿真实例失败: {exc}")
+
+    note = f"已创建仿真实例 {desired_id}."
+    if generated:
+        note += " (自动生成 ID)"
+    return _redirect_to_dashboard(desired_id, message=note)
+
+
+@router.post("/admin/simulations/run")
+async def admin_run_tick(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(""),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    target = simulation_id.strip() or current_simulation_id or "default-simulation"
+    try:
+        result = await _orchestrator.run_tick(target)
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            current_simulation_id or target,
+            error=f"仿真实例 {target} 不存在，无法执行 Tick。",
+        )
+
+    note = (
+        f"仿真实例 {target} 已推进到 Tick {result.world_state.tick} "
+        f"(Day {result.world_state.day})."
+    )
+    return _redirect_to_dashboard(target, message=note)
+
+
+@router.post("/admin/simulations/reset")
+async def admin_reset_simulation(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+) -> RedirectResponse:
+    target = simulation_id.strip()
+    if not target:
+        return _redirect_to_dashboard("default-simulation", error="请指定仿真实例 ID。")
+
+    try:
+        state = await _orchestrator.reset_simulation(target)
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            target,
+            error=f"仿真实例 {target} 不存在，无法重置。",
+        )
+
+    note = f"仿真实例 {target} 已重置至 Tick {state.tick}。"
+    return _redirect_to_dashboard(target, message=note)
+
+
+@router.post("/admin/scripts/delete")
+async def admin_delete_script(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    script_id: str = Form(...),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    target = simulation_id.strip()
+    redirect_target = current_simulation_id or target or "default-simulation"
+    if not target:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error="请提供脚本所属的仿真实例。",
+        )
+    try:
+        script_registry.remove_script(target, script_id)
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(redirect_target, error=str(exc))
+
+    note = f"已删除仿真实例 {target} 下的脚本 {script_id}。"
+    return _redirect_to_dashboard(redirect_target, message=note)
+
+
+@router.post("/admin/users/delete")
+async def admin_delete_user(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    email: str = Form(...),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    normalized = email.strip().lower()
+    redirect_target = current_simulation_id or "default-simulation"
+    if not normalized:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error="请提供需要删除的用户邮箱。",
+        )
+    try:
+        await user_manager.delete_user(normalized)
+    except ValueError as exc:
+        return _redirect_to_dashboard(redirect_target, error=str(exc))
+
+    removed = script_registry.remove_scripts_by_user(normalized)
+    note = f"用户 {normalized} 已删除。"
+    if removed:
+        note += f" 同时移除 {removed} 个脚本。"
+    return _redirect_to_dashboard(redirect_target, message=note)
 
 
 @router.post("/scripts", response_class=HTMLResponse)

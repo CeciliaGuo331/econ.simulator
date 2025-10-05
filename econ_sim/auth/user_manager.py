@@ -7,7 +7,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Protocol
+from typing import Dict, List, Optional, Protocol
 
 from pydantic import BaseModel, field_validator
 
@@ -50,6 +50,10 @@ class UserStore(Protocol):
 
     async def clear(self) -> None: ...
 
+    async def list_users(self) -> List[UserRecord]: ...
+
+    async def delete_user(self, email: str) -> None: ...
+
 
 class InMemoryUserStore:
     """简单的内存用户存储，实现并发安全。"""
@@ -69,6 +73,14 @@ class InMemoryUserStore:
     async def clear(self) -> None:
         async with self._lock:
             self._users.clear()
+
+    async def list_users(self) -> List[UserRecord]:
+        async with self._lock:
+            return list(self._users.values())
+
+    async def delete_user(self, email: str) -> None:
+        async with self._lock:
+            self._users.pop(email, None)
 
 
 class RedisUserStore:
@@ -110,6 +122,31 @@ class RedisUserStore:
         async with self._lock:
             await self._redis.delete(self._key)
 
+    async def list_users(self) -> List[UserRecord]:
+        async with self._lock:
+            raw = await self._redis.hgetall(self._key)
+        users: List[UserRecord] = []
+        for value in raw.values():
+            payload_raw = (
+                value.decode() if isinstance(value, (bytes, bytearray)) else value
+            )
+            payload = json.loads(payload_raw)
+            users.append(
+                UserRecord(
+                    email=payload["email"],
+                    password_hash=payload["password_hash"],
+                    created_at=datetime.fromisoformat(payload["created_at"]),
+                    user_type=validate_user_type(
+                        payload.get("user_type", "individual"), allow_admin=True
+                    ),
+                )
+            )
+        return users
+
+    async def delete_user(self, email: str) -> None:
+        async with self._lock:
+            await self._redis.hdel(self._key, email)
+
 
 class SessionManager:
     """管理登录会话令牌的工具。"""
@@ -131,6 +168,12 @@ class SessionManager:
     async def clear(self) -> None:
         async with self._lock:
             self._tokens.clear()
+
+    async def revoke_user(self, email: str) -> None:
+        async with self._lock:
+            to_delete = [token for token, addr in self._tokens.items() if addr == email]
+            for token in to_delete:
+                self._tokens.pop(token, None)
 
 
 class UserProfile(BaseModel):
@@ -244,6 +287,32 @@ class UserManager:
             created_at=record.created_at,
             user_type=record.user_type,
         )
+
+    async def list_users(self) -> List[UserProfile]:
+        await self._ensure_admin_exists()
+        records = await self._store.list_users()
+        profiles = [
+            UserProfile(
+                email=record.email,
+                created_at=record.created_at,
+                user_type=record.user_type,
+            )
+            for record in records
+        ]
+        profiles.sort(key=lambda item: item.created_at)
+        return profiles
+
+    async def delete_user(self, email: str) -> None:
+        await self._ensure_admin_exists()
+        validate_email(email)
+        normalized = self._normalize_email(email)
+        if normalized == self._normalize_email(DEFAULT_ADMIN_EMAIL):
+            raise ValueError("Cannot delete default administrator account")
+        record = await self._store.get_user(normalized)
+        if record is None:
+            raise ValueError("User not found")
+        await self._store.delete_user(normalized)
+        await self._sessions.revoke_user(normalized)
 
 
 __all__ = [

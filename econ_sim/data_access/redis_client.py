@@ -99,6 +99,7 @@ class DataAccessLayer:
     config: WorldConfig
     store: StateStore
     _participants: Dict[str, Set[str]] = field(default_factory=dict)
+    _known_simulations: Set[str] = field(default_factory=set)
 
     @classmethod
     def with_default_store(
@@ -111,7 +112,9 @@ class DataAccessLayer:
         """确保仿真实例存在，不存在时按配置创建初始世界状态。"""
         existing = await self.store.load(simulation_id)
         if existing is not None:
-            return WorldState.model_validate(existing)
+            world_state = WorldState.model_validate(existing)
+            self._known_simulations.add(simulation_id)
+            return world_state
 
         world_state = self._build_initial_world_state(simulation_id)
         await self._persist_state(world_state)
@@ -122,7 +125,9 @@ class DataAccessLayer:
         payload = await self.store.load(simulation_id)
         if payload is None:
             raise SimulationNotFoundError(f"Simulation '{simulation_id}' not found")
-        return WorldState.model_validate(payload)
+        world_state = WorldState.model_validate(payload)
+        self._known_simulations.add(simulation_id)
+        return world_state
 
     async def apply_updates(
         self, simulation_id: str, updates: list[StateUpdateCommand]
@@ -153,9 +158,15 @@ class DataAccessLayer:
 
         return sorted(self._participants.get(simulation_id, set()))
 
+    def list_simulations(self) -> list[str]:
+        """返回已知的仿真实例 ID 列表。"""
+
+        return sorted(self._known_simulations)
+
     async def _persist_state(self, world_state: WorldState) -> None:
         """将世界状态写回底层存储。"""
         await self.store.store(world_state.simulation_id, world_state.model_dump())
+        self._known_simulations.add(world_state.simulation_id)
 
     def _build_initial_world_state(self, simulation_id: str) -> WorldState:
         """依据配置构造新的初始世界状态。"""

@@ -53,6 +53,11 @@ class SimulationOrchestrator:
         await self.data_access.get_world_state(simulation_id)
         return self.data_access.list_participants(simulation_id)
 
+    async def list_simulations(self) -> list[str]:
+        """列出已知仿真实例 ID。"""
+
+        return self.data_access.list_simulations()
+
     async def get_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的当前世界状态。"""
         return await self.data_access.get_world_state(simulation_id)

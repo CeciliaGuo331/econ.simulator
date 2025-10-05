@@ -81,6 +81,14 @@ class ScriptRegistry:
             record.metadata for record in self._scripts.get(simulation_id, {}).values()
         ]
 
+    def list_all_scripts(self) -> List[ScriptMetadata]:
+        """返回所有仿真实例下的脚本元数据。"""
+
+        scripts: List[ScriptMetadata] = []
+        for bucket in self._scripts.values():
+            scripts.extend(record.metadata for record in bucket.values())
+        return scripts
+
     def remove_script(self, simulation_id: str, script_id: str) -> None:
         """根据脚本 ID 删除已注册脚本。"""
 
@@ -92,6 +100,26 @@ class ScriptRegistry:
         del bucket[script_id]
         if not bucket:
             self._scripts.pop(simulation_id, None)
+
+    def remove_scripts_by_user(self, user_id: str) -> int:
+        """批量移除指定用户的所有脚本，返回删除数量。"""
+
+        removed = 0
+        simulations_to_clear: List[str] = []
+        for simulation_id, bucket in self._scripts.items():
+            to_delete = [
+                sid
+                for sid, record in bucket.items()
+                if record.metadata.user_id == user_id
+            ]
+            for sid in to_delete:
+                del bucket[sid]
+                removed += 1
+            if not bucket:
+                simulations_to_clear.append(simulation_id)
+        for simulation_id in simulations_to_clear:
+            self._scripts.pop(simulation_id, None)
+        return removed
 
     def clear(self) -> None:
         """清空所有已注册脚本，主要用于测试。"""

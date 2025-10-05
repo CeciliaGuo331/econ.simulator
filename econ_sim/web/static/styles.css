@@ -304,3 +304,88 @@ body {
 .api-list li {
   margin: 0.5rem 0;
 }
+
+.admin-form {
+  display: grid;
+  gap: 0.8rem;
+  margin-bottom: 1.2rem;
+}
+
+.admin-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.admin-form input[type="text"] {
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.6rem;
+  border: none;
+  background-color: rgba(15, 23, 42, 0.6);
+  color: var(--text);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: rgba(15, 23, 42, 0.6);
+  border-radius: 0.8rem;
+  overflow: hidden;
+  margin-top: 1rem;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.admin-table th {
+  background-color: rgba(15, 23, 42, 0.8);
+  font-weight: 600;
+}
+
+.inline-form {
+  display: inline-flex;
+  gap: 0.4rem;
+  margin-right: 0.5rem;
+}
+
+.inline-form button,
+.admin-form button {
+  background: var(--accent);
+  border: none;
+  color: #0f172a;
+  font-weight: 600;
+  padding: 0.6rem 1.2rem;
+  border-radius: 0.6rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.inline-form button:hover,
+.admin-form button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 15px 30px rgba(56, 189, 248, 0.3);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.status {
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-top: 1rem;
+  font-weight: 500;
+}
+
+.status.success {
+  background-color: rgba(94, 234, 212, 0.2);
+  color: #5eead4;
+}
