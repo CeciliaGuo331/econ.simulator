@@ -13,6 +13,6 @@ echo "格式化 Python 文件..."
 black .
 
 echo "格式化模板文件..."
-djlint .
+djlint . --reformat
 
 echo "格式化完成！"

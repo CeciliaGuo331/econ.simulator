@@ -1,32 +1,33 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="登录 Econ Simulator，管理宏观经济仿真实验与自定义脚本。">
-    <meta name="keywords" content="Econ Simulator 登录,仿真平台,经济教学,策略实验">
-    <title>登录 - Econ Simulator</title>
-    <link rel="stylesheet" href="{{ url_for('web-static', path='styles.css') }}">
-</head>
-<body class="login-body">
-    <section class="login-panel">
-        <h1>欢迎登录 Econ Simulator</h1>
-        <form method="post" class="login-form">
-            <label>邮箱
-                <input type="email" name="email" placeholder="you@example.com" required>
-            </label>
-            <label>密码
-                <input type="password" name="password" required>
-            </label>
-            {% if error %}
-            <div class="error">{{ error }}</div>
-            {% endif %}
-            {% if message %}
-            <div class="message">{{ message }}</div>
-            {% endif %}
-            <button type="submit">登录</button>
-        </form>
-        <p class="login-hint">还没有账号？<a href="/web/register">立即注册</a></p>
-    </section>
-</body>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="description" content="登录 Econ Simulator，管理宏观经济仿真实验与自定义脚本。">
+        <meta name="keywords" content="Econ Simulator 登录,仿真平台,经济教学,策略实验">
+        <title>登录 - Econ Simulator</title>
+        <link rel="stylesheet"
+              href="{{ url_for('web-static', path='styles.css') }}">
+    </head>
+    <body class="login-body">
+        <section class="login-panel">
+            <h1>欢迎登录 Econ Simulator</h1>
+            <form method="post" class="login-form">
+                <label>
+                    邮箱
+                    <input type="email" name="email" placeholder="you@example.com" required>
+                </label>
+                <label>
+                    密码
+                    <input type="password" name="password" required>
+                </label>
+                {% if error %}<div class="error">{{ error }}</div>{% endif %}
+                {% if message %}<div class="message">{{ message }}</div>{% endif %}
+                <button type="submit">登录</button>
+            </form>
+            <p class="login-hint">
+                还没有账号？<a href="/web/register">立即注册</a>
+            </p>
+        </section>
+    </body>
 </html>

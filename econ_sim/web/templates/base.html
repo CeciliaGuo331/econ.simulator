@@ -1,24 +1,27 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Econ Simulator 是一个用于教学和研究的宏观经济多代理人仿真平台。">
-    <meta name="keywords" content="Econ Simulator,宏观经济,多代理人仿真,经济教学,策略实验">
-    <title>{% block title %}Econ Simulator{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('web-static', path='styles.css') }}">
-</head>
-<body>
-    <header class="top-bar">
-        <div class="brand">Econ Simulator</div>
-        <nav class="nav-links">
-            <a href="/web/dashboard">仪表盘</a>
-            <a href="/web/docs">文档</a>
-            <a href="/web/logout">退出</a>
-        </nav>
-    </header>
-    <main class="content">
-        {% block content %}{% endblock %}
-    </main>
-</body>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="description" content="Econ Simulator 是一个用于教学和研究的宏观经济多代理人仿真平台。">
+        <meta name="keywords" content="Econ Simulator,宏观经济,多代理人仿真,经济教学,策略实验">
+        <title>
+            {% block title %}Econ Simulator{% endblock %}
+        </title>
+        <link rel="stylesheet"
+              href="{{ url_for('web-static', path='styles.css') }}">
+    </head>
+    <body>
+        <header class="top-bar">
+            <div class="brand">Econ Simulator</div>
+            <nav class="nav-links">
+                <a href="/web/dashboard">仪表盘</a>
+                <a href="/web/docs">文档</a>
+                <a href="/web/logout">退出</a>
+            </nav>
+        </header>
+        <main class="content">
+            {% block content %}{% endblock %}
+        </main>
+    </body>
 </html>
