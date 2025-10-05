@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 
 from ..auth import user_manager
 from ..auth.user_manager import (
@@ -25,6 +26,112 @@ _templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
 _orchestrator = SimulationOrchestrator()
+
+ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
+    "individual": {
+        "title": "个人用户（individual）",
+        "goal": "提升家庭消费能力与现金流，适时调整劳动供给与储蓄率。",
+        "data_points": [
+            Markup(
+                "使用 <code>/simulations/{simulation_id}/state/agents?ids=...</code> 查看个人资产与就业状态。"
+            ),
+            "仪表盘“角色视角数据”板块展示家户的现金、消费与工资信息，可用于快速验证策略效果。",
+        ],
+        "api_notes": [
+            Markup(
+                "<code>POST /simulations/{simulation_id}/scripts</code> 上传或更新家户策略脚本。"
+            ),
+            Markup(
+                "<code>POST /simulations/{simulation_id}/run_tick</code> 携带 <code>decisions.households</code> 覆盖推动仿真。"
+            ),
+        ],
+    },
+    "firm": {
+        "title": "企业（firm）",
+        "goal": "平衡库存与销售，动态调整价格、产量及招聘计划。",
+        "data_points": [
+            Markup(
+                "关注 <code>/simulations/{simulation_id}/state/full</code> 中的 <code>firm</code>、<code>macro</code> 数据（库存、价格、GDP）。"
+            ),
+            "仪表盘脚本列表可了解其他参与者的企业策略，评估竞争环境。",
+        ],
+        "api_notes": [
+            Markup(
+                "<code>POST /simulations/{simulation_id}/run_tick</code> 中的 <code>decisions.firm</code> 字段可设置新一轮价格与产量。"
+            ),
+            Markup(
+                "<code>GET /simulations/{simulation_id}/scripts</code> 查看或导出当前脚本。"
+            ),
+        ],
+    },
+    "government": {
+        "title": "政府（government）",
+        "goal": "稳定就业与税收，合理设置税率、岗位数量和转移支付。",
+        "data_points": [
+            "重点监控宏观指标中的失业率 (<code>macro.unemployment_rate</code>) 与财政余额。",
+            "家户列表的就业状态可帮助评估公共岗位政策的效果。",
+        ],
+        "api_notes": [
+            Markup(
+                "<code>POST /simulations/{simulation_id}/run_tick</code> 的 <code>decisions.government</code> 字段用于更新税率与转移预算。"
+            ),
+            Markup(
+                "<code>GET /simulations/{simulation_id}/state/full</code> 用于获取财政相关数据。"
+            ),
+        ],
+    },
+    "commercial_bank": {
+        "title": "商业银行（commercial_bank）",
+        "goal": "管理存贷款利差，控制信贷配额并保持资金安全。",
+        "data_points": [
+            Markup(
+                "查看 <code>bank.balance_sheet</code> 中的存款、贷款余额以及 <code>approved_loans</code> 列表。"
+            ),
+            "关注宏观通胀率与央行政策，以调整利率策略。",
+        ],
+        "api_notes": [
+            Markup(
+                "<code>POST /simulations/{simulation_id}/run_tick</code> 的 <code>decisions.bank</code> 字段可设置存贷款利率与信贷供给。"
+            ),
+            Markup(
+                "<code>GET /simulations/{simulation_id}/state/full</code> 查询银行资产负债表。"
+            ),
+        ],
+    },
+    "central_bank": {
+        "title": "中央银行（central_bank）",
+        "goal": "调节政策利率与准备金率，使通胀与失业率围绕目标值波动。",
+        "data_points": [
+            "重点跟踪 <code>macro.inflation</code> 与 <code>macro.unemployment_rate</code>。",
+            "结合商业银行利率决策判断政策传导效果。",
+        ],
+        "api_notes": [
+            Markup(
+                "<code>POST /simulations/{simulation_id}/run_tick</code> 的 <code>decisions.central_bank</code> 字段用于设定政策利率与准备金率。"
+            ),
+            Markup(
+                "<code>GET /simulations/{simulation_id}</code> 快速查看当前 Tick/Day。"
+            ),
+        ],
+    },
+    "admin": {
+        "title": "管理员（admin）",
+        "goal": "监控仿真运行状况、维护脚本安全并协助排查问题。",
+        "data_points": [
+            Markup(
+                "通过 <code>/simulations/{simulation_id}/state/full</code> 导出完整世界状态，结合仪表盘全量视图巡检。"
+            ),
+            "脚本列表可帮助识别潜在问题策略并与参与者沟通。",
+        ],
+        "api_notes": [
+            Markup(
+                "<code>DELETE /simulations/{simulation_id}/scripts/{script_id}</code> 移除违规脚本。"
+            ),
+            "管理员账号仅用于监控，前端已禁止上传脚本。",
+        ],
+        "notes": ["请在部署后尽快修改默认管理员密码。"],
+    },
+}
 
 
 def _get_session_user(request: Request) -> Optional[Dict[str, Any]]:
@@ -269,9 +376,17 @@ async def register_submission(
 
 @router.get("/docs", response_class=HTMLResponse)
 async def docs_page(request: Request) -> HTMLResponse:
+    session_user = _get_session_user(request)
+    user_type = session_user.get("user_type") if session_user else None
+    guides: list[Dict[str, Any]] = []
+    if user_type and user_type in ROLE_GUIDES:
+        guides = [ROLE_GUIDES[user_type]]
+
     return _templates.TemplateResponse(
         "docs.html",
         {
             "request": request,
+            "role_guides": guides,
+            "active_role": user_type,
         },
     )

@@ -16,6 +16,53 @@
 </section>
 
 <section class="panel">
+    <h3>角色策略指南</h3>
+    {% if role_guides %}
+    <p>下列建议根据当前登录角色（{{ active_role }}) 定制，涵盖脚本目标、重点数据与常用 API。</p>
+    <div class="role-grid">
+        {% for guide in role_guides %}
+        <article>
+            <h4>{{ guide.title }}</h4>
+            <p><strong>脚本目标：</strong>{{ guide.goal }}</p>
+            {% if guide.data_points %}
+            <div>
+                <strong>推荐数据：</strong>
+                <ul>
+                    {% for point in guide.data_points %}
+                    <li>{{ point | safe }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            {% if guide.api_notes %}
+            <div>
+                <strong>常用 API：</strong>
+                <ul>
+                    {% for api in guide.api_notes %}
+                    <li>{{ api | safe }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            {% if guide.notes %}
+            <div>
+                <strong>备注：</strong>
+                <ul>
+                    {% for note in guide.notes %}
+                    <li>{{ note }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="hint">登录后会显示与当前角色匹配的策略指南，帮助你快速定位脚本编写方向。</p>
+    {% endif %}
+</section>
+
+<section class="panel">
     <h3>REST API 摘要</h3>
     <p>完整接口文档请参考仓库中的 <code>docs/api</code> 目录。以下列出几个核心端点：</p>
     <ul class="api-list">
