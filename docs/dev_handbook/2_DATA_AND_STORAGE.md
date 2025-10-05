@@ -93,7 +93,57 @@ sequenceDiagram
 3. 删除仿真只解绑脚本（`simulation_id` 置空），脚本仍可再次挂载。
 4. 管理员或用户可调用删除接口彻底移除脚本（数据库记录与内存索引同步删除）。
 
-## 4. 数据模型（Pydantic）
+## 4. 世界状态结构细节
+
+下表基于 `WorldState` Pydantic 定义，总结了 Redis 中同名 JSON 文档的主要字段，便于在调试时定位各主体的数据来源。
+
+### 4.1 `world_state` 顶层字段
+
+| 字段 | 类型 | 说明 |
+| ---- | ---- | ---- |
+| `simulation_id` | `str` | 仿真实例唯一标识，关联参与者与脚本记录 |
+| `tick` | `int` | 当前 Tick 序号 |
+| `day` | `int` | 当前天数（每日包含多个 Tick） |
+| `households` | `Dict[int, HouseholdState]` | 家户主体集合，key 即家户 ID |
+| `firm` | `FirmState` | 企业主体，默认 `firm_1` |
+| `government` | `GovernmentState` | 政府主体，维护税率、支出等参数 |
+| `bank` | `BankState` | 商业银行主体，含贷款、利率信息 |
+| `central_bank` | `CentralBankState` | 央行政策参数 |
+| `macro` | `MacroState` | GDP、通胀、失业率等聚合指标 |
+
+### 4.2 家户与雇佣关系
+
+| 字段 | 类型 | 说明 |
+| ---- | ---- | ---- |
+| `households[].balance_sheet.cash` | `float` | 现金余额 |
+| `households[].balance_sheet.deposits` | `float` | 银行存款 |
+| `households[].balance_sheet.loans` | `float` | 未偿还贷款 |
+| `households[].employment_status` | `Enum` | 失业 / 企业雇佣 / 政府雇佣 |
+| `households[].employer_id` | `Optional[str]` | 指向 `firm.id` 或 `government.id` |
+| `firm.employees` / `government.employees` | `List[int]` | 反向引用家户 ID，用于工资结算 |
+
+### 4.3 金融主体
+
+| 主体 | 关键字段 | 描述 |
+| ---- | -------- | ---- |
+| `bank` | `deposit_rate`, `loan_rate`, `approved_loans` | 存贷利率、已批准贷款额度（以家户 ID 为键） |
+| `central_bank` | `base_rate`, `reserve_ratio` | 货币政策工具，直接影响银行参数 |
+| `macro` | `gdp`, `inflation`, `unemployment_rate` | 汇总各主体状态的统计量 |
+
+需要深入了解字段含义或模型定义时，可参考 `econ_sim/data_access/models.py`。
+
+## 5. 协作与账号存储
+
+除世界状态外，系统还维护以下集合：
+
+| 数据域 | 存储方式 | 说明 |
+| ------ | -------- | ---- |
+| 参与者列表 | Redis Set `sim:{id}:participants` | `SimulationOrchestrator.register_participant` 维护，供协作 UI 使用 |
+| 用户账号 | `UserManager` 封装，默认内存；可切换 Redis Hash `econ_sim:users` | 包含邮箱、密码哈希、用户类型、创建时间 |
+| 登录会话 | `SessionManager` 内存字典；可扩展 Redis `econ_sim:sessions` 或 `SETEX` | 记录 token → email 映射，用于 Bearer 认证 |
+| Tick 日志 | Redis List `sim:{id}:logs` | 存放 `TickLogEntry` 序列化结果，用于审计与前端展示 |
+
+## 6. 数据模型（Pydantic）
 
 - `econ_sim/data_access/models.py`
   - `WorldState`：仿真快照，包含 `macro`、`firm`、`households` 等子模型。
@@ -101,14 +151,14 @@ sequenceDiagram
   - `TickDecisionOverrides`：脚本或外部输入的决策覆盖。
 - `ScriptRegistry` 与逻辑模块通过这些模型交流，保证类型安全与边界清晰。
 
-## 5. 事务与一致性
+## 7. 事务与一致性
 
 | 组件 | 策略 |
 | ---- | ---- |
 | Redis | 所有写操作走 Pipeline，`reset_simulation` 会重新初始化世界状态 |
 | PostgreSQL | `asyncpg` 连接池自动提交；单行更新保证 ACID；可按需扩展显式事务 |
 
-## 6. 常见排错
+## 8. 常见排错
 
 | 现象 | 可能原因 | 排查建议 |
 | ---- | -------- | -------- |
@@ -116,5 +166,14 @@ sequenceDiagram
 | 挂载脚本提示 404 | `script_id` 不存在或归属不一致 | 调用 `GET /scripts` 核对归属 |
 | 仿真删除后脚本丢失 | 实际处于未挂载状态，需要重新挂载 | 在仪表盘或 API 列表查看 |
 | Redis 数据重启丢失 | 使用内存 Redis | 改用 Docker compose 中的 Redis 服务 |
+
+## 9. Redis + PostgreSQL 演进路线
+
+随着脚本仓库已经迁移至 PostgreSQL，下一阶段可以按如下步骤扩展更多领域的持久化能力：
+
+1. **统一接口层**：在 `DataAccessLayer` 中抽象 Redis/PG `StateStore`，默认采用写穿策略（Redis 命中写入同时落地 PG）。
+2. **数据建模**：为世界状态、参与者、用户会话设计 JSONB + 关系字段的组合表结构，并使用 Alembic 维护迁移。
+3. **同步机制**：实现后台 Flush 任务或 Outbox 队列，负责 Redis → PostgreSQL 的批量落地，保证故障恢复时有权威数据源。
+4. **运维配套**：在 `config/dev.env` 与部署文档中统一声明 `ECON_SIM_POSTGRES_*`、`ECON_SIM_REDIS_URL`，并通过 Prometheus/OpenTelemetry 采集缓存命中率、写入延迟等指标。
 
 完成本章后，可前往 [进度与待办](./3_PROGRESS_AND_TODO.md) 了解最新状态。

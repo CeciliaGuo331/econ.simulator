@@ -41,6 +41,26 @@ graph TD
 
 ## 2. 代码结构速览
 
+### 2.1 项目根目录地图
+
+```
+econ.simulator/
+├── config/                 # 仿真配置与环境变量
+├── docs/                   # 项目文档（经济设计 + 开发手册）
+├── econ_sim/               # Python 核心代码包
+├── scripts/                # 启动、维护与分析脚本
+├── tests/                  # Pytest 覆盖
+├── docker-compose.yml      # 本地编排服务
+├── requirements.txt        # 依赖定义
+└── README.md
+```
+
+- `config/`：集中存放 `dev.env`、`world_settings.yaml` 等运行配置。
+- `scripts/`：包含 `dev_start.sh`、`run_simulation.py` 等自动化脚本。
+- `tests/`：按模块分层组织，覆盖脚本生命周期与仿真流程。
+
+### 2.2 代码子包关系
+
 ```mermaid
 graph LR
     A[econ_sim/] --> B[api/]

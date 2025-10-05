@@ -9,8 +9,10 @@
 | [1_SYSTEM_ARCHITECTURE.md](./1_SYSTEM_ARCHITECTURE.md) | 代码模块划分、执行流程、依赖边界与关键技术栈 |
 | [2_DATA_AND_STORAGE.md](./2_DATA_AND_STORAGE.md) | Redis + PostgreSQL 的混合存储方案、脚本库设计、Mermaid 数据关系图 |
 | [3_PROGRESS_AND_TODO.md](./3_PROGRESS_AND_TODO.md) | 当前功能进展、质量状态、短期与中期 TODO 列表 |
+| [4_API_REFERENCE.md](./4_API_REFERENCE.md) | 外部 REST API 清单、脚本库操作流程、交互时序 |
+| [5_DEPLOYMENT.md](./5_DEPLOYMENT.md) | 本地开发、Docker Compose、生产部署与运维建议 |
 
-你可以按顺序阅读，也可以按需跳转。建议阅读完架构和数据两篇后，再回到 README 和代码获取动手实践的上下文。
+你可以按顺序阅读，也可以按需跳转。建议阅读完架构和数据两篇后，再回到 README 和代码获取动手实践的上下文；API 参考用于查阅接口细节，部署章节则汇总运行环境配置。
 
 ## 快速参考
 
