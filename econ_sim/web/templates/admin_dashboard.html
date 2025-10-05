@@ -465,6 +465,13 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
     });
+
+    const syncForms = document.querySelectorAll("form:not([data-async='true'])");
+    syncForms.forEach((form) => {
+        form.addEventListener("submit", () => {
+            rememberScroll();
+        });
+    });
 });
 </script>
 {% endblock %}

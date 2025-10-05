@@ -299,7 +299,7 @@ def _extract_view_data(world_state: Dict[str, Any], user_type: str) -> Dict[str,
 async def dashboard(
     request: Request,
     user: Dict[str, Any] = Depends(_require_session_user),
-    simulation_id: str = "default-simulation",
+    simulation_id: str = "",
     message: Optional[str] = None,
     error: Optional[str] = None,
 ) -> HTMLResponse:
@@ -308,9 +308,7 @@ async def dashboard(
 
     normalized_id = (simulation_id or "").strip()
     if not normalized_id:
-        if allow_create:
-            normalized_id = "default-simulation"
-        elif all_simulations:
+        if all_simulations:
             normalized_id = all_simulations[0]
         else:
             normalized_id = ""
@@ -338,8 +336,42 @@ async def dashboard(
             status_code=200,
         )
 
+    if allow_create and not simulation_id:
+        user_profiles = await user_manager.list_users()
+        all_scripts = script_registry.list_all_scripts()
+        scripts_by_user: Dict[str, List] = {}
+        for metadata in all_scripts:
+            scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
+        script_counts = {email: len(items) for email, items in scripts_by_user.items()}
+        all_users = [
+            {
+                "email": profile.email,
+                "created_at": profile.created_at,
+                "user_type": profile.user_type,
+                "script_count": script_counts.get(profile.email, 0),
+            }
+            for profile in user_profiles
+        ]
+
+        return _templates.TemplateResponse(
+            "admin_dashboard.html",
+            {
+                "request": request,
+                "user": user,
+                "simulation_id": simulation_id,
+                "scripts": [],
+                "context": {"world": {}},
+                "error": error,
+                "message": message,
+                "all_simulations": all_simulations,
+                "all_users": all_users,
+                "all_scripts": all_scripts,
+                "scripts_by_user": scripts_by_user,
+            },
+        )
+
     try:
-        world_state = await _load_world_state(simulation_id, allow_create=allow_create)
+        world_state = await _load_world_state(simulation_id, allow_create=False)
     except SimulationNotFoundError:
         template_name = "admin_dashboard.html" if allow_create else "dashboard.html"
         context: Dict[str, Any] = {"world": {}} if allow_create else {}
@@ -389,7 +421,6 @@ async def dashboard(
     if allow_create:
         template_name = "admin_dashboard.html"
         context["world"] = world_state
-        all_simulations = await _orchestrator.list_simulations()
         user_profiles = await user_manager.list_users()
         all_scripts = script_registry.list_all_scripts()
         for metadata in all_scripts:

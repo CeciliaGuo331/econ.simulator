@@ -81,4 +81,36 @@
     <p class="empty">请先加入仿真实例后再上传脚本。</p>
     {% endif %}
 </section>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const storageKey = "userDashboardScrollY";
+    window.history.scrollRestoration = "manual";
+
+    const rememberScroll = () => {
+        sessionStorage.setItem(
+            storageKey,
+            String(window.scrollY || window.pageYOffset || 0)
+        );
+    };
+
+    const restoreScroll = () => {
+        const stored = sessionStorage.getItem(storageKey);
+        if (stored !== null) {
+            const value = Number(stored);
+            if (Number.isFinite(value)) {
+                window.scrollTo({ top: value, behavior: "auto" });
+            }
+            sessionStorage.removeItem(storageKey);
+        }
+    };
+
+    restoreScroll();
+
+    document.querySelectorAll("form").forEach((form) => {
+        form.addEventListener("submit", rememberScroll);
+    });
+
+    window.addEventListener("beforeunload", rememberScroll);
+});
+</script>
 {% endblock %}
