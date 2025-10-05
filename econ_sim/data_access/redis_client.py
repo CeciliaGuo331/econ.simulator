@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Protocol, Set, TYPE_CHECKING
 
@@ -41,6 +40,9 @@ from .models import (
     WorldState,
 )
 from ..utils.settings import WorldConfig, get_world_config
+from .postgres_support import get_pool
+from .postgres_participants import PostgresParticipantStore
+from .postgres_utils import quote_identifier
 
 
 logger = logging.getLogger(__name__)
@@ -303,17 +305,6 @@ class CompositeStateStore(StateStore):
             ) from cache_error
 
 
-_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _quote_identifier(identifier: str) -> str:
-    """以安全方式引用 SQL 标识符。"""
-
-    if not _IDENTIFIER_PATTERN.match(identifier):
-        raise ValueError(f"Invalid SQL identifier: {identifier}")
-    return f'"{identifier}"'
-
-
 class PostgresStateStore(StateStore):
     """基于 PostgreSQL 的 JSONB 世界状态持久层。"""
 
@@ -349,22 +340,22 @@ class PostgresStateStore(StateStore):
         async with self._pool_lock:
             if self._pool is not None:
                 return self._pool
-            self._pool = await asyncpg.create_pool(  # type: ignore[attr-defined]
-                dsn=self._dsn,
+            pool = await get_pool(
+                self._dsn,
                 min_size=self._min_pool_size,
                 max_size=self._max_pool_size,
             )
-            await self._ensure_schema()
+            await self._ensure_schema(pool)
+            self._pool = pool
         return self._pool
 
-    async def _ensure_schema(self) -> None:
-        assert self._pool is not None  # nosec - ensured by caller
-        schema_ident = _quote_identifier(self._schema)
-        table_ident = _quote_identifier(self._table)
+    async def _ensure_schema(self, pool: AsyncpgPool) -> None:
+        schema_ident = quote_identifier(self._schema)
+        table_ident = quote_identifier(self._table)
         qualified_table = f"{schema_ident}.{table_ident}"
-        index_ident = _quote_identifier(f"{self._table}_updated_at_idx")
+        index_ident = quote_identifier(f"{self._table}_updated_at_idx")
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             if self._create_schema:
                 await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_ident}")
             await conn.execute(
@@ -425,6 +416,16 @@ class PostgresStateStore(StateStore):
                 data,
             )
 
+    async def list_simulation_ids(self) -> list[str]:
+        pool = await self._get_pool()
+        if self._qualified_table is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("PostgresStateStore schema not initialized")
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT simulation_id FROM {self._qualified_table} ORDER BY simulation_id"
+            )
+        return [row["simulation_id"] for row in rows]
+
     async def delete(self, simulation_id: str) -> None:
         pool = await self._get_pool()
         if self._qualified_table is None:  # pragma: no cover - defensive guard
@@ -435,10 +436,8 @@ class PostgresStateStore(StateStore):
                 simulation_id,
             )
 
-    async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+    async def close(self) -> None:  # pragma: no cover - retained for compatibility
+        self._pool = None
 
 
 @dataclass
@@ -450,8 +449,10 @@ class DataAccessLayer:
     cache_store: Optional[StateStore] = None
     persistent_store: Optional[StateStore] = None
     fallback_store: Optional[StateStore] = None
+    participant_store: Optional[PostgresParticipantStore] = None
     _participants: Dict[str, Set[str]] = field(default_factory=dict)
     _known_simulations: Set[str] = field(default_factory=set)
+    _hydrated_simulations: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def with_default_store(
@@ -467,9 +468,12 @@ class DataAccessLayer:
         postgres_dsn = os.getenv("ECON_SIM_POSTGRES_DSN")
         pg_schema = os.getenv("ECON_SIM_POSTGRES_SCHEMA", "public")
         pg_table = os.getenv("ECON_SIM_POSTGRES_TABLE", "world_state_snapshots")
+        pg_min_pool = int(os.getenv("ECON_SIM_POSTGRES_MIN_POOL", "1"))
+        pg_max_pool = int(os.getenv("ECON_SIM_POSTGRES_MAX_POOL", "5"))
 
         cache_store: Optional[StateStore] = None
         persistent_store: Optional[StateStore] = None
+        participant_store: Optional[PostgresParticipantStore] = None
 
         if redis_url and Redis is not None:
             redis_client = Redis.from_url(
@@ -482,6 +486,14 @@ class DataAccessLayer:
                 postgres_dsn,
                 schema=pg_schema,
                 table=pg_table,
+                min_pool_size=pg_min_pool,
+                max_pool_size=pg_max_pool,
+            )
+            participant_store = PostgresParticipantStore(
+                postgres_dsn,
+                schema=pg_schema,
+                min_pool_size=pg_min_pool,
+                max_pool_size=pg_max_pool,
             )
 
         if cache_store or persistent_store:
@@ -496,9 +508,15 @@ class DataAccessLayer:
                 cache_store=cache_store,
                 persistent_store=persistent_store,
                 fallback_store=fallback,
+                participant_store=participant_store,
             )
 
-        return cls(config=resolved_config, store=fallback, fallback_store=fallback)
+        return cls(
+            config=resolved_config,
+            store=fallback,
+            fallback_store=fallback,
+            participant_store=participant_store,
+        )
 
     async def ensure_simulation(self, simulation_id: str) -> WorldState:
         """确保仿真实例存在，不存在时按配置创建初始世界状态。"""
@@ -528,8 +546,12 @@ class DataAccessLayer:
 
         await self.store.delete(simulation_id)
         participants = self._participants.pop(simulation_id, set())
+        removed_count = len(participants)
+        if self.participant_store is not None:
+            removed = await self.participant_store.remove_simulation(simulation_id)
+            removed_count = max(removed_count, removed)
         self._known_simulations.discard(simulation_id)
-        return len(participants)
+        return removed_count
 
     async def get_world_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的最新世界状态。"""
@@ -558,21 +580,57 @@ class DataAccessLayer:
         """记录仿真步执行结果，当前仅持久化最新世界状态。"""
         await self._persist_state(tick_result.world_state)
 
-    def register_participant(self, simulation_id: str, user_id: str) -> None:
+    async def register_participant(self, simulation_id: str, user_id: str) -> None:
         """登记参与同一仿真实例的用户，用于共享会话管理。"""
 
         participants = self._participants.setdefault(simulation_id, set())
         participants.add(user_id)
+        if self.participant_store is not None:
+            await self.participant_store.register(simulation_id, user_id)
 
-    def list_participants(self, simulation_id: str) -> list[str]:
+    async def list_participants(self, simulation_id: str) -> list[str]:
         """返回已登记的参与者列表。"""
 
-        return sorted(self._participants.get(simulation_id, set()))
+        participants = self._participants.get(simulation_id)
+        if (
+            participants is None or not participants
+        ) and self.participant_store is not None:
+            fetched = await self.participant_store.list_participants(simulation_id)
+            participants = set(fetched)
+            if participants:
+                self._participants[simulation_id] = participants
+        return sorted(participants or [])
 
-    def list_simulations(self) -> list[str]:
-        """返回已知的仿真实例 ID 列表。"""
+    async def list_simulations(self) -> list[str]:
+        """返回已知的仿真实例 ID 列表，必要时从持久层回填。"""
 
+        if not self._known_simulations and not self._hydrated_simulations:
+            await self._hydrate_simulations()
         return sorted(self._known_simulations)
+
+    async def _hydrate_simulations(self) -> None:
+        if self._hydrated_simulations:
+            return
+
+        persistent = self.persistent_store
+        lister = (
+            getattr(persistent, "list_simulation_ids", None) if persistent else None
+        )
+        if not callable(lister):
+            self._hydrated_simulations = True
+            return
+
+        try:
+            ids = await lister()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to hydrate simulation ids from persistent store",
+                exc_info=exc,
+            )
+            return
+
+        self._known_simulations.update(ids)
+        self._hydrated_simulations = True
 
     async def _persist_state(self, world_state: WorldState) -> None:
         """将世界状态写回底层存储。"""

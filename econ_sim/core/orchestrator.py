@@ -57,19 +57,19 @@ class SimulationOrchestrator:
         """登记共享仿真会话的参与者，并返回完整参与者列表。"""
 
         await self.data_access.get_world_state(simulation_id)
-        self.data_access.register_participant(simulation_id, user_id)
-        return self.data_access.list_participants(simulation_id)
+        await self.data_access.register_participant(simulation_id, user_id)
+        return await self.data_access.list_participants(simulation_id)
 
     async def list_participants(self, simulation_id: str) -> list[str]:
         """查询当前仿真实例的所有参与者。"""
 
         await self.data_access.get_world_state(simulation_id)
-        return self.data_access.list_participants(simulation_id)
+        return await self.data_access.list_participants(simulation_id)
 
     async def list_simulations(self) -> list[str]:
         """列出已知仿真实例 ID。"""
 
-        return self.data_access.list_simulations()
+        return await self.data_access.list_simulations()
 
     async def get_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的当前世界状态。"""
@@ -87,7 +87,7 @@ class SimulationOrchestrator:
         """
         world_state = await self.create_simulation(simulation_id)
         strategies = StrategyBundle(self.config, world_state)
-        script_overrides = script_registry.generate_overrides(
+        script_overrides = await script_registry.generate_overrides(
             simulation_id, world_state, self.config
         )
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
@@ -181,7 +181,7 @@ class SimulationOrchestrator:
         """删除仿真实例的世界状态，并解除与参与者、脚本的关联。"""
 
         participants_removed = await self.data_access.delete_simulation(simulation_id)
-        scripts_removed = script_registry.detach_simulation(simulation_id)
+        scripts_removed = await script_registry.detach_simulation(simulation_id)
         return {
             "participants_removed": participants_removed,
             "scripts_detached": scripts_removed,

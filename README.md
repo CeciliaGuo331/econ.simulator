@@ -46,15 +46,49 @@
 
 3. 启动 FastAPI 服务：
 
-		```bash
-		uvicorn econ_sim.main:app --reload
-		```
+	```bash
+	uvicorn econ_sim.main:app --reload
+	```
+
+   或者使用一键脚本（会自动尝试启动本地 PostgreSQL 并加载 `config/dev.env`）：
+
+	```bash
+	bash scripts/dev_start.sh
+	```
+
+   > 首次使用前运行一次 `chmod +x scripts/dev_start.sh` 赋予可执行权限。
 
 4. 运行测试套件：
 
 		```bash
 		pytest
 		```
+
+## 本地开发环境说明
+
+- **Docker Compose 全栈启动**：`docker-compose.yml` 已包含 FastAPI 应用、PostgreSQL、Redis 三个服务。
+
+	```bash
+	docker compose up -d
+	```
+
+	- 应用服务默认暴露在 `http://localhost:8000`。
+	- 数据持久化目录：PostgreSQL → `docker volume postgres-data`，Redis → `docker volume redis-data`。
+	- 应用环境变量定义在 `config/docker.env`，包含服务内部网络地址（`postgres`、`redis`）。
+
+- **单独启动数据库/缓存（可选）**：
+
+	```bash
+	docker compose up -d postgres redis
+	```
+
+- **环境变量**：
+	- `ECON_SIM_POSTGRES_DSN`：PostgreSQL 连接串。
+	- `ECON_SIM_REDIS_URL`：Redis 连接串。
+	- `ECON_SIM_SESSION_SECRET`：Session 中间件密钥（`econ_sim/main.py` 会读取此变量）。
+	- 将本地开发所需的变量写入 `config/dev.env`，启动脚本会自动加载。
+
+- **一键启动脚本（热重载）**：`scripts/dev_start.sh` 会在检测到 Docker 时拉起 Postgres + Redis，再读取 `config/dev.env` 后以 `uvicorn --reload` 方式启动应用；通过 `START_POSTGRES=0 bash scripts/dev_start.sh` 可跳过 Docker 服务启动，或使用 `DOCKER_SERVICES="postgres redis"` 指定具体服务。
 
 ## API 速览
 

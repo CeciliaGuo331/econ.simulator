@@ -136,6 +136,7 @@
         <thead>
             <tr>
                 <th>脚本 ID</th>
+                <th>版本号</th>
                 <th>仿真实例</th>
                 <th>用户</th>
                 <th>描述</th>
@@ -147,6 +148,7 @@
             {% for script in all_scripts %}
             <tr>
                 <td>{{ script.script_id }}</td>
+                <td>{{ script.code_version }}</td>
                 <td>
                     {% if script.simulation_id == simulation_id %}
                     <strong>{{ script.simulation_id }}</strong>

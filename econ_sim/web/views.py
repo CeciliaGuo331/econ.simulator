@@ -338,7 +338,7 @@ async def dashboard(
 
     if allow_create and not simulation_id:
         user_profiles = await user_manager.list_users()
-        all_scripts = script_registry.list_all_scripts()
+        all_scripts = await script_registry.list_all_scripts()
         scripts_by_user: Dict[str, List] = {}
         for metadata in all_scripts:
             scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
@@ -378,6 +378,7 @@ async def dashboard(
         friendly_error = error
         friendly_message = message
         resolved_simulation_id = simulation_id
+        scripts_for_view: List = []
         if not allow_create:
             friendly_error = None
             friendly_message = friendly_message or (
@@ -390,6 +391,10 @@ async def dashboard(
             friendly_error = (
                 friendly_error or "仿真实例不存在，请联系管理员创建后再访问。"
             )
+        if resolved_simulation_id:
+            scripts_for_view = await script_registry.list_scripts(
+                resolved_simulation_id
+            )
         simulation_id = resolved_simulation_id
         return _templates.TemplateResponse(
             template_name,
@@ -397,9 +402,7 @@ async def dashboard(
                 "request": request,
                 "user": user,
                 "simulation_id": simulation_id,
-                "scripts": (
-                    script_registry.list_scripts(simulation_id) if simulation_id else []
-                ),
+                "scripts": scripts_for_view,
                 "context": context,
                 "error": friendly_error,
                 "message": friendly_message,
@@ -411,7 +414,9 @@ async def dashboard(
             status_code=404,
         )
 
-    scripts = script_registry.list_scripts(simulation_id) if simulation_id else []
+    scripts: List = []
+    if simulation_id:
+        scripts = await script_registry.list_scripts(simulation_id)
     context = _extract_view_data(world_state, user["user_type"])
     template_name = "dashboard.html"
     all_users: List[Dict[str, Any]] = []
@@ -422,7 +427,7 @@ async def dashboard(
         template_name = "admin_dashboard.html"
         context["world"] = world_state
         user_profiles = await user_manager.list_users()
-        all_scripts = script_registry.list_all_scripts()
+        all_scripts = await script_registry.list_all_scripts()
         for metadata in all_scripts:
             scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
         script_counts = {email: len(items) for email, items in scripts_by_user.items()}
@@ -705,7 +710,7 @@ async def admin_delete_script(
             error="请提供脚本所属的仿真实例。",
         )
     try:
-        script_registry.remove_script(target, script_id)
+        await script_registry.remove_script(target, script_id)
     except ScriptExecutionError as exc:
         return _redirect_to_dashboard(redirect_target, error=str(exc))
 
@@ -731,7 +736,7 @@ async def admin_delete_user(
     except ValueError as exc:
         return _redirect_to_dashboard(redirect_target, error=str(exc))
 
-    removed = script_registry.remove_scripts_by_user(normalized)
+    removed = await script_registry.remove_scripts_by_user(normalized)
     note = f"用户 {normalized} 已删除。"
     if removed:
         note += f" 同时移除 {removed} 个脚本。"
@@ -747,13 +752,16 @@ async def upload_script(
     script_file: UploadFile = File(...),
 ) -> HTMLResponse:
     if user["user_type"] == "admin":
+        scripts_for_view: List = []
+        if simulation_id:
+            scripts_for_view = await script_registry.list_scripts(simulation_id)
         return _templates.TemplateResponse(
             "dashboard.html",
             {
                 "request": request,
                 "user": user,
                 "simulation_id": simulation_id,
-                "scripts": script_registry.list_scripts(simulation_id),
+                "scripts": scripts_for_view,
                 "context": {},
                 "error": "管理员账号不能上传脚本。",
             },
@@ -765,9 +773,9 @@ async def upload_script(
         *,
         status_code: int = 400,
     ) -> HTMLResponse:
-        scripts_list = (
-            script_registry.list_scripts(simulation_id) if simulation_id else []
-        )
+        scripts_list: List = []
+        if simulation_id:
+            scripts_list = await script_registry.list_scripts(simulation_id)
         context_payload: Dict[str, Any] = {}
         if simulation_id:
             try:
@@ -829,7 +837,7 @@ async def upload_script(
 
     try:
         await _orchestrator.register_participant(simulation_id, user["email"])
-        script_registry.register_script(
+        await script_registry.register_script(
             simulation_id=simulation_id,
             user_id=user["email"],
             script_code=code,

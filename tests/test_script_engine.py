@@ -14,19 +14,20 @@ def generate_decisions(context):
     inflation = macro["inflation"]
     return {"bank": {"deposit_rate": max(0.0, inflation + 0.01)}}
 """
-    metadata = registry.register_script(
+    metadata = await registry.register_script(
         simulation_id="sim-a",
         user_id="u1",
         script_code=script_code,
         description="bank tweak",
     )
     assert metadata.script_id
+    assert metadata.code_version
 
     config = get_world_config()
     orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("sim-a")
 
-    overrides = registry.generate_overrides("sim-a", world_state, config)
+    overrides = await registry.generate_overrides("sim-a", world_state, config)
     assert overrides is not None
     assert overrides.bank is not None
     assert overrides.bank.deposit_rate >= 0.01
@@ -34,9 +35,9 @@ def generate_decisions(context):
 
 @pytest.mark.asyncio
 async def test_script_overrides_affect_tick_execution() -> None:
-    script_registry.clear()
+    await script_registry.clear()
 
-    script_registry.register_script(
+    await script_registry.register_script(
         simulation_id="shared-sim",
         user_id="u2",
         script_code="""
@@ -51,4 +52,4 @@ def generate_decisions(context):
 
     assert result.world_state.firm.price == pytest.approx(15.0)
 
-    script_registry.clear()
+    await script_registry.clear()

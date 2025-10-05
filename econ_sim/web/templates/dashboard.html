@@ -47,6 +47,10 @@
                     <span class="script-owner">{{ script.user_id }}</span>
                     <span class="script-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
                 </div>
+                <div class="script-meta">
+                    <span class="script-id">ID: {{ script.script_id }}</span>
+                    <span class="script-version">版本: {{ script.code_version }}</span>
+                </div>
                 {% if script.description %}
                 <p class="script-desc">{{ script.description }}</p>
                 {% else %}

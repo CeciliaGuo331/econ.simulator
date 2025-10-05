@@ -148,8 +148,18 @@ class RedisUserStore:
             await self._redis.hdel(self._key, email)
 
 
-class SessionManager:
-    """管理登录会话令牌的工具。"""
+class SessionStore(Protocol):
+    async def create_session(self, email: str) -> str: ...
+
+    async def get_email(self, token: str) -> Optional[str]: ...
+
+    async def clear(self) -> None: ...
+
+    async def revoke_user(self, email: str) -> None: ...
+
+
+class InMemorySessionStore:
+    """管理登录会话令牌的内存实现。"""
 
     def __init__(self) -> None:
         self._tokens: Dict[str, str] = {}
@@ -196,9 +206,11 @@ class UserProfile(BaseModel):
 class UserManager:
     """对外暴露用户注册、认证以及会话管理能力。"""
 
-    def __init__(self, store: UserStore) -> None:
+    def __init__(
+        self, store: UserStore, session_store: Optional[SessionStore] = None
+    ) -> None:
         self._store = store
-        self._sessions = SessionManager()
+        self._sessions = session_store or InMemorySessionStore()
         self._admin_seeded = False
 
     @staticmethod
@@ -322,5 +334,7 @@ __all__ = [
     "AuthenticationError",
     "InMemoryUserStore",
     "RedisUserStore",
+    "InMemorySessionStore",
+    "SessionStore",
     "PUBLIC_USER_TYPES",
 ]

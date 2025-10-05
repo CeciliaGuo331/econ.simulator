@@ -125,6 +125,7 @@ class ScriptUploadResponse(BaseModel):
     """脚本上传成功后的反馈信息。"""
 
     script_id: str
+    code_version: str
     message: str
 
 
@@ -355,7 +356,7 @@ async def upload_script(
 
     try:
         await _orchestrator.register_participant(simulation_id, user.email)
-        metadata = script_registry.register_script(
+        metadata = await script_registry.register_script(
             simulation_id=simulation_id,
             user_id=user.email,
             script_code=payload.code,
@@ -368,6 +369,7 @@ async def upload_script(
 
     return ScriptUploadResponse(
         script_id=metadata.script_id,
+        code_version=metadata.code_version,
         message="Script registered successfully.",
     )
 
@@ -376,7 +378,7 @@ async def upload_script(
 async def list_scripts(simulation_id: str) -> ScriptListResponse:
     """返回当前仿真实例下的脚本列表。"""
 
-    scripts = script_registry.list_scripts(simulation_id)
+    scripts = await script_registry.list_scripts(simulation_id)
     return ScriptListResponse(scripts=scripts)
 
 
@@ -391,7 +393,7 @@ async def delete_script(
     """从指定仿真实例中移除脚本。"""
 
     try:
-        script_registry.remove_script(simulation_id, script_id)
+        await script_registry.remove_script(simulation_id, script_id)
     except ScriptExecutionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

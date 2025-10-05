@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: econ-sim-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: econ
+      POSTGRES_PASSWORD: econ
+      POSTGRES_DB: econ_simulator
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U econ -d econ_simulator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: econ-sim-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  app:
+    build: .
+    container_name: econ-sim-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file:
+      - ./config/docker.env
+    ports:
+      - "8000:8000"
+    # mount source for easier local iteration (optional)
+    volumes:
+      - ./:/app
+
+volumes:
+  postgres-data:
+  redis-data:

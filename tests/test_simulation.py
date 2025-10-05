@@ -77,9 +77,9 @@ async def test_reset_simulation_restores_initial_state() -> None:
     await orchestrator.create_simulation(simulation_id)
     await orchestrator.register_participant(simulation_id, "player@example.com")
 
-    script_registry.clear()
+    await script_registry.clear()
     try:
-        script_registry.register_script(
+        await script_registry.register_script(
             simulation_id=simulation_id,
             user_id="player@example.com",
             script_code="""
@@ -100,11 +100,12 @@ def generate_decisions(context):
         participants = await orchestrator.list_participants(simulation_id)
         assert participants == ["player@example.com"]
 
-        scripts = script_registry.list_scripts(simulation_id)
+        scripts = await script_registry.list_scripts(simulation_id)
         assert len(scripts) == 1
         assert scripts[0].description == "noop"
+        assert scripts[0].code_version
     finally:
-        script_registry.clear()
+        await script_registry.clear()
 
 
 @pytest.mark.asyncio
@@ -115,9 +116,9 @@ async def test_delete_simulation_detaches_associations() -> None:
     await orchestrator.create_simulation(simulation_id)
     await orchestrator.register_participant(simulation_id, "player@example.com")
 
-    script_registry.clear()
+    await script_registry.clear()
     try:
-        metadata = script_registry.register_script(
+        metadata = await script_registry.register_script(
             simulation_id=simulation_id,
             user_id="player@example.com",
             script_code="""
@@ -125,6 +126,7 @@ def generate_decisions(context):
     return {}
 """,
         )
+        assert metadata.code_version
 
         result = await orchestrator.delete_simulation(simulation_id)
 
@@ -134,20 +136,19 @@ def generate_decisions(context):
         with pytest.raises(SimulationNotFoundError):
             await orchestrator.get_state(simulation_id)
 
-        assert script_registry.list_scripts(simulation_id) == []
+        assert await script_registry.list_scripts(simulation_id) == []
 
         # ensure metadata reference is no longer tracked
-        assert metadata.script_id not in {
-            m.script_id for m in script_registry.list_all_scripts()
-        }
+        all_metadata = await script_registry.list_all_scripts()
+        assert metadata.script_id not in {m.script_id for m in all_metadata}
     finally:
-        script_registry.clear()
+        await script_registry.clear()
 
 
 @pytest.mark.asyncio
 async def test_admin_restrictions_for_simulation_control() -> None:
     await user_manager.reset()
-    script_registry.clear()
+    await script_registry.clear()
 
     transport = ASGITransport(app=app, raise_app_exceptions=True)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -212,7 +213,7 @@ async def test_admin_restrictions_for_simulation_control() -> None:
 @pytest.mark.asyncio
 async def test_script_upload_requires_existing_simulation() -> None:
     await user_manager.reset()
-    script_registry.clear()
+    await script_registry.clear()
 
     transport = ASGITransport(app=app, raise_app_exceptions=True)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -268,12 +269,13 @@ def generate_decisions(context):
         assert upload.status_code == 200
         payload = upload.json()
         assert payload["message"] == "Script registered successfully."
+        assert "code_version" in payload and payload["code_version"]
 
 
 @pytest.mark.asyncio
 async def test_run_days_endpoint_advances_day() -> None:
     await user_manager.reset()
-    script_registry.clear()
+    await script_registry.clear()
 
     transport = ASGITransport(app=app, raise_app_exceptions=True)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
