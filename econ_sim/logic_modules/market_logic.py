@@ -1,4 +1,4 @@
-"""Core market clearing logic for a simulation tick."""
+"""封装仿真单步内市场出清与宏观指标更新的核心逻辑。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ from ..utils.settings import WorldConfig
 
 @dataclass
 class WorkingState:
+    """运行期世界状态快照，用于在不修改原状态的前提下执行逻辑。"""
+
     households: Dict[int, HouseholdState]
     firm: FirmState
     government: GovernmentState
@@ -36,6 +38,8 @@ class WorkingState:
 
 @dataclass
 class TickEconomyMetrics:
+    """记录单个仿真步内的经济指标，便于后续汇总与写回。"""
+
     goods_sold: float = 0.0
     consumption_value: float = 0.0
     wage_payments_firm: float = 0.0
@@ -52,6 +56,7 @@ def execute_tick_logic(
     decisions: TickDecisions,
     config: WorldConfig,
 ) -> Tuple[List[StateUpdateCommand], List[TickLogEntry]]:
+    """执行完整的市场流程，返回状态更新指令与日志列表。"""
     working = _clone_world_state(world_state)
     metrics = TickEconomyMetrics()
     logs: List[TickLogEntry] = []
@@ -88,6 +93,7 @@ def execute_tick_logic(
 
 
 def _clone_world_state(world_state: WorldState) -> WorkingState:
+    """深拷贝当前世界状态，避免直接修改持久化对象。"""
     return WorkingState(
         households={
             hid: household.model_copy(deep=True)
@@ -102,6 +108,7 @@ def _clone_world_state(world_state: WorldState) -> WorkingState:
 
 
 def _apply_central_bank_policy(working: WorkingState, decisions: TickDecisions) -> None:
+    """根据央行决策更新工作状态中的利率与准备金率。"""
     working.central_bank.base_rate = decisions.central_bank.policy_rate
     working.central_bank.reserve_ratio = decisions.central_bank.reserve_ratio
 
@@ -113,6 +120,7 @@ def _resolve_labor_market(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> TickLogEntry:
+    """撮合劳动力市场的供需并计算失业率，记录相关日志。"""
     firm = working.firm
     government = working.government
 
@@ -175,6 +183,7 @@ def _run_production_phase(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> TickLogEntry:
+    """根据企业决策推进生产阶段，同时更新价格与工资水平。"""
     firm = working.firm
     capacity = max(1, len(firm.employees)) * max(firm.productivity, 0.1)
     produced_goods = float(np.clip(decisions.firm.planned_production, 0.0, capacity))
@@ -204,6 +213,7 @@ def _process_income_support(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> List[TickLogEntry]:
+    """处理工资发放与失业补助，反映至家庭与财政账户。"""
     firm = working.firm
     government = working.government
     logs: List[TickLogEntry] = []
@@ -264,6 +274,7 @@ def _clear_goods_market(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> TickLogEntry:
+    """按照家庭消费决策与企业库存清算商品市场。"""
     firm = working.firm
     price = max(0.01, firm.price)
 
@@ -319,6 +330,7 @@ def _process_savings(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> TickLogEntry:
+    """将家庭现金按储蓄率转存为存款，并更新金融市场利率。"""
     bank = working.bank
     total_new_deposits = 0.0
 
@@ -351,6 +363,7 @@ def _collect_taxes(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> TickLogEntry:
+    """依据家庭工资收入征收税收，并累计到政府账户。"""
     tax_rate = decisions.government.tax_rate
     government = working.government
     total_tax = 0.0
@@ -381,6 +394,7 @@ def _update_macro_metrics(
     metrics: TickEconomyMetrics,
     world_state: WorldState,
 ) -> StateUpdateCommand:
+    """组合并平滑宏观指标，生成对应的状态更新命令。"""
     previous_price = working.macro.price_index or metrics.price_level or 100.0
     price_level = metrics.price_level or previous_price
     price_index = 0.9 * previous_price + 0.1 * price_level
@@ -422,6 +436,7 @@ def _build_state_updates(
     working: WorkingState,
     macro_update: StateUpdateCommand,
 ) -> List[StateUpdateCommand]:
+    """比较运行期与原始状态，生成需要写回的数据更新列表。"""
     updates: List[StateUpdateCommand] = [macro_update]
 
     for hid, household in working.households.items():

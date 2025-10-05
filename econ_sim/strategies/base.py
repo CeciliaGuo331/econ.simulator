@@ -1,4 +1,4 @@
-"""Baseline heuristics for each agent type used for smoke testing."""
+"""为不同主体提供基准启发式策略，便于基础仿真与冒烟测试。"""
 
 from __future__ import annotations
 
@@ -24,14 +24,16 @@ from ..utils.settings import WorldConfig
 
 
 class BaseHouseholdStrategy:
-    """Simple consumption-savings rule for households."""
+    """家庭主体的基准消费-储蓄策略。"""
 
     def __init__(self, config: WorldConfig) -> None:
+        """保存全局配置，以便在决策时引用市场参数。"""
         self.config = config
 
     def decide(
         self, household: HouseholdState, market: PublicMarketData
     ) -> HouseholdDecision:
+        """根据家庭特征与市场价格确定消费预算、储蓄率与劳供。"""
         available_income = household.balance_sheet.cash + household.wage_income
         subsistence_cost = (
             self.config.markets.goods.subsistence_consumption * market.goods_price
@@ -59,12 +61,14 @@ class BaseHouseholdStrategy:
 
 
 class BaseFirmStrategy:
-    """Firm adjusts production and wage offers based on recent sales."""
+    """企业主体的基准生产与招聘策略。"""
 
     def __init__(self, config: WorldConfig) -> None:
+        """记录配置项，支持根据市场参数调节生产计划。"""
         self.config = config
 
     def decide(self, firm: FirmState, world: WorldState) -> FirmDecision:
+        """依据库存、销量与生产率计算价格、产量与招聘需求。"""
         target_inventory = (
             self.config.simulation.num_households
             * self.config.markets.goods.subsistence_consumption
@@ -103,14 +107,16 @@ class BaseFirmStrategy:
 
 
 class BaseGovernmentStrategy:
-    """Government keeps tax rate near policy setting and smooths employment."""
+    """政府主体的基准财政政策与就业平滑策略。"""
 
     def __init__(self, config: WorldConfig) -> None:
+        """缓存配置，用于读取政策目标值。"""
         self.config = config
 
     def decide(
         self, government: GovernmentState, macro_unemployment: float
     ) -> GovernmentDecision:
+        """结合宏观失业率调整税率、公共就业岗位与补贴预算。"""
         target_tax = self.config.policies.tax_rate
         tax_rate = float(
             np.clip(0.5 * government.tax_rate + 0.5 * target_tax, 0.05, 0.6)
@@ -139,12 +145,14 @@ class BaseGovernmentStrategy:
 
 
 class BaseBankStrategy:
-    """Bank adjusts rates with profitability and central bank policy."""
+    """银行主体的基准利率与信贷供给策略。"""
 
     def __init__(self, config: WorldConfig) -> None:
+        """存储配置以便计算合规准备金与基准利率。"""
         self.config = config
 
     def decide(self, bank: BankState, central_bank: CentralBankState) -> BankDecision:
+        """根据央行政策与银行资产负债表调整存贷利率与放贷额度。"""
         policy_rate = central_bank.base_rate
         spread = 0.03
         loan_rate = float(np.clip(policy_rate + spread, 0.02, 0.25))
@@ -163,14 +171,16 @@ class BaseBankStrategy:
 
 
 class BaseCentralBankStrategy:
-    """Taylor-rule style adjustment of the policy rate."""
+    """央行主体的基准货币政策规则。"""
 
     def __init__(self, config: WorldConfig) -> None:
+        """保存配置以读取目标通胀与失业率。"""
         self.config = config
 
     def decide(
         self, central_bank: CentralBankState, macro: PublicMarketData
     ) -> CentralBankDecision:
+        """使用类泰勒规则计算政策利率与法定准备金率。"""
         inflation_gap = macro.inflation - central_bank.inflation_target
         unemployment_gap = macro.unemployment_rate - central_bank.unemployment_target
 
@@ -187,9 +197,10 @@ class BaseCentralBankStrategy:
 
 
 class StrategyBundle:
-    """Convenience container for baseline strategies."""
+    """聚合所有主体的基准策略，便于在调度器中统一访问。"""
 
     def __init__(self, config: WorldConfig, world_state: WorldState) -> None:
+        """为每个主体实例化对应策略对象并缓存。"""
         self.households: Dict[int, BaseHouseholdStrategy] = {
             hid: BaseHouseholdStrategy(config) for hid in world_state.households
         }
@@ -199,4 +210,5 @@ class StrategyBundle:
         self.central_bank = BaseCentralBankStrategy(config)
 
     def household_strategy(self, household_id: int) -> BaseHouseholdStrategy:
+        """返回指定家庭的策略对象，供决策模块调用。"""
         return self.households[household_id]

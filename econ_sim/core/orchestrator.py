@@ -1,4 +1,4 @@
-"""Main simulation orchestrator coordinating tick execution."""
+"""负责驱动经济仿真 Tick 执行流程的核心调度模块。"""
 
 from __future__ import annotations
 
@@ -19,19 +19,28 @@ from ..utils.settings import get_world_config
 
 
 class SimulationOrchestrator:
-    """High-level orchestrator controlling simulation ticks."""
+    """仿真调度器，负责组织数据访问、决策生成与市场结算。"""
 
     def __init__(self, data_access: Optional[DataAccessLayer] = None) -> None:
+        """初始化调度器。
+
+        若未显式传入数据访问层，将使用默认的内存存储配置；同时缓存世界配置，
+        方便后续 Tick 中的策略与逻辑模块复用。
+        """
         config = get_world_config()
         self.data_access = data_access or DataAccessLayer.with_default_store(config)
         self.config = self.data_access.config
 
     async def create_simulation(self, simulation_id: str) -> WorldState:
-        """Ensure a simulation exists, creating it if necessary."""
+        """确保指定 ID 的仿真实例存在。
+
+        当实例尚未初始化时，会自动创建并返回首个世界状态快照。
+        """
 
         return await self.data_access.ensure_simulation(simulation_id)
 
     async def get_state(self, simulation_id: str) -> WorldState:
+        """读取指定仿真实例的当前世界状态。"""
         return await self.data_access.get_world_state(simulation_id)
 
     async def run_tick(
@@ -39,6 +48,11 @@ class SimulationOrchestrator:
         simulation_id: str,
         overrides: Optional[TickDecisionOverrides] = None,
     ) -> TickResult:
+        """执行一次完整的 Tick。
+
+        主要步骤包括：确保仿真存在、生成默认策略决策、应用玩家覆盖、调用市场逻辑
+        计算状态更新，并最终写回数据存储，同时返回此次 Tick 的日志和更新详情。
+        """
         world_state = await self.create_simulation(simulation_id)
         strategies = StrategyBundle(self.config, world_state)
         decisions = collect_tick_decisions(world_state, strategies, overrides)
@@ -67,7 +81,10 @@ class SimulationOrchestrator:
         return tick_result
 
     async def reset_simulation(self, simulation_id: str) -> WorldState:
-        """Reset a simulation to the initial state."""
+        """将仿真实例恢复到初始状态。
+
+        当前实现与 `create_simulation` 共用逻辑，即重新初始化并返回初始快照。
+        """
 
         return await self.create_simulation(simulation_id)
 

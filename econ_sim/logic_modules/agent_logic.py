@@ -1,4 +1,4 @@
-"""Agent decision orchestration built on top of base strategies."""
+"""基于内置策略汇总各类代理人决策的工具模块。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,11 @@ from ..strategies.base import StrategyBundle
 
 
 def _apply_override(default_decision, override) -> object:
+    """根据玩家覆盖内容更新默认决策。
+
+    该函数会读取可选的覆盖对象，仅对实际给定的字段做替换，确保策略默认行为
+    可按需被微调，而未提供的字段保持原始值。
+    """
     if override is None:
         return default_decision
     updates = {
@@ -35,16 +40,16 @@ def collect_tick_decisions(
     strategies: StrategyBundle,
     overrides: Optional[TickDecisionOverrides] = None,
 ) -> TickDecisions:
-    """Generate tick-level decisions for all agents.
+    """为一个 Tick 汇总所有代理人的行动决策。
 
-    Parameters
-    ----------
+    参数说明
+    -------
     world_state:
-        Current world snapshot.
+        当前世界状态快照，包含全部代理人的数据。
     strategies:
-        Strategy bundle providing default heuristics.
+        预先构建的策略集合，用于生成各代理类型的默认决策。
     overrides:
-        Optional player supplied decisions overriding the defaults.
+        来自玩家或外部系统的可选覆盖，允许对默认决策做细粒度修改。
     """
 
     public_data = world_state.get_public_market_data()

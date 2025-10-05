@@ -1,4 +1,4 @@
-"""Asynchronous data access layer backed by Redis (with in-memory fallback)."""
+"""基于 Redis（并提供内存后备）的异步数据访问层实现。"""
 
 from __future__ import annotations
 
@@ -31,36 +31,44 @@ from ..utils.settings import WorldConfig, get_world_config
 
 
 class SimulationNotFoundError(RuntimeError):
-    """Raised when attempting to access a non-existent simulation."""
+    """当访问不存在的仿真实例时抛出的异常。"""
 
 
 class StateStore(Protocol):
-    async def load(self, simulation_id: str) -> Optional[Dict]: ...
+    """通用状态存储接口，抽象出加载与保存操作。"""
 
-    async def store(self, simulation_id: str, payload: Dict) -> None: ...
+    async def load(self, simulation_id: str) -> Optional[Dict]:
+        """根据仿真 ID 异步读取状态快照，若不存在则返回 ``None``。"""
+
+    async def store(self, simulation_id: str, payload: Dict) -> None:
+        """将状态快照持久化到存储介质。"""
 
 
 class InMemoryStateStore:
-    """Simple dictionary-backed store, useful for tests."""
+    """使用内存字典保存数据，主要用于测试或本地运行。"""
 
     def __init__(self) -> None:
+        """初始化线程安全的内存存储结构。"""
         self._storage: Dict[str, Dict] = {}
         self._lock = asyncio.Lock()
 
     async def load(self, simulation_id: str) -> Optional[Dict]:
+        """从内存字典中读取仿真状态并返回深拷贝。"""
         async with self._lock:
             snapshot = self._storage.get(simulation_id)
             return json.loads(json.dumps(snapshot)) if snapshot is not None else None
 
     async def store(self, simulation_id: str, payload: Dict) -> None:
+        """将仿真状态深拷贝后写入内存字典。"""
         async with self._lock:
             self._storage[simulation_id] = json.loads(json.dumps(payload))
 
 
 class RedisStateStore:
-    """Redis based JSON store."""
+    """基于 Redis 的 JSON 存储，实现跨进程持久化。"""
 
     def __init__(self, redis: Redis, prefix: str = "econ_sim") -> None:  # type: ignore[valid-type]
+        """注入 Redis 客户端及键前缀，构造存储实例。"""
         if redis is None:  # pragma: no cover - defensive guard when redis import failed
             raise RuntimeError(
                 "Redis client is not available; ensure redis-py is installed."
@@ -69,21 +77,24 @@ class RedisStateStore:
         self._prefix = prefix
 
     def _key(self, simulation_id: str) -> str:
+        """按照统一前缀拼接 Redis 键名称。"""
         return f"{self._prefix}:sim:{simulation_id}:world_state"
 
     async def load(self, simulation_id: str) -> Optional[Dict]:
+        """从 Redis 获取指定仿真状态的 JSON 快照。"""
         data = await self._redis.get(self._key(simulation_id))
         if data is None:
             return None
         return json.loads(data)
 
     async def store(self, simulation_id: str, payload: Dict) -> None:
+        """将仿真状态序列化为 JSON 并写入 Redis。"""
         await self._redis.set(self._key(simulation_id), json.dumps(payload))
 
 
 @dataclass
 class DataAccessLayer:
-    """High-level data access facade used by the orchestrator."""
+    """为调度器提供统一入口的数据访问外观类。"""
 
     config: WorldConfig
     store: StateStore
@@ -92,9 +103,11 @@ class DataAccessLayer:
     def with_default_store(
         cls, config: Optional[WorldConfig] = None
     ) -> "DataAccessLayer":
+        """使用默认配置与内存存储构建数据访问层实例。"""
         return cls(config=config or get_world_config(), store=InMemoryStateStore())
 
     async def ensure_simulation(self, simulation_id: str) -> WorldState:
+        """确保仿真实例存在，不存在时按配置创建初始世界状态。"""
         existing = await self.store.load(simulation_id)
         if existing is not None:
             return WorldState.model_validate(existing)
@@ -104,6 +117,7 @@ class DataAccessLayer:
         return world_state
 
     async def get_world_state(self, simulation_id: str) -> WorldState:
+        """读取指定仿真实例的最新世界状态。"""
         payload = await self.store.load(simulation_id)
         if payload is None:
             raise SimulationNotFoundError(f"Simulation '{simulation_id}' not found")
@@ -112,6 +126,7 @@ class DataAccessLayer:
     async def apply_updates(
         self, simulation_id: str, updates: list[StateUpdateCommand]
     ) -> WorldState:
+        """根据状态更新指令列表逐条修改世界状态并持久化。"""
         state = await self.get_world_state(simulation_id)
         mutable = state.model_dump()
 
@@ -123,13 +138,15 @@ class DataAccessLayer:
         return updated_state
 
     async def record_tick(self, tick_result: TickResult) -> None:
-        # Placeholder for parquet logging; for now we simply persist the state.
+        """记录仿真步执行结果，当前仅持久化最新世界状态。"""
         await self._persist_state(tick_result.world_state)
 
     async def _persist_state(self, world_state: WorldState) -> None:
+        """将世界状态写回底层存储。"""
         await self.store.store(world_state.simulation_id, world_state.model_dump())
 
     def _build_initial_world_state(self, simulation_id: str) -> WorldState:
+        """依据配置构造新的初始世界状态。"""
         sim_cfg = self.config.simulation
         markets = self.config.markets
         policies = self.config.policies
@@ -223,6 +240,7 @@ class DataAccessLayer:
     def _apply_single_update(
         self, mutable_state: Dict, update: StateUpdateCommand
     ) -> None:
+        """在世界状态字典上应用单条更新指令，可处理多种主体作用域。"""
         scope = update.scope
         target_container: Optional[Dict] = None
 
@@ -294,6 +312,7 @@ class DataAccessLayer:
     def _apply_path_value(
         self, container: Dict, path: str, value: float, mode: str
     ) -> None:
+        """根据路径表达式更新嵌套字典中的目标字段。"""
         keys = path.split(".")
         cursor = container
         for key in keys[:-1]:
