@@ -18,21 +18,21 @@ graph TD
         A[玩家策略]
     end
 
-    subgraph "仿真引擎 (单一FastAPI应用)"
+    subgraph "仿真引擎（单一FastAPI应用）"
         B[API层]
-        C[核心编排器 (Orchestrator)]
+        C[核心编排器（Orchestrator）]
         
-        subgraph "逻辑模块 (Logic Modules)"
+        subgraph "逻辑模块（Logic Modules）"
             E[市场逻辑模块]
             F[代理人逻辑模块]
         end
 
-        D[数据访问层 (Data Access Layer)]
+        D[数据访问层（Data Access Layer）]
     end
     
     subgraph "基础设施"
-        H[数据存储 (Redis)]
-        I[数据仓库 (Parquet Files)]
+        H[数据存储（Redis）]
+        I[数据仓库（Parquet Files）]
     end
 
     A -- 1. HTTP API --> B
