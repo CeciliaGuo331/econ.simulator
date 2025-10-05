@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from .api.auth_endpoints import router as auth_router
 from .api.endpoints import router as simulation_router
 
 app = FastAPI(title="Econ Simulator", version="0.1.0")
 app.include_router(simulation_router)
+app.include_router(auth_router)
 
 
 @app.get("/health", tags=["health"])
