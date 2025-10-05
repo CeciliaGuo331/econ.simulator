@@ -3,7 +3,7 @@
 {% block content %}
 <section class="panel">
     <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
-    <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
+    <p>当前仿真实例：<strong>{{ simulation_id or "未选择" }}</strong></p>
     {% if message %}
     <div class="status success">{{ message }}</div>
     {% endif %}
@@ -12,6 +12,26 @@
     {% endif %}
 </section>
 
+{% if user.user_type != "admin" %}
+<section class="panel">
+    <h3>加入仿真实例</h3>
+    {% if all_simulations %}
+    <form method="post" action="/web/simulations/join" class="join-form">
+        <label>选择仿真实例
+            <select name="simulation_id">
+                {% for sid in all_simulations %}
+                <option value="{{ sid }}"{% if sid == simulation_id %} selected{% endif %}>{{ sid }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">加入</button>
+    </form>
+    {% else %}
+    <p class="empty">暂无可加入的仿真实例，请稍后再试或联系管理员。</p>
+    {% endif %}
+</section>
+{% endif %}
+
 <section class="grid">
     <article class="card">
         <h3>角色视角数据</h3>
@@ -19,7 +39,7 @@
     </article>
     <article class="card">
         <h3>已上传脚本</h3>
-        {% if scripts %}
+        {% if simulation_id and scripts %}
         <ul class="script-list">
             {% for script in scripts %}
             <li>
@@ -35,14 +55,17 @@
             </li>
             {% endfor %}
         </ul>
-        {% else %}
+        {% elif simulation_id %}
         <p class="empty">尚未有脚本上传。</p>
+        {% else %}
+        <p class="empty">请选择或加入仿真实例后查看脚本列表。</p>
         {% endif %}
     </article>
 </section>
 
 <section class="panel">
     <h3>上传脚本</h3>
+    {% if simulation_id %}
     <form method="post" action="/web/scripts" class="script-form">
         <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
         <label>脚本说明（可选）
@@ -54,5 +77,8 @@
         </label>
         <button type="submit">提交脚本</button>
     </form>
+    {% else %}
+    <p class="empty">请先加入仿真实例后再上传脚本。</p>
+    {% endif %}
 </section>
 {% endblock %}

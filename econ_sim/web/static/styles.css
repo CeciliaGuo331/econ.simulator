@@ -181,6 +181,28 @@ body {
   transition: transform 0.15s ease, box-shadow 0.2s ease;
 }
 
+.join-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: flex-end;
+}
+
+.join-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.join-form select {
+  padding: 0.7rem 0.9rem;
+  border-radius: 0.6rem;
+  border: none;
+  background-color: rgba(15, 23, 42, 0.6);
+  color: var(--text);
+}
+
 .script-form button:hover,
 .login-form button:hover {
   transform: translateY(-2px);

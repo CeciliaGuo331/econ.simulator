@@ -304,6 +304,40 @@ async def dashboard(
     error: Optional[str] = None,
 ) -> HTMLResponse:
     allow_create = user["user_type"] == "admin"
+    all_simulations = await _orchestrator.list_simulations()
+
+    normalized_id = (simulation_id or "").strip()
+    if not normalized_id:
+        if allow_create:
+            normalized_id = "default-simulation"
+        elif all_simulations:
+            normalized_id = all_simulations[0]
+        else:
+            normalized_id = ""
+    simulation_id = normalized_id
+
+    if not allow_create and not simulation_id:
+        friendly_message = (
+            message or "当前没有可加入的仿真实例，请稍后再试或联系管理员创建新实例。"
+        )
+        return _templates.TemplateResponse(
+            "dashboard.html",
+            {
+                "request": request,
+                "user": user,
+                "simulation_id": simulation_id,
+                "scripts": [],
+                "context": {},
+                "error": None,
+                "message": friendly_message,
+                "all_simulations": all_simulations,
+                "all_users": [],
+                "all_scripts": [],
+                "scripts_by_user": {},
+            },
+            status_code=200,
+        )
+
     try:
         world_state = await _load_world_state(simulation_id, allow_create=allow_create)
     except SimulationNotFoundError:
@@ -314,8 +348,10 @@ async def dashboard(
         resolved_simulation_id = simulation_id
         if not allow_create:
             friendly_error = None
-            friendly_message = (
-                friendly_message or "当前没有加入仿真实例，可联系管理员或稍后再试。"
+            friendly_message = friendly_message or (
+                "当前仿真实例不可用，您可以通过下方列表选择其他实例加入。"
+                if all_simulations
+                else "当前没有加入仿真实例，可联系管理员或稍后再试。"
             )
             resolved_simulation_id = ""
         else:
@@ -329,11 +365,13 @@ async def dashboard(
                 "request": request,
                 "user": user,
                 "simulation_id": simulation_id,
-                "scripts": script_registry.list_scripts(simulation_id),
+                "scripts": (
+                    script_registry.list_scripts(simulation_id) if simulation_id else []
+                ),
                 "context": context,
                 "error": friendly_error,
                 "message": friendly_message,
-                "all_simulations": [],
+                "all_simulations": all_simulations,
                 "all_users": [],
                 "all_scripts": [],
                 "scripts_by_user": {},
@@ -341,10 +379,9 @@ async def dashboard(
             status_code=404,
         )
 
-    scripts = script_registry.list_scripts(simulation_id)
+    scripts = script_registry.list_scripts(simulation_id) if simulation_id else []
     context = _extract_view_data(world_state, user["user_type"])
     template_name = "dashboard.html"
-    all_simulations: List[str] = []
     all_users: List[Dict[str, Any]] = []
     all_scripts = []
     scripts_by_user: Dict[str, List] = {}
@@ -383,6 +420,38 @@ async def dashboard(
             "all_scripts": all_scripts,
             "scripts_by_user": scripts_by_user,
         },
+    )
+
+
+@router.post("/simulations/join")
+async def join_simulation(
+    user: Dict[str, Any] = Depends(_require_session_user),
+    simulation_id: str = Form(...),
+) -> RedirectResponse:
+    if user.get("user_type") == "admin":
+        return _redirect_to_dashboard(
+            simulation_id,
+            error="管理员账号无需加入仿真实例。",
+        )
+
+    target = simulation_id.strip()
+    if not target:
+        return _redirect_to_dashboard(
+            "",
+            error="请选择仿真实例后再加入。",
+        )
+
+    try:
+        await _orchestrator.register_participant(target, user["email"])
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            "",
+            error=f"仿真实例 {target} 不存在，请刷新列表后重试。",
+        )
+
+    return _redirect_to_dashboard(
+        target,
+        message=f"已加入仿真实例 {target}。",
     )
 
 
