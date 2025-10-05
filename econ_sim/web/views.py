@@ -309,6 +309,20 @@ async def dashboard(
     except SimulationNotFoundError:
         template_name = "admin_dashboard.html" if allow_create else "dashboard.html"
         context: Dict[str, Any] = {"world": {}} if allow_create else {}
+        friendly_error = error
+        friendly_message = message
+        resolved_simulation_id = simulation_id
+        if not allow_create:
+            friendly_error = None
+            friendly_message = (
+                friendly_message or "当前没有加入仿真实例，可联系管理员或稍后再试。"
+            )
+            resolved_simulation_id = ""
+        else:
+            friendly_error = (
+                friendly_error or "仿真实例不存在，请联系管理员创建后再访问。"
+            )
+        simulation_id = resolved_simulation_id
         return _templates.TemplateResponse(
             template_name,
             {
@@ -317,8 +331,8 @@ async def dashboard(
                 "simulation_id": simulation_id,
                 "scripts": script_registry.list_scripts(simulation_id),
                 "context": context,
-                "error": error or "仿真实例不存在，请联系管理员创建后再访问。",
-                "message": message,
+                "error": friendly_error,
+                "message": friendly_message,
                 "all_simulations": [],
                 "all_users": [],
                 "all_scripts": [],
