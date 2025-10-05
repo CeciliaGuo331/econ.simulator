@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>注册 - Econ Simulator</title>
+    <link rel="stylesheet" href="{{ url_for('web-static', path='styles.css') }}">
+</head>
+<body class="login-body">
+    <section class="login-panel">
+        <h1>创建新账号</h1>
+        <form method="post" class="login-form">
+            <label>邮箱
+                <input type="email" name="email" value="{{ email }}" placeholder="you@example.com" required>
+            </label>
+            <label>密码（至少 8 位）
+                <input type="password" name="password" minlength="8" required>
+            </label>
+            <label>确认密码
+                <input type="password" name="confirm_password" minlength="8" required>
+            </label>
+            <label>用户类型
+                <select name="user_type" required>
+                    {% for option in user_types %}
+                    <option value="{{ option }}" {% if option == user_type %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            {% if error %}
+            <div class="error">{{ error }}</div>
+            {% endif %}
+            <button type="submit">注册</button>
+        </form>
+        <p class="login-hint">已有账号？<a href="/web/login">返回登录</a></p>
+    </section>
+</body>
+</html>

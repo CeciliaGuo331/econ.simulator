@@ -156,6 +156,14 @@ body {
   margin-bottom: 1rem;
 }
 
+.message {
+  background-color: rgba(94, 234, 212, 0.2);
+  color: #5eead4;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  margin-bottom: 1rem;
+}
+
 .login-body {
   background: radial-gradient(circle at top, rgba(56, 189, 248, 0.25), transparent),
               linear-gradient(160deg, #0f172a, #1d3557);
@@ -182,6 +190,15 @@ body {
 }
 
 .login-form input {
+  width: 100%;
+  padding: 0.8rem;
+  border-radius: 0.6rem;
+  border: none;
+  background-color: rgba(148, 163, 184, 0.2);
+  color: var(--text);
+}
+
+.login-form select {
   width: 100%;
   padding: 0.8rem;
   border-radius: 0.6rem;

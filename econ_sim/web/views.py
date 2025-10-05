@@ -10,7 +10,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..auth import user_manager
-from ..auth.user_manager import AuthenticationError
+from ..auth.user_manager import (
+    AuthenticationError,
+    PUBLIC_USER_TYPES,
+    UserAlreadyExistsError,
+)
 from ..core.orchestrator import SimulationOrchestrator
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
@@ -50,10 +54,10 @@ async def landing(request: Request) -> HTMLResponse:
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request) -> HTMLResponse:
+async def login_page(request: Request, message: Optional[str] = None) -> HTMLResponse:
     return _templates.TemplateResponse(
         "login.html",
-        {"request": request, "error": None},
+        {"request": request, "error": None, "message": message},
     )
 
 
@@ -71,7 +75,11 @@ async def login_submission(
     except AuthenticationError:
         return _templates.TemplateResponse(
             "login.html",
-            {"request": request, "error": "邮箱或密码错误，请重试。"},
+            {
+                "request": request,
+                "error": "邮箱或密码错误，请重试。",
+                "message": None,
+            },
             status_code=401,
         )
 
@@ -177,6 +185,85 @@ async def upload_script(
 
     return RedirectResponse(
         url=f"/web/dashboard?simulation_id={simulation_id}", status_code=303
+    )
+
+
+@router.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request) -> HTMLResponse:
+    return _templates.TemplateResponse(
+        "register.html",
+        {
+            "request": request,
+            "error": None,
+            "email": "",
+            "user_type": "individual",
+            "user_types": sorted(PUBLIC_USER_TYPES),
+        },
+    )
+
+
+@router.post("/register", response_class=HTMLResponse)
+async def register_submission(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    user_type: str = Form(...),
+) -> HTMLResponse:
+    if password != confirm_password:
+        return _templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "error": "两次输入的密码不一致，请重新输入。",
+                "email": email,
+                "user_type": user_type,
+                "user_types": sorted(PUBLIC_USER_TYPES),
+            },
+            status_code=400,
+        )
+
+    try:
+        await user_manager.register_user(email, password, user_type)
+    except UserAlreadyExistsError:
+        return _templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "error": "该邮箱已注册，试试直接登录或换一个邮箱。",
+                "email": email,
+                "user_type": user_type,
+                "user_types": sorted(PUBLIC_USER_TYPES),
+            },
+            status_code=409,
+        )
+    except ValueError as exc:
+        return _templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "error": str(exc),
+                "email": email,
+                "user_type": user_type,
+                "user_types": sorted(PUBLIC_USER_TYPES),
+            },
+            status_code=400,
+        )
+    except Exception:
+        return _templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "error": "注册失败，请稍后再试。",
+                "email": email,
+                "user_type": user_type,
+                "user_types": sorted(PUBLIC_USER_TYPES),
+            },
+            status_code=500,
+        )
+
+    return RedirectResponse(
+        url="/web/login?message=注册成功，请登录。", status_code=303
     )
 
 
