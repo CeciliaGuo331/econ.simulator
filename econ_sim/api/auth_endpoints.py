@@ -44,7 +44,9 @@ class LoginResponse(BaseModel):
     token_type: str = Field(default="bearer")
 
 
-@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED
+)
 async def register_user(payload: RegisterRequest) -> RegisterResponse:
     """注册新用户，默认使用邮箱作为唯一标识。"""
 

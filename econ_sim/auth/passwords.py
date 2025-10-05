@@ -25,9 +25,7 @@ def hash_password(password: str) -> str:
     """对明文密码执行 PBKDF2 哈希，返回带有元数据的字符串。"""
 
     salt = secrets.token_bytes(_SALT_BYTES)
-    derived = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, _ITERATIONS
-    )
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITERATIONS)
     return f"{_ALGORITHM}${_ITERATIONS}${_encode(salt)}${_encode(derived)}"
 
 
@@ -42,7 +40,5 @@ def verify_password(password: str, password_hash: str) -> bool:
     algorithm, iterations, salt, expected = _parse_hash(password_hash)
     if algorithm != _ALGORITHM:
         raise ValueError("Unsupported password hashing algorithm")
-    derived = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, iterations
-    )
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(derived, expected)
