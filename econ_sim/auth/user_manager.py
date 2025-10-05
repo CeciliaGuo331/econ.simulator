@@ -216,6 +216,19 @@ class UserManager:
         self._admin_seeded = False
         await self._ensure_admin_exists()
 
+    async def get_profile(self, email: str) -> Optional[UserProfile]:
+        await self._ensure_admin_exists()
+        validate_email(email)
+        normalized = self._normalize_email(email)
+        record = await self._store.get_user(normalized)
+        if record is None:
+            return None
+        return UserProfile(
+            email=record.email,
+            created_at=record.created_at,
+            user_type=record.user_type,
+        )
+
 
 __all__ = [
     "UserManager",

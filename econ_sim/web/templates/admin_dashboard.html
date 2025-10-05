@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}管理员仪表盘 - Econ Simulator{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>管理员中心</h2>
+    <p>当前仿真实例：<strong>{{ simulation_id }}</strong></p>
+    <p>管理员账户可查看完整世界状态和所有脚本。</p>
+</section>
+
+<section class="grid">
+    <article class="card wide">
+        <h3>世界状态快照</h3>
+        <pre class="json-preview">{{ context.world | tojson(indent=2, sort_keys=True) }}</pre>
+    </article>
+</section>
+
+<section class="panel">
+    <h3>全部脚本</h3>
+    {% if scripts %}
+    <table class="script-table">
+        <thead>
+            <tr>
+                <th>脚本 ID</th>
+                <th>用户</th>
+                <th>描述</th>
+                <th>上传时间 (UTC)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for script in scripts %}
+            <tr>
+                <td>{{ script.script_id }}</td>
+                <td>{{ script.user_id }}</td>
+                <td>{% if script.description %}{{ script.description }}{% else %}<span class="empty">无</span>{% endif %}</td>
+                <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">暂时没有上传脚本。</p>
+    {% endif %}
+    <p class="hint">脚本审核和管理功能可在后续迭代中补充。</p>
+</section>
+{% endblock %}
