@@ -1,11 +1,14 @@
-"""基于 Redis（并提供内存后备）的异步数据访问层实现。"""
+"""异步数据访问层及其缓存/持久化存储实现。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import re
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Protocol, Set
+from typing import Any, Dict, Optional, Protocol, Set, TYPE_CHECKING
 
 import numpy as np
 
@@ -13,6 +16,16 @@ try:  # pragma: no cover - optional dependency at runtime
     from redis.asyncio import Redis
 except Exception:  # pragma: no cover - fallback when redis isn't installed yet
     Redis = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import asyncpg  # type: ignore
+except Exception:  # pragma: no cover - optional dependency may be absent
+    asyncpg = None  # type: ignore
+
+if TYPE_CHECKING:  # pragma: no cover - typing hints only
+    from asyncpg.pool import Pool as AsyncpgPool  # type: ignore
+else:  # pragma: no cover - runtime fallback when asyncpg is unavailable
+    AsyncpgPool = Any  # type: ignore
 
 from .models import (
     AgentKind,
@@ -28,6 +41,9 @@ from .models import (
     WorldState,
 )
 from ..utils.settings import WorldConfig, get_world_config
+
+
+logger = logging.getLogger(__name__)
 
 
 class SimulationNotFoundError(RuntimeError):
@@ -104,12 +120,336 @@ class RedisStateStore:
         await self._redis.delete(self._key(simulation_id))
 
 
+class PersistenceError(RuntimeError):
+    """在持久化流程出现不可恢复错误时抛出的异常。"""
+
+
+class CompositeStateStore(StateStore):
+    """组合存储实现，提供 Redis 缓存 + PostgreSQL 持久化 + 内存兜底。"""
+
+    def __init__(
+        self,
+        *,
+        cache: Optional[StateStore] = None,
+        persistent: Optional[StateStore] = None,
+        fallback: Optional[StateStore] = None,
+    ) -> None:
+        if cache is None and persistent is None and fallback is None:
+            raise ValueError("CompositeStateStore requires at least one backing store")
+        self._cache = cache
+        self._persistent = persistent
+        self._fallback = fallback
+
+    async def load(self, simulation_id: str) -> Optional[Dict]:
+        """优先从缓存读取，未命中时回源并自动回填。"""
+
+        if self._cache is not None:
+            try:
+                cached = await self._cache.load(simulation_id)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "Failed to load simulation %s from cache",
+                    simulation_id,
+                    exc_info=exc,
+                )
+            else:
+                if cached is not None:
+                    return cached
+
+        payload: Optional[Dict] = None
+
+        if self._persistent is not None:
+            try:
+                payload = await self._persistent.load(simulation_id)
+            except Exception as exc:  # pragma: no cover - allow fallback
+                logger.error(
+                    "Failed to load simulation %s from persistent store",
+                    simulation_id,
+                    exc_info=exc,
+                )
+            else:
+                if payload is not None:
+                    if self._cache is not None:
+                        try:
+                            await self._cache.store(simulation_id, payload)
+                        except (
+                            Exception
+                        ) as exc:  # pragma: no cover - cache warming failure is non-fatal
+                            logger.warning(
+                                "Failed to warm cache for simulation %s",
+                                simulation_id,
+                                exc_info=exc,
+                            )
+                    if self._fallback is not None:
+                        try:
+                            await self._fallback.store(simulation_id, payload)
+                        except (
+                            Exception
+                        ) as exc:  # pragma: no cover - fallback warming warning
+                            logger.warning(
+                                "Failed to warm fallback store for simulation %s",
+                                simulation_id,
+                                exc_info=exc,
+                            )
+                    return payload
+
+        if payload is None and self._fallback is not None:
+            try:
+                payload = await self._fallback.load(simulation_id)
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                logger.error(
+                    "Failed to load simulation %s from fallback store",
+                    simulation_id,
+                    exc_info=exc,
+                )
+            else:
+                if payload is not None and self._cache is not None:
+                    try:
+                        await self._cache.store(simulation_id, payload)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning(
+                            "Failed to warm cache for simulation %s",
+                            simulation_id,
+                            exc_info=exc,
+                        )
+                return payload
+
+        return payload
+
+    async def store(self, simulation_id: str, payload: Dict) -> None:
+        """写穿缓存与持久层，确保持久化成功。"""
+
+        cache_error: Optional[Exception] = None
+        if self._cache is not None:
+            try:
+                await self._cache.store(simulation_id, payload)
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - cache update failure is non-fatal
+                cache_error = exc
+                logger.warning(
+                    "Failed to update cache for simulation %s",
+                    simulation_id,
+                    exc_info=exc,
+                )
+
+        if self._persistent is not None:
+            try:
+                await self._persistent.store(simulation_id, payload)
+            except Exception as exc:
+                raise PersistenceError(
+                    "Failed to persist world state to primary store"
+                ) from exc
+        elif self._fallback is not None:
+            await self._fallback.store(simulation_id, payload)
+        elif self._cache is None:
+            raise PersistenceError(
+                "No persistent store configured for simulation state"
+            )
+
+        if self._fallback is not None and self._persistent is not None:
+            try:
+                await self._fallback.store(simulation_id, payload)
+            except Exception as exc:  # pragma: no cover - fallback warming warning
+                logger.warning(
+                    "Failed to update fallback store for simulation %s",
+                    simulation_id,
+                    exc_info=exc,
+                )
+
+        if cache_error is not None and self._persistent is None:
+            raise PersistenceError(
+                "Cache update failed without persistent backup"
+            ) from cache_error
+
+    async def delete(self, simulation_id: str) -> None:
+        """同时在缓存与持久层删除指定仿真。"""
+
+        cache_error: Optional[Exception] = None
+        if self._cache is not None:
+            try:
+                await self._cache.delete(simulation_id)
+            except Exception as exc:  # pragma: no cover - cache delete best effort
+                cache_error = exc
+                logger.warning(
+                    "Failed to delete simulation %s from cache",
+                    simulation_id,
+                    exc_info=exc,
+                )
+
+        if self._persistent is not None:
+            try:
+                await self._persistent.delete(simulation_id)
+            except Exception as exc:
+                raise PersistenceError(
+                    "Failed to delete simulation from persistent store"
+                ) from exc
+        elif self._fallback is not None:
+            await self._fallback.delete(simulation_id)
+
+        if self._fallback is not None and self._persistent is not None:
+            try:
+                await self._fallback.delete(simulation_id)
+            except Exception as exc:  # pragma: no cover - fallback cleanup warning
+                logger.warning(
+                    "Failed to delete simulation %s from fallback store",
+                    simulation_id,
+                    exc_info=exc,
+                )
+
+        if cache_error is not None and self._persistent is None:
+            raise PersistenceError(
+                "Cache delete failed without persistent backup"
+            ) from cache_error
+
+
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _quote_identifier(identifier: str) -> str:
+    """以安全方式引用 SQL 标识符。"""
+
+    if not _IDENTIFIER_PATTERN.match(identifier):
+        raise ValueError(f"Invalid SQL identifier: {identifier}")
+    return f'"{identifier}"'
+
+
+class PostgresStateStore(StateStore):
+    """基于 PostgreSQL 的 JSONB 世界状态持久层。"""
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        schema: str = "public",
+        table: str = "world_state_snapshots",
+        min_pool_size: int = 1,
+        max_pool_size: int = 5,
+        create_schema: bool = True,
+    ) -> None:
+        if asyncpg is None:  # pragma: no cover - optional dependency guard
+            raise RuntimeError(
+                "asyncpg is required for PostgresStateStore; install econ-sim[postgres] or add asyncpg."
+            )
+
+        self._dsn = dsn
+        self._schema = schema
+        self._table = table
+        self._min_pool_size = min_pool_size
+        self._max_pool_size = max_pool_size
+        self._create_schema = create_schema
+        self._pool: Optional[AsyncpgPool] = None
+        self._qualified_table: Optional[str] = None
+        self._pool_lock = asyncio.Lock()
+
+    async def _get_pool(self) -> AsyncpgPool:
+        if self._pool is not None:
+            return self._pool
+
+        async with self._pool_lock:
+            if self._pool is not None:
+                return self._pool
+            self._pool = await asyncpg.create_pool(  # type: ignore[attr-defined]
+                dsn=self._dsn,
+                min_size=self._min_pool_size,
+                max_size=self._max_pool_size,
+            )
+            await self._ensure_schema()
+        return self._pool
+
+    async def _ensure_schema(self) -> None:
+        assert self._pool is not None  # nosec - ensured by caller
+        schema_ident = _quote_identifier(self._schema)
+        table_ident = _quote_identifier(self._table)
+        qualified_table = f"{schema_ident}.{table_ident}"
+        index_ident = _quote_identifier(f"{self._table}_updated_at_idx")
+
+        async with self._pool.acquire() as conn:
+            if self._create_schema:
+                await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_ident}")
+            await conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {qualified_table} (
+                    simulation_id TEXT PRIMARY KEY,
+                    tick INTEGER NOT NULL,
+                    day INTEGER NOT NULL,
+                    payload JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {index_ident} ON {qualified_table} (updated_at DESC)"
+            )
+
+        self._qualified_table = qualified_table
+
+    async def load(self, simulation_id: str) -> Optional[Dict]:
+        pool = await self._get_pool()
+        if self._qualified_table is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("PostgresStateStore schema not initialized")
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT payload FROM {self._qualified_table} WHERE simulation_id = $1",
+                simulation_id,
+            )
+        if row is None:
+            return None
+        payload = row["payload"]
+        if isinstance(payload, str):
+            return json.loads(payload)
+        return dict(payload)
+
+    async def store(self, simulation_id: str, payload: Dict) -> None:
+        pool = await self._get_pool()
+        if self._qualified_table is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("PostgresStateStore schema not initialized")
+        tick = int(payload.get("tick", 0))
+        day = int(payload.get("day", 0))
+        data = json.dumps(payload)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {self._qualified_table} (simulation_id, tick, day, payload, updated_at)
+                VALUES ($1, $2, $3, $4::jsonb, timezone('utc', now()))
+                ON CONFLICT (simulation_id)
+                DO UPDATE SET
+                    tick = EXCLUDED.tick,
+                    day = EXCLUDED.day,
+                    payload = EXCLUDED.payload,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                simulation_id,
+                tick,
+                day,
+                data,
+            )
+
+    async def delete(self, simulation_id: str) -> None:
+        pool = await self._get_pool()
+        if self._qualified_table is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("PostgresStateStore schema not initialized")
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"DELETE FROM {self._qualified_table} WHERE simulation_id = $1",
+                simulation_id,
+            )
+
+    async def close(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+
+
 @dataclass
 class DataAccessLayer:
     """为调度器提供统一入口的数据访问外观类。"""
 
     config: WorldConfig
     store: StateStore
+    cache_store: Optional[StateStore] = None
+    persistent_store: Optional[StateStore] = None
+    fallback_store: Optional[StateStore] = None
     _participants: Dict[str, Set[str]] = field(default_factory=dict)
     _known_simulations: Set[str] = field(default_factory=set)
 
@@ -117,8 +457,48 @@ class DataAccessLayer:
     def with_default_store(
         cls, config: Optional[WorldConfig] = None
     ) -> "DataAccessLayer":
-        """使用默认配置与内存存储构建数据访问层实例。"""
-        return cls(config=config or get_world_config(), store=InMemoryStateStore())
+        """根据环境变量构建数据访问层，默认回退到纯内存实现。"""
+
+        resolved_config = config or get_world_config()
+        fallback = InMemoryStateStore()
+
+        redis_url = os.getenv("ECON_SIM_REDIS_URL")
+        redis_prefix = os.getenv("ECON_SIM_REDIS_PREFIX", "econ_sim")
+        postgres_dsn = os.getenv("ECON_SIM_POSTGRES_DSN")
+        pg_schema = os.getenv("ECON_SIM_POSTGRES_SCHEMA", "public")
+        pg_table = os.getenv("ECON_SIM_POSTGRES_TABLE", "world_state_snapshots")
+
+        cache_store: Optional[StateStore] = None
+        persistent_store: Optional[StateStore] = None
+
+        if redis_url and Redis is not None:
+            redis_client = Redis.from_url(
+                redis_url, encoding="utf-8", decode_responses=False
+            )
+            cache_store = RedisStateStore(redis_client, prefix=redis_prefix)
+
+        if postgres_dsn:
+            persistent_store = PostgresStateStore(
+                postgres_dsn,
+                schema=pg_schema,
+                table=pg_table,
+            )
+
+        if cache_store or persistent_store:
+            composite = CompositeStateStore(
+                cache=cache_store,
+                persistent=persistent_store,
+                fallback=fallback,
+            )
+            return cls(
+                config=resolved_config,
+                store=composite,
+                cache_store=cache_store,
+                persistent_store=persistent_store,
+                fallback_store=fallback,
+            )
+
+        return cls(config=resolved_config, store=fallback, fallback_store=fallback)
 
     async def ensure_simulation(self, simulation_id: str) -> WorldState:
         """确保仿真实例存在，不存在时按配置创建初始世界状态。"""
