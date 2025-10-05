@@ -99,5 +99,8 @@
 | `POST` | `/simulations/{id}/run_tick` | 执行下一 Tick，可附带决策覆盖 |
 | `GET` | `/simulations/{id}/state/full` | 返回完整世界状态快照 |
 | `GET` | `/simulations/{id}/state/agents` | 查询指定代理人（默认全部家户） |
+| `POST` | `/scripts` | 上传脚本到个人脚本库 |
+| `GET` | `/scripts` | 列出当前用户的脚本（含未挂载） |
+| `POST` | `/simulations/{id}/scripts/attach` | 将个人脚本挂载到仿真实例 |
 
 更多细节请参考 `econ_sim/api/endpoints.py`。

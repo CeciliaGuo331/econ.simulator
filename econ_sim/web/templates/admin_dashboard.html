@@ -150,10 +150,14 @@
                 <td>{{ script.script_id }}</td>
                 <td>{{ script.code_version }}</td>
                 <td>
-                    {% if script.simulation_id == simulation_id %}
-                    <strong>{{ script.simulation_id }}</strong>
+                    {% if script.simulation_id %}
+                        {% if script.simulation_id == simulation_id %}
+                        <strong>{{ script.simulation_id }}</strong>
+                        {% else %}
+                        <a href="/web/dashboard?simulation_id={{ script.simulation_id }}" data-remember-scroll="true">{{ script.simulation_id }}</a>
+                        {% endif %}
                     {% else %}
-                    <a href="/web/dashboard?simulation_id={{ script.simulation_id }}" data-remember-scroll="true">{{ script.simulation_id }}</a>
+                    <span class="empty">未挂载</span>
                     {% endif %}
                 </td>
                 <td>{{ script.user_id }}</td>
@@ -161,7 +165,7 @@
                 <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
                 <td>
                     <form method="post" action="/web/admin/scripts/delete" class="inline-form">
-                        <input type="hidden" name="simulation_id" value="{{ script.simulation_id }}">
+                        <input type="hidden" name="simulation_id" value="{{ script.simulation_id or '' }}">
                         <input type="hidden" name="script_id" value="{{ script.script_id }}">
                         <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
                         <button type="submit">删除</button>

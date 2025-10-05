@@ -305,6 +305,13 @@ async def dashboard(
 ) -> HTMLResponse:
     allow_create = user["user_type"] == "admin"
     all_simulations = await _orchestrator.list_simulations()
+    user_scripts: List = []
+    attachable_scripts: List = []
+    if not allow_create:
+        user_scripts = await script_registry.list_user_scripts(user["email"])
+        attachable_scripts = [
+            script for script in user_scripts if not script.simulation_id
+        ]
 
     normalized_id = (simulation_id or "").strip()
     if not normalized_id:
@@ -332,6 +339,8 @@ async def dashboard(
                 "all_users": [],
                 "all_scripts": [],
                 "scripts_by_user": {},
+                "user_scripts": user_scripts,
+                "attachable_scripts": attachable_scripts,
             },
             status_code=200,
         )
@@ -367,6 +376,8 @@ async def dashboard(
                 "all_users": all_users,
                 "all_scripts": all_scripts,
                 "scripts_by_user": scripts_by_user,
+                "user_scripts": [],
+                "attachable_scripts": [],
             },
         )
 
@@ -410,6 +421,8 @@ async def dashboard(
                 "all_users": [],
                 "all_scripts": [],
                 "scripts_by_user": {},
+                "user_scripts": user_scripts,
+                "attachable_scripts": attachable_scripts,
             },
             status_code=404,
         )
@@ -455,6 +468,8 @@ async def dashboard(
             "all_users": all_users,
             "all_scripts": all_scripts,
             "scripts_by_user": scripts_by_user,
+            "user_scripts": user_scripts,
+            "attachable_scripts": attachable_scripts,
         },
     )
 
@@ -704,17 +719,16 @@ async def admin_delete_script(
 ) -> RedirectResponse:
     target = simulation_id.strip()
     redirect_target = current_simulation_id or target or "default-simulation"
-    if not target:
-        return _redirect_to_dashboard(
-            redirect_target,
-            error="请提供脚本所属的仿真实例。",
-        )
     try:
-        await script_registry.remove_script(target, script_id)
+        if target:
+            await script_registry.remove_script(target, script_id)
+            note = f"已删除仿真实例 {target} 下的脚本 {script_id}。"
+        else:
+            await script_registry.delete_script_by_id(script_id)
+            note = f"脚本 {script_id} 已从系统中移除。"
     except ScriptExecutionError as exc:
         return _redirect_to_dashboard(redirect_target, error=str(exc))
 
-    note = f"已删除仿真实例 {target} 下的脚本 {script_id}。"
     return _redirect_to_dashboard(redirect_target, message=note)
 
 
@@ -747,7 +761,7 @@ async def admin_delete_user(
 async def upload_script(
     request: Request,
     user: Dict[str, Any] = Depends(_require_session_user),
-    simulation_id: str = Form(...),
+    simulation_id: str = Form(""),
     description: str = Form(""),
     script_file: UploadFile = File(...),
 ) -> HTMLResponse:
@@ -835,32 +849,79 @@ async def upload_script(
 
     description_text = (description or "").strip()
 
+    target_simulation = simulation_id.strip()
+
     try:
-        await _orchestrator.register_participant(simulation_id, user["email"])
+        if target_simulation:
+            await _orchestrator.register_participant(target_simulation, user["email"])
+            await script_registry.register_script(
+                simulation_id=target_simulation,
+                user_id=user["email"],
+                script_code=code,
+                description=description_text or None,
+            )
+            return _redirect_to_dashboard(
+                target_simulation,
+                message="脚本已上传并挂载至当前仿真实例。",
+            )
+
         await script_registry.register_script(
-            simulation_id=simulation_id,
+            simulation_id=None,
             user_id=user["email"],
             script_code=code,
             description=description_text or None,
         )
     except SimulationNotFoundError:
-        return _templates.TemplateResponse(
-            "dashboard.html",
-            {
-                "request": request,
-                "user": user,
-                "simulation_id": simulation_id,
-                "scripts": [],
-                "context": {},
-                "error": "仿真实例不存在，请联系管理员创建后再上传脚本。",
-            },
-            status_code=404,
+        return _redirect_to_dashboard(
+            "",
+            error="仿真实例不存在，请联系管理员创建后再上传脚本。",
         )
     except ScriptExecutionError as exc:
         return await render_dashboard_error(str(exc), status_code=400)
 
-    return RedirectResponse(
-        url=f"/web/dashboard?simulation_id={simulation_id}", status_code=303
+    return _redirect_to_dashboard(
+        target_simulation,
+        message="脚本已上传到个人脚本库，可在加入仿真实例后挂载。",
+    )
+
+
+@router.post("/scripts/attach")
+async def attach_existing_script(
+    user: Dict[str, Any] = Depends(_require_session_user),
+    simulation_id: str = Form(...),
+    script_id: str = Form(...),
+) -> RedirectResponse:
+    if user["user_type"] == "admin":
+        return _redirect_to_dashboard(
+            simulation_id,
+            error="管理员账号不能执行脚本挂载操作。",
+        )
+
+    target = simulation_id.strip()
+    if not target:
+        return _redirect_to_dashboard(
+            "",
+            error="请选择仿真实例后再挂载脚本。",
+        )
+
+    try:
+        await _orchestrator.register_participant(target, user["email"])
+        await script_registry.attach_script(
+            script_id=script_id,
+            simulation_id=target,
+            user_id=user["email"],
+        )
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            "",
+            error=f"仿真实例 {target} 不存在，请刷新列表后重试。",
+        )
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(target, error=str(exc))
+
+    return _redirect_to_dashboard(
+        target,
+        message=f"脚本 {script_id} 已挂载至仿真实例 {target}。",
     )
 
 

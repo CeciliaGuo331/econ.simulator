@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from .api.auth_endpoints import router as auth_router
-from .api.endpoints import router as simulation_router
+from .api.endpoints import router as simulation_router, scripts_router
 from .web.views import router as web_router
 
 session_secret = os.getenv("ECON_SIM_SESSION_SECRET", "econ-sim-session-key")
@@ -18,6 +18,7 @@ session_secret = os.getenv("ECON_SIM_SESSION_SECRET", "econ-sim-session-key")
 app = FastAPI(title="Econ Simulator", version="0.1.0")
 app.add_middleware(SessionMiddleware, secret_key=session_secret)
 app.include_router(simulation_router)
+app.include_router(scripts_router)
 app.include_router(auth_router)
 app.include_router(web_router)
 static_dir = Path(__file__).resolve().parent / "web" / "static"

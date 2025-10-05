@@ -21,6 +21,7 @@ from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError, ScriptMetadata
 
 router = APIRouter(prefix="/simulations", tags=["simulations"])
+scripts_router = APIRouter(prefix="/scripts", tags=["scripts"])
 _orchestrator = SimulationOrchestrator()
 
 
@@ -126,7 +127,14 @@ class ScriptUploadResponse(BaseModel):
 
     script_id: str
     code_version: str
+    simulation_id: Optional[str] = None
     message: str
+
+
+class ScriptAttachRequest(BaseModel):
+    """挂载已有脚本到仿真实例的请求体。"""
+
+    script_id: str
 
 
 class ScriptListResponse(BaseModel):
@@ -340,6 +348,47 @@ async def list_participants(simulation_id: str) -> SimulationParticipantResponse
     return SimulationParticipantResponse(participants=participants)
 
 
+@scripts_router.post("", response_model=ScriptUploadResponse)
+async def upload_user_script(
+    payload: ScriptUploadRequest,
+    user: UserProfile = Depends(get_current_user),
+) -> ScriptUploadResponse:
+    """上传脚本到个人脚本库，稍后可挂载到任一仿真实例。"""
+
+    if payload.user_id and payload.user_id != user.email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot upload script for other users",
+        )
+
+    try:
+        metadata = await script_registry.register_script(
+            simulation_id=None,
+            user_id=user.email,
+            script_code=payload.code,
+            description=payload.description,
+        )
+    except ScriptExecutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return ScriptUploadResponse(
+        script_id=metadata.script_id,
+        code_version=metadata.code_version,
+        simulation_id=metadata.simulation_id,
+        message="Script uploaded. Attach to a simulation when ready.",
+    )
+
+
+@scripts_router.get("", response_model=ScriptListResponse)
+async def list_user_scripts(
+    user: UserProfile = Depends(get_current_user),
+) -> ScriptListResponse:
+    """列出当前用户的所有脚本（含未挂载仿真）。"""
+
+    scripts = await script_registry.list_user_scripts(user.email)
+    return ScriptListResponse(scripts=scripts)
+
+
 @router.post("/{simulation_id}/scripts", response_model=ScriptUploadResponse)
 async def upload_script(
     simulation_id: str,
@@ -370,6 +419,7 @@ async def upload_script(
     return ScriptUploadResponse(
         script_id=metadata.script_id,
         code_version=metadata.code_version,
+        simulation_id=metadata.simulation_id,
         message="Script registered successfully.",
     )
 
@@ -380,6 +430,34 @@ async def list_scripts(simulation_id: str) -> ScriptListResponse:
 
     scripts = await script_registry.list_scripts(simulation_id)
     return ScriptListResponse(scripts=scripts)
+
+
+@router.post("/{simulation_id}/scripts/attach", response_model=ScriptUploadResponse)
+async def attach_script(
+    simulation_id: str,
+    payload: ScriptAttachRequest,
+    user: UserProfile = Depends(get_current_user),
+) -> ScriptUploadResponse:
+    """将既有脚本挂载到指定仿真实例。"""
+
+    try:
+        await _orchestrator.register_participant(simulation_id, user.email)
+        metadata = await script_registry.attach_script(
+            script_id=payload.script_id,
+            simulation_id=simulation_id,
+            user_id=user.email,
+        )
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ScriptExecutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return ScriptUploadResponse(
+        script_id=metadata.script_id,
+        code_version=metadata.code_version,
+        simulation_id=metadata.simulation_id,
+        message="Script attached successfully.",
+    )
 
 
 @router.delete(

@@ -2,6 +2,7 @@ import pytest
 
 from econ_sim.core.orchestrator import SimulationOrchestrator
 from econ_sim.script_engine import ScriptRegistry, script_registry
+from econ_sim.script_engine.registry import ScriptExecutionError
 from econ_sim.utils.settings import get_world_config
 
 
@@ -53,3 +54,69 @@ def generate_decisions(context):
     assert result.world_state.firm.price == pytest.approx(15.0)
 
     await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_script_can_attach_after_pre_upload() -> None:
+    registry = ScriptRegistry()
+    preloaded = await registry.register_script(
+        simulation_id=None,
+        user_id="late-user",
+        script_code="""
+def generate_decisions(context):
+    return {"government": {"tax_rate": 0.12}}
+""",
+        description="pending policy",
+    )
+
+    assert preloaded.simulation_id is None
+
+    attached = await registry.attach_script(
+        preloaded.script_id, "delayed-sim", "late-user"
+    )
+    assert attached.simulation_id == "delayed-sim"
+
+    config = get_world_config()
+    orchestrator = SimulationOrchestrator()
+    world_state = await orchestrator.create_simulation("delayed-sim")
+    overrides = await registry.generate_overrides("delayed-sim", world_state, config)
+    assert overrides is not None
+    assert overrides.government is not None
+
+
+@pytest.mark.asyncio
+async def test_list_user_scripts_includes_unattached() -> None:
+    await script_registry.clear()
+
+    meta = await script_registry.register_script(
+        simulation_id=None,
+        user_id="collector",
+        script_code="""
+def generate_decisions(context):
+    return None
+""",
+        description="noop script",
+    )
+
+    scripts = await script_registry.list_user_scripts("collector")
+    assert any(item.script_id == meta.script_id for item in scripts)
+
+    await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_delete_script_by_id() -> None:
+    registry = ScriptRegistry()
+    meta = await registry.register_script(
+        simulation_id=None,
+        user_id="cleanup",
+        script_code="""
+def generate_decisions(context):
+    return {}
+""",
+    )
+
+    assert await registry.delete_script_by_id(meta.script_id)
+
+    with pytest.raises(ScriptExecutionError):
+        await registry.delete_script_by_id(meta.script_id)

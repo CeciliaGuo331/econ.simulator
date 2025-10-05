@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from ..data_access.postgres_support import get_pool
 from ..data_access.postgres_utils import quote_identifier
@@ -55,7 +55,7 @@ class PostgresScriptStore:
                     f"""
                     CREATE TABLE IF NOT EXISTS {qualified} (
                         script_id UUID PRIMARY KEY,
-                        simulation_id TEXT NOT NULL,
+                        simulation_id TEXT,
                         user_id TEXT NOT NULL,
                         description TEXT,
                         created_at TIMESTAMPTZ NOT NULL,
@@ -63,6 +63,9 @@ class PostgresScriptStore:
                         code_version UUID NOT NULL
                     )
                     """
+                )
+                await conn.execute(
+                    f"ALTER TABLE {qualified} ALTER COLUMN simulation_id DROP NOT NULL"
                 )
                 await conn.execute(
                     f"CREATE INDEX IF NOT EXISTS {quote_identifier(self._table + '_simulation_idx')} ON {qualified} (simulation_id)"
@@ -140,6 +143,55 @@ class PostgresScriptStore:
             scripts.append(StoredScript(metadata=metadata, code=row["code"]))
         return scripts
 
+    async def fetch_user_scripts(self, user_id: str) -> List[StoredScript]:
+        await self._ensure_schema()
+        pool = await get_pool(
+            self._dsn, min_size=self._min_pool, max_size=self._max_pool
+        )
+        schema_ident = quote_identifier(self._schema)
+        table_ident = quote_identifier(self._table)
+        qualified = f"{schema_ident}.{table_ident}"
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT script_id, simulation_id, user_id, description, created_at, code, code_version
+                FROM {qualified}
+                WHERE user_id = $1
+                ORDER BY created_at
+                """,
+                user_id,
+            )
+        scripts: List[StoredScript] = []
+        for row in rows:
+            metadata = ScriptMetadata(
+                script_id=str(row["script_id"]),
+                simulation_id=row["simulation_id"],
+                user_id=row["user_id"],
+                description=row["description"],
+                created_at=row["created_at"],
+                code_version=str(row["code_version"]),
+            )
+            scripts.append(StoredScript(metadata=metadata, code=row["code"]))
+        return scripts
+
+    async def update_simulation_binding(
+        self, script_id: str, simulation_id: Optional[str]
+    ) -> bool:
+        await self._ensure_schema()
+        pool = await get_pool(
+            self._dsn, min_size=self._min_pool, max_size=self._max_pool
+        )
+        schema_ident = quote_identifier(self._schema)
+        table_ident = quote_identifier(self._table)
+        qualified = f"{schema_ident}.{table_ident}"
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE {qualified} SET simulation_id = $2 WHERE script_id = $1 RETURNING script_id",
+                uuid.UUID(script_id),
+                simulation_id,
+            )
+        return row is not None
+
     async def list_all_metadata(self) -> List[ScriptMetadata]:
         await self._ensure_schema()
         pool = await get_pool(
@@ -168,7 +220,7 @@ class PostgresScriptStore:
             for row in rows
         ]
 
-    async def delete_script(self, simulation_id: str, script_id: str) -> bool:
+    async def delete_script(self, script_id: str) -> bool:
         await self._ensure_schema()
         pool = await get_pool(
             self._dsn, min_size=self._min_pool, max_size=self._max_pool
@@ -178,13 +230,12 @@ class PostgresScriptStore:
         qualified = f"{schema_ident}.{table_ident}"
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"DELETE FROM {qualified} WHERE simulation_id = $1 AND script_id = $2 RETURNING script_id",
-                simulation_id,
+                f"DELETE FROM {qualified} WHERE script_id = $1 RETURNING script_id",
                 uuid.UUID(script_id),
             )
         return row is not None
 
-    async def delete_by_user(self, user_id: str) -> List[Tuple[str, str]]:
+    async def delete_by_user(self, user_id: str) -> List[Tuple[Optional[str], str]]:
         await self._ensure_schema()
         pool = await get_pool(
             self._dsn, min_size=self._min_pool, max_size=self._max_pool
@@ -199,7 +250,7 @@ class PostgresScriptStore:
             )
         return [(row["simulation_id"], str(row["script_id"])) for row in rows]
 
-    async def delete_simulation(self, simulation_id: str) -> List[str]:
+    async def detach_simulation(self, simulation_id: str) -> List[str]:
         await self._ensure_schema()
         pool = await get_pool(
             self._dsn, min_size=self._min_pool, max_size=self._max_pool
@@ -209,7 +260,7 @@ class PostgresScriptStore:
         qualified = f"{schema_ident}.{table_ident}"
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                f"DELETE FROM {qualified} WHERE simulation_id = $1 RETURNING script_id",
+                f"UPDATE {qualified} SET simulation_id = NULL WHERE simulation_id = $1 RETURNING script_id",
                 simulation_id,
             )
         return [str(row["script_id"]) for row in rows]

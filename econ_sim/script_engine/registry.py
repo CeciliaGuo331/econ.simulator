@@ -7,7 +7,16 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Protocol, TYPE_CHECKING
+from typing import (
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Set,
+    TYPE_CHECKING,
+)
 
 from pydantic import BaseModel, ValidationError
 
@@ -42,7 +51,7 @@ class ScriptMetadata(BaseModel):
     """描述脚本的基本信息，便于前端展示与管理。"""
 
     script_id: str
-    simulation_id: str
+    simulation_id: Optional[str] = None
     user_id: str
     description: Optional[str] = None
     created_at: datetime
@@ -62,13 +71,19 @@ class ScriptStore(Protocol):
         self, simulation_id: str
     ) -> List["StoredScript"]: ...
 
+    async def fetch_user_scripts(self, user_id: str) -> List["StoredScript"]: ...
+
     async def list_all_metadata(self) -> List[ScriptMetadata]: ...
 
-    async def delete_script(self, simulation_id: str, script_id: str) -> bool: ...
+    async def update_simulation_binding(
+        self, script_id: str, simulation_id: Optional[str]
+    ) -> bool: ...
 
-    async def delete_by_user(self, user_id: str) -> List[tuple[str, str]]: ...
+    async def delete_script(self, script_id: str) -> bool: ...
 
-    async def delete_simulation(self, simulation_id: str) -> List[str]: ...
+    async def delete_by_user(self, user_id: str) -> List[tuple[Optional[str], str]]: ...
+
+    async def detach_simulation(self, simulation_id: str) -> List[str]: ...
 
     async def clear(self) -> None: ...
 
@@ -78,19 +93,93 @@ class ScriptRegistry:
 
     def __init__(self, store: Optional[ScriptStore] = None) -> None:
         self._store = store
-        self._scripts: Dict[str, Dict[str, _ScriptRecord]] = {}
+        self._records: Dict[str, _ScriptRecord] = {}
+        self._simulation_index: Dict[str, Set[str]] = {}
+        self._user_index: Dict[str, Set[str]] = {}
+        self._loaded_simulations: Set[str] = set()
+        self._loaded_users: Set[str] = set()
         self._load_lock = asyncio.Lock()
         self._registry_lock = asyncio.Lock()
 
+    def _update_indexes(
+        self,
+        script_id: str,
+        old_meta: Optional[ScriptMetadata],
+        new_meta: Optional[ScriptMetadata],
+    ) -> None:
+        if old_meta is not None:
+            user_bucket = self._user_index.get(old_meta.user_id)
+            if user_bucket is not None:
+                user_bucket.discard(script_id)
+                if not user_bucket:
+                    self._user_index.pop(old_meta.user_id, None)
+            if old_meta.simulation_id:
+                sim_bucket = self._simulation_index.get(old_meta.simulation_id)
+                if sim_bucket is not None:
+                    sim_bucket.discard(script_id)
+                    if not sim_bucket:
+                        self._simulation_index.pop(old_meta.simulation_id, None)
+
+        if new_meta is not None:
+            self._user_index.setdefault(new_meta.user_id, set()).add(script_id)
+            if new_meta.simulation_id:
+                self._simulation_index.setdefault(new_meta.simulation_id, set()).add(
+                    script_id
+                )
+
+    async def _ingest_stored_scripts(
+        self, stored_scripts: Iterable["StoredScript"]
+    ) -> None:
+        prepared: List[tuple["StoredScript", Callable[[dict], object]]] = []
+        for stored in stored_scripts:
+            script_id = stored.metadata.script_id
+            record = self._records.get(script_id)
+            if (
+                record is not None
+                and record.metadata.code_version == stored.metadata.code_version
+            ):
+                prepared.append((stored, record.func))
+                continue
+            try:
+                func = self._compile_script(stored.code)
+            except ScriptExecutionError as exc:
+                logger.warning(
+                    "Skip persisted script %s: %s",
+                    stored.metadata.script_id,
+                    exc,
+                )
+                continue
+            prepared.append((stored, func))
+
+        if not prepared:
+            return
+
+        async with self._registry_lock:
+            for stored, func in prepared:
+                script_id = stored.metadata.script_id
+                existing = self._records.get(script_id)
+                old_meta = existing.metadata if existing is not None else None
+                if existing is not None:
+                    existing.metadata = stored.metadata
+                    existing.func = func
+                else:
+                    self._records[script_id] = _ScriptRecord(
+                        metadata=stored.metadata, func=func
+                    )
+                self._update_indexes(script_id, old_meta, stored.metadata)
+                self._loaded_users.add(stored.metadata.user_id)
+
     async def _ensure_simulation_loaded(self, simulation_id: str) -> None:
-        if simulation_id in self._scripts:
+        if simulation_id in self._loaded_simulations:
             return
         if self._store is None:
-            self._scripts.setdefault(simulation_id, {})
+            async with self._registry_lock:
+                self._simulation_index.setdefault(simulation_id, set())
+                self._loaded_simulations.add(simulation_id)
             return
 
         async with self._load_lock:
-            if simulation_id in self._scripts:
+            if simulation_id in self._loaded_simulations:
                 return
             try:
                 stored_scripts = await self._store.fetch_simulation_scripts(
@@ -102,30 +191,41 @@ class ScriptRegistry:
                     simulation_id,
                     exc_info=exc,
                 )
-                self._scripts.setdefault(simulation_id, {})
-                return
+                stored_scripts = []
+            await self._ingest_stored_scripts(stored_scripts)
+            async with self._registry_lock:
+                self._simulation_index.setdefault(simulation_id, set())
+                self._loaded_simulations.add(simulation_id)
 
-            bucket: Dict[str, _ScriptRecord] = {}
-            for stored in stored_scripts:
-                try:
-                    func = self._compile_script(stored.code)
-                except ScriptExecutionError as exc:
-                    logger.warning(
-                        "Skip persisted script %s for simulation %s: %s",
-                        stored.metadata.script_id,
-                        simulation_id,
-                        exc,
-                    )
-                    continue
-                bucket[stored.metadata.script_id] = _ScriptRecord(
-                    metadata=stored.metadata,
-                    func=func,
+    async def _ensure_user_loaded(self, user_id: str) -> None:
+        if user_id in self._loaded_users:
+            return
+        if self._store is None:
+            async with self._registry_lock:
+                self._user_index.setdefault(user_id, set())
+                self._loaded_users.add(user_id)
+            return
+
+        async with self._load_lock:
+            if user_id in self._loaded_users:
+                return
+            try:
+                stored_scripts = await self._store.fetch_user_scripts(user_id)
+            except Exception as exc:  # pragma: no cover - defensive log
+                logger.error(
+                    "Failed to load scripts for user %s",
+                    user_id,
+                    exc_info=exc,
                 )
-            self._scripts[simulation_id] = bucket
+                stored_scripts = []
+            await self._ingest_stored_scripts(stored_scripts)
+            async with self._registry_lock:
+                self._user_index.setdefault(user_id, set())
+                self._loaded_users.add(user_id)
 
     async def register_script(
         self,
-        simulation_id: str,
+        simulation_id: Optional[str],
         user_id: str,
         script_code: str,
         description: Optional[str] = None,
@@ -133,7 +233,6 @@ class ScriptRegistry:
         """编译并注册脚本，使其在后续 Tick 中参与决策。"""
 
         func = self._compile_script(script_code)
-        await self._ensure_simulation_loaded(simulation_id)
 
         metadata = ScriptMetadata(
             script_id=str(uuid.uuid4()),
@@ -148,8 +247,13 @@ class ScriptRegistry:
             await self._store.save_script(metadata, script_code)
 
         async with self._registry_lock:
-            bucket = self._scripts.setdefault(simulation_id, {})
-            bucket[metadata.script_id] = _ScriptRecord(metadata=metadata, func=func)
+            self._records[metadata.script_id] = _ScriptRecord(
+                metadata=metadata, func=func
+            )
+            self._update_indexes(metadata.script_id, None, metadata)
+            self._loaded_users.add(user_id)
+            if simulation_id:
+                self._loaded_simulations.add(simulation_id)
 
         return metadata
 
@@ -158,14 +262,35 @@ class ScriptRegistry:
 
         await self._ensure_simulation_loaded(simulation_id)
         async with self._registry_lock:
-            bucket = self._scripts.get(simulation_id, {})
-            return sorted(
-                (record.metadata for record in bucket.values()),
-                key=lambda meta: meta.created_at,
-            )
+            script_ids = list(self._simulation_index.get(simulation_id, set()))
+            records = [
+                self._records[script_id]
+                for script_id in script_ids
+                if script_id in self._records
+            ]
+        return sorted(
+            (record.metadata for record in records),
+            key=lambda meta: meta.created_at,
+        )
+
+    async def list_user_scripts(self, user_id: str) -> List[ScriptMetadata]:
+        """返回指定用户上传的所有脚本（包含未挂载仿真）。"""
+
+        await self._ensure_user_loaded(user_id)
+        async with self._registry_lock:
+            script_ids = list(self._user_index.get(user_id, set()))
+            records = [
+                self._records[script_id]
+                for script_id in script_ids
+                if script_id in self._records
+            ]
+        return sorted(
+            (record.metadata for record in records),
+            key=lambda meta: meta.created_at,
+        )
 
     async def list_all_scripts(self) -> List[ScriptMetadata]:
-        """返回所有仿真实例下的脚本元数据。"""
+        """返回所有脚本的元数据。"""
 
         if self._store is not None:
             try:
@@ -176,72 +301,122 @@ class ScriptRegistry:
                 )
 
         async with self._registry_lock:
-            scripts: List[ScriptMetadata] = []
-            for bucket in self._scripts.values():
-                scripts.extend(record.metadata for record in bucket.values())
-            scripts.sort(key=lambda meta: meta.created_at)
-            return scripts
+            scripts = [record.metadata for record in self._records.values()]
+        scripts.sort(key=lambda meta: meta.created_at)
+        return scripts
+
+    async def attach_script(
+        self, script_id: str, simulation_id: str, user_id: str
+    ) -> ScriptMetadata:
+        """挂载已上传的脚本到指定仿真实例。"""
+
+        await self._ensure_user_loaded(user_id)
+        await self._ensure_simulation_loaded(simulation_id)
+
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None or record.metadata.user_id != user_id:
+                raise ScriptExecutionError("脚本不存在或无权限操作。")
+            if record.metadata.simulation_id == simulation_id:
+                return record.metadata
+
+            if self._store is not None:
+                try:
+                    updated = await self._store.update_simulation_binding(
+                        script_id, simulation_id
+                    )
+                except Exception as exc:  # pragma: no cover - defensive log
+                    raise ScriptExecutionError(f"无法挂载脚本: {exc}") from exc
+                if not updated:
+                    raise ScriptExecutionError("脚本不存在或已被移除。")
+
+            old_metadata = record.metadata
+            new_metadata = record.metadata.model_copy(
+                update={"simulation_id": simulation_id}
+            )
+            record.metadata = new_metadata
+            self._update_indexes(script_id, old_metadata, new_metadata)
+            self._loaded_simulations.add(simulation_id)
+            return new_metadata
 
     async def remove_script(self, simulation_id: str, script_id: str) -> None:
         """根据脚本 ID 删除已注册脚本。"""
 
         await self._ensure_simulation_loaded(simulation_id)
         async with self._registry_lock:
-            bucket = self._scripts.get(simulation_id)
-            if not bucket or script_id not in bucket:
+            record = self._records.get(script_id)
+            if record is None or record.metadata.simulation_id != simulation_id:
                 raise ScriptExecutionError("Script not found for simulation")
-            del bucket[script_id]
-            if not bucket:
-                self._scripts.pop(simulation_id, None)
 
         if self._store is not None:
             try:
-                await self._store.delete_script(simulation_id, script_id)
+                deleted = await self._store.delete_script(script_id)
             except Exception as exc:  # pragma: no cover - defensive log
-                logger.error(
-                    "Failed to delete script %s for simulation %s in persistent store",
-                    script_id,
-                    simulation_id,
-                    exc_info=exc,
-                )
+                raise ScriptExecutionError(f"Failed to delete script: {exc}") from exc
+            if not deleted:
+                raise ScriptExecutionError("Script not found for simulation")
+
+        async with self._registry_lock:
+            record = self._records.pop(script_id, None)
+            if record is not None:
+                self._update_indexes(script_id, record.metadata, None)
 
     async def remove_scripts_by_user(self, user_id: str) -> int:
         """批量移除指定用户的所有脚本，返回删除数量。"""
 
-        removed = 0
+        await self._ensure_user_loaded(user_id)
         async with self._registry_lock:
-            simulations_to_clear: List[str] = []
-            for simulation_id, bucket in self._scripts.items():
-                to_delete = [
-                    script_id
-                    for script_id, record in bucket.items()
-                    if record.metadata.user_id == user_id
-                ]
-                for script_id in to_delete:
-                    del bucket[script_id]
-                    removed += 1
-                if not bucket:
-                    simulations_to_clear.append(simulation_id)
-            for simulation_id in simulations_to_clear:
-                self._scripts.pop(simulation_id, None)
+            script_ids = list(self._user_index.get(user_id, set()))
+            removed = 0
+            for script_id in script_ids:
+                record = self._records.pop(script_id, None)
+                if record is None:
+                    continue
+                self._update_indexes(script_id, record.metadata, None)
+                removed += 1
 
+        store_removed: List[tuple[Optional[str], str]] = []
         if self._store is not None:
             try:
                 store_removed = await self._store.delete_by_user(user_id)
-                removed = max(removed, len(store_removed))
             except Exception as exc:  # pragma: no cover - defensive log
                 logger.error(
                     "Failed to delete scripts for user %s in persistent store",
                     user_id,
                     exc_info=exc,
                 )
+            removed = max(removed, len(store_removed))
         return removed
+
+    async def delete_script_by_id(self, script_id: str) -> bool:
+        """无论挂载状态如何，彻底删除指定脚本。"""
+
+        store_deleted = False
+        if self._store is not None:
+            try:
+                store_deleted = await self._store.delete_script(script_id)
+            except Exception as exc:  # pragma: no cover - defensive log
+                raise ScriptExecutionError(f"删除脚本失败: {exc}") from exc
+
+        async with self._registry_lock:
+            record = self._records.pop(script_id, None)
+            if record is not None:
+                self._update_indexes(script_id, record.metadata, None)
+                store_deleted = True
+
+        if not store_deleted:
+            raise ScriptExecutionError("Script not found")
+        return True
 
     async def clear(self) -> None:
         """清空所有已注册脚本，主要用于测试。"""
 
         async with self._registry_lock:
-            self._scripts.clear()
+            self._records.clear()
+            self._simulation_index.clear()
+            self._user_index.clear()
+            self._loaded_simulations.clear()
+            self._loaded_users.clear()
         if self._store is not None:
             try:
                 await self._store.clear()
@@ -252,21 +427,42 @@ class ScriptRegistry:
         """移除与指定仿真实例关联的所有脚本，返回解除数量。"""
 
         await self._ensure_simulation_loaded(simulation_id)
-        async with self._registry_lock:
-            bucket = self._scripts.pop(simulation_id, None)
-            removed = len(bucket or {})
 
+        store_script_ids: List[str] = []
         if self._store is not None:
             try:
-                store_removed = await self._store.delete_simulation(simulation_id)
-                removed = max(removed, len(store_removed))
+                store_script_ids = await self._store.detach_simulation(simulation_id)
             except Exception as exc:  # pragma: no cover - defensive log
                 logger.error(
                     "Failed to detach scripts for simulation %s in persistent store",
                     simulation_id,
                     exc_info=exc,
                 )
-        return removed
+
+        async with self._registry_lock:
+            script_ids = set(self._simulation_index.get(simulation_id, set()))
+            script_ids.update(store_script_ids)
+            if not script_ids:
+                self._simulation_index.pop(simulation_id, None)
+                self._loaded_simulations.discard(simulation_id)
+                return 0
+
+            detached = 0
+            for script_id in script_ids:
+                record = self._records.get(script_id)
+                if record is None:
+                    continue
+                old_metadata = record.metadata
+                new_metadata = record.metadata.model_copy(
+                    update={"simulation_id": None}
+                )
+                record.metadata = new_metadata
+                self._update_indexes(script_id, old_metadata, new_metadata)
+                detached += 1
+
+            self._simulation_index.pop(simulation_id, None)
+            self._loaded_simulations.discard(simulation_id)
+            return detached
 
     async def generate_overrides(
         self,
@@ -278,12 +474,17 @@ class ScriptRegistry:
 
         await self._ensure_simulation_loaded(simulation_id)
         async with self._registry_lock:
-            bucket = self._scripts.get(simulation_id)
-            if not bucket:
-                return None
-            records = sorted(
-                bucket.values(), key=lambda record: record.metadata.created_at
-            )
+            script_ids = list(self._simulation_index.get(simulation_id, set()))
+            records = [
+                self._records[script_id]
+                for script_id in script_ids
+                if script_id in self._records
+            ]
+
+        if not records:
+            return None
+
+        records.sort(key=lambda record: record.metadata.created_at)
 
         combined: Optional[TickDecisionOverrides] = None
         for record in records:

@@ -38,7 +38,7 @@
         <pre class="json-preview">{{ context | tojson(indent=2) }}</pre>
     </article>
     <article class="card">
-        <h3>已上传脚本</h3>
+        <h3>当前仿真实例脚本</h3>
         {% if simulation_id and scripts %}
         <ul class="script-list">
             {% for script in scripts %}
@@ -65,11 +65,39 @@
         <p class="empty">请选择或加入仿真实例后查看脚本列表。</p>
         {% endif %}
     </article>
+    <article class="card">
+        <h3>个人脚本库</h3>
+        {% if user_scripts %}
+        <ul class="script-list">
+            {% for script in user_scripts %}
+            <li>
+                <div class="script-meta">
+                    <span class="script-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                    <span class="script-owner">{{ script.user_id }}</span>
+                </div>
+                <div class="script-meta">
+                    <span class="script-id">ID: {{ script.script_id }}</span>
+                    <span class="script-version">版本: {{ script.code_version }}</span>
+                </div>
+                <div class="script-meta">
+                    <span class="script-status">状态: {% if script.simulation_id %}已挂载至 {{ script.simulation_id }}{% else %}未挂载{% endif %}</span>
+                </div>
+                {% if script.description %}
+                <p class="script-desc">{{ script.description }}</p>
+                {% else %}
+                <p class="script-desc empty">（无描述）</p>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="empty">还没有上传任何脚本，下面的表单可将脚本保存到个人脚本库。</p>
+        {% endif %}
+    </article>
 </section>
 
 <section class="panel">
     <h3>上传脚本</h3>
-    {% if simulation_id %}
     <form method="post" action="/web/scripts" class="script-form" enctype="multipart/form-data">
         <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
         <label>脚本说明（可选）
@@ -79,12 +107,35 @@
             <input type="file" name="script_file" accept=".py" required>
         </label>
         <p class="form-hint">脚本必须定义 <code>generate_decisions(context)</code> 函数。</p>
+        <p class="form-hint">若当前尚未加入仿真实例，脚本会先保存到个人脚本库，稍后可在下方挂载。</p>
+        {% if simulation_id %}
+        <p class="form-hint">当前仿真实例：<strong>{{ simulation_id }}</strong>，提交后脚本将立即参与后续 Tick。</p>
+        {% endif %}
         <button type="submit">提交脚本</button>
     </form>
+</section>
+
+{% if simulation_id %}
+<section class="panel">
+    <h3>挂载已有脚本</h3>
+    {% if attachable_scripts %}
+    <form method="post" action="/web/scripts/attach" class="script-form">
+        <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
+        <label>选择脚本
+            <select name="script_id">
+                {% for script in attachable_scripts %}
+                <option value="{{ script.script_id }}">{{ script.script_id }}{% if script.description %} · {{ script.description }}{% endif %}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <p class="form-hint">将脚本挂载到当前仿真实例后，它会立即参与决策逻辑。</p>
+        <button type="submit">挂载脚本</button>
+    </form>
     {% else %}
-    <p class="empty">请先加入仿真实例后再上传脚本。</p>
+    <p class="empty">个人脚本库暂无未挂载的脚本。</p>
     {% endif %}
 </section>
+{% endif %}
 <script>
 document.addEventListener("DOMContentLoaded", () => {
     const storageKey = "userDashboardScrollY";

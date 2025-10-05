@@ -138,9 +138,11 @@ def generate_decisions(context):
 
         assert await script_registry.list_scripts(simulation_id) == []
 
-        # ensure metadata reference is no longer tracked
+        # ensure metadata参考保留但已解绑仿真
         all_metadata = await script_registry.list_all_scripts()
-        assert metadata.script_id not in {m.script_id for m in all_metadata}
+        remaining = {m.script_id: m for m in all_metadata}
+        assert metadata.script_id in remaining
+        assert remaining[metadata.script_id].simulation_id is None
     finally:
         await script_registry.clear()
 
