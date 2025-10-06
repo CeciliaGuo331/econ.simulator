@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import (
-    Callable,
     Dict,
     Iterable,
     List,
@@ -23,24 +23,19 @@ from pydantic import BaseModel, ValidationError
 from ..data_access.models import TickDecisionOverrides, WorldState
 from ..logic_modules.agent_logic import merge_tick_overrides
 from ..utils.settings import WorldConfig
+from .sandbox import (
+    ALLOWED_MODULES,
+    DEFAULT_SANDBOX_TIMEOUT,
+    ScriptSandboxError,
+    ScriptSandboxTimeout,
+    execute_script,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .postgres_store import StoredScript
 
 
 logger = logging.getLogger(__name__)
-
-_ALLOWED_BUILTINS = {
-    "abs": abs,
-    "min": min,
-    "max": max,
-    "sum": sum,
-    "len": len,
-    "sorted": sorted,
-    "round": round,
-    "enumerate": enumerate,
-    "range": range,
-}
 
 
 class ScriptExecutionError(RuntimeError):
@@ -61,7 +56,7 @@ class ScriptMetadata(BaseModel):
 @dataclass
 class _ScriptRecord:
     metadata: ScriptMetadata
-    func: Callable[[dict], object]
+    code: str
 
 
 class ScriptStore(Protocol):
@@ -91,7 +86,12 @@ class ScriptStore(Protocol):
 class ScriptRegistry:
     """维护脚本与仿真实例之间关联关系的容器。"""
 
-    def __init__(self, store: Optional[ScriptStore] = None) -> None:
+    def __init__(
+        self,
+        store: Optional[ScriptStore] = None,
+        *,
+        sandbox_timeout: float = DEFAULT_SANDBOX_TIMEOUT,
+    ) -> None:
         self._store = store
         self._records: Dict[str, _ScriptRecord] = {}
         self._simulation_index: Dict[str, Set[str]] = {}
@@ -100,6 +100,8 @@ class ScriptRegistry:
         self._loaded_users: Set[str] = set()
         self._load_lock = asyncio.Lock()
         self._registry_lock = asyncio.Lock()
+        self._sandbox_timeout = sandbox_timeout
+        self._allowed_modules = set(ALLOWED_MODULES)
 
     def _update_indexes(
         self,
@@ -130,7 +132,7 @@ class ScriptRegistry:
     async def _ingest_stored_scripts(
         self, stored_scripts: Iterable["StoredScript"]
     ) -> None:
-        prepared: List[tuple["StoredScript", Callable[[dict], object]]] = []
+        prepared: List["StoredScript"] = []
         for stored in stored_scripts:
             script_id = stored.metadata.script_id
             record = self._records.get(script_id)
@@ -138,10 +140,11 @@ class ScriptRegistry:
                 record is not None
                 and record.metadata.code_version == stored.metadata.code_version
             ):
-                prepared.append((stored, record.func))
+                prepared.append(stored)
                 continue
+
             try:
-                func = self._compile_script(stored.code)
+                self._validate_script(stored.code)
             except ScriptExecutionError as exc:
                 logger.warning(
                     "Skip persisted script %s: %s",
@@ -149,23 +152,20 @@ class ScriptRegistry:
                     exc,
                 )
                 continue
-            prepared.append((stored, func))
+            prepared.append(stored)
 
         if not prepared:
             return
 
         async with self._registry_lock:
-            for stored, func in prepared:
+            for stored in prepared:
                 script_id = stored.metadata.script_id
                 existing = self._records.get(script_id)
                 old_meta = existing.metadata if existing is not None else None
-                if existing is not None:
-                    existing.metadata = stored.metadata
-                    existing.func = func
-                else:
-                    self._records[script_id] = _ScriptRecord(
-                        metadata=stored.metadata, func=func
-                    )
+                self._records[script_id] = _ScriptRecord(
+                    metadata=stored.metadata,
+                    code=stored.code,
+                )
                 self._update_indexes(script_id, old_meta, stored.metadata)
                 self._loaded_users.add(stored.metadata.user_id)
 
@@ -232,7 +232,7 @@ class ScriptRegistry:
     ) -> ScriptMetadata:
         """编译并注册脚本，使其在后续 Tick 中参与决策。"""
 
-        func = self._compile_script(script_code)
+        self._validate_script(script_code)
 
         metadata = ScriptMetadata(
             script_id=str(uuid.uuid4()),
@@ -248,7 +248,8 @@ class ScriptRegistry:
 
         async with self._registry_lock:
             self._records[metadata.script_id] = _ScriptRecord(
-                metadata=metadata, func=func
+                metadata=metadata,
+                code=script_code,
             )
             self._update_indexes(metadata.script_id, None, metadata)
             self._loaded_users.add(user_id)
@@ -488,44 +489,41 @@ class ScriptRegistry:
 
         combined: Optional[TickDecisionOverrides] = None
         for record in records:
-            overrides = self._execute_script(record.func, world_state, config)
+            overrides = self._execute_script(record, world_state, config)
             combined = merge_tick_overrides(combined, overrides)
 
         return combined
 
-    def _compile_script(self, script_code: str) -> Callable[[dict], object]:
-        """在受限环境下执行脚本，提取 `generate_decisions` 函数。"""
-
-        global_env = {"__builtins__": _ALLOWED_BUILTINS}
-        local_env: Dict[str, object] = {}
-        try:
-            exec(script_code, global_env, local_env)
-        except Exception as exc:  # pragma: no cover - 语法或执行错误
-            raise ScriptExecutionError(f"脚本编译失败: {exc}") from exc
-
-        func = local_env.get("generate_decisions")
-        if func is None or not callable(func):
-            raise ScriptExecutionError(
-                "脚本中必须定义可调用的 generate_decisions(context) 函数"
-            )
-        return func  # type: ignore[return-value]
-
     def _execute_script(
         self,
-        func: Callable[[dict], object],
+        record: _ScriptRecord,
         world_state: WorldState,
         config: WorldConfig,
     ) -> Optional[TickDecisionOverrides]:
-        """调用脚本函数并解析返回的决策覆盖。"""
+        """调用脚本并解析返回的决策覆盖。"""
 
         context = {
             "world_state": world_state.model_dump(mode="json"),
             "config": config.model_dump(mode="json"),
+            "script_api_version": 1,
         }
+
         try:
-            result = func(context)
-        except Exception as exc:
-            raise ScriptExecutionError(f"脚本执行失败: {exc}") from exc
+            result = execute_script(
+                record.code,
+                context,
+                timeout=self._sandbox_timeout,
+                script_id=record.metadata.script_id,
+                allowed_modules=self._allowed_modules,
+            )
+        except ScriptSandboxTimeout as exc:
+            raise ScriptExecutionError(
+                f"脚本执行超时: {record.metadata.script_id}"
+            ) from exc
+        except ScriptSandboxError as exc:
+            raise ScriptExecutionError(
+                f"脚本执行失败 ({record.metadata.script_id}): {exc}"
+            ) from exc
 
         if result in (None, {}, []):
             return None
@@ -533,7 +531,42 @@ class ScriptRegistry:
         try:
             return TickDecisionOverrides.model_validate(result)
         except ValidationError as exc:
-            raise ScriptExecutionError(f"脚本返回结果解析失败: {exc}") from exc
+            raise ScriptExecutionError(
+                f"脚本返回结果解析失败 ({record.metadata.script_id}): {exc}"
+            ) from exc
+
+    def _validate_script(self, script_code: str) -> None:
+        try:
+            tree = ast.parse(script_code)
+        except SyntaxError as exc:  # pragma: no cover - 语法检查
+            raise ScriptExecutionError(f"脚本语法错误: {exc}") from exc
+
+        has_entry = any(
+            isinstance(node, ast.FunctionDef) and node.name == "generate_decisions"
+            for node in tree.body
+        )
+
+        if not has_entry:
+            raise ScriptExecutionError(
+                "脚本中必须定义可调用的 generate_decisions(context) 函数"
+            )
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if not self._is_module_allowed(alias.name):
+                        raise ScriptExecutionError(f"禁止导入模块: {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module is None:
+                    raise ScriptExecutionError("禁止使用相对导入")
+                if not self._is_module_allowed(node.module):
+                    raise ScriptExecutionError(f"禁止导入模块: {node.module}")
+
+    def _is_module_allowed(self, module_name: str) -> bool:
+        return any(
+            module_name == allowed or module_name.startswith(f"{allowed}.")
+            for allowed in self._allowed_modules
+        )
 
 
 __all__ = ["ScriptExecutionError", "ScriptMetadata", "ScriptRegistry", "ScriptStore"]

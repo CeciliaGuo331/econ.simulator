@@ -11,6 +11,7 @@
 | [3_PROGRESS_AND_TODO.md](./3_PROGRESS_AND_TODO.md) | 当前功能进展、质量状态、短期与中期 TODO 列表 |
 | [4_API_REFERENCE.md](./4_API_REFERENCE.md) | 外部 REST API 清单、脚本库操作流程、交互时序 |
 | [5_DEPLOYMENT.md](./5_DEPLOYMENT.md) | 本地开发、Docker Compose、生产部署与运维建议 |
+| [user_strategies/](../user_strategies/) | 面向不同用户角色的策略编写指南（含沙箱 API 与模板） |
 
 你可以按顺序阅读，也可以按需跳转。建议阅读完架构和数据两篇后，再回到 README 和代码获取动手实践的上下文；API 参考用于查阅接口细节，部署章节则汇总运行环境配置。
 

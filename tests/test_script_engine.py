@@ -120,3 +120,40 @@ def generate_decisions(context):
 
     with pytest.raises(ScriptExecutionError):
         await registry.delete_script_by_id(meta.script_id)
+
+
+@pytest.mark.asyncio
+async def test_rejects_forbidden_import() -> None:
+    registry = ScriptRegistry()
+    with pytest.raises(ScriptExecutionError):
+        await registry.register_script(
+            simulation_id="danger",
+            user_id="u3",
+            script_code="""
+import os
+
+def generate_decisions(context):
+    return {}
+""",
+        )
+
+
+@pytest.mark.asyncio
+async def test_script_timeout_is_reported() -> None:
+    registry = ScriptRegistry(sandbox_timeout=0.1)
+    await registry.register_script(
+        simulation_id="slow",
+        user_id="u4",
+        script_code="""
+def generate_decisions(context):
+    while True:
+        pass
+""",
+    )
+
+    config = get_world_config()
+    orchestrator = SimulationOrchestrator()
+    world_state = await orchestrator.create_simulation("slow")
+
+    with pytest.raises(ScriptExecutionError):
+        await registry.generate_overrides("slow", world_state, config)

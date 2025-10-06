@@ -6,12 +6,21 @@ import os
 
 from .postgres_store import PostgresScriptStore
 from .registry import ScriptRegistry
+from .sandbox import DEFAULT_SANDBOX_TIMEOUT
 
 
 def _build_registry() -> ScriptRegistry:
     dsn = os.getenv("ECON_SIM_POSTGRES_DSN")
+    timeout_env = os.getenv("ECON_SIM_SCRIPT_TIMEOUT_SECONDS")
+    try:
+        sandbox_timeout = (
+            float(timeout_env) if timeout_env is not None else DEFAULT_SANDBOX_TIMEOUT
+        )
+    except ValueError:
+        sandbox_timeout = DEFAULT_SANDBOX_TIMEOUT
+
     if not dsn:
-        return ScriptRegistry()
+        return ScriptRegistry(sandbox_timeout=sandbox_timeout)
 
     schema = os.getenv("ECON_SIM_POSTGRES_SCHEMA", "public")
     table = os.getenv("ECON_SIM_POSTGRES_SCRIPT_TABLE", "scripts")
@@ -25,7 +34,7 @@ def _build_registry() -> ScriptRegistry:
         min_pool_size=min_pool,
         max_pool_size=max_pool,
     )
-    return ScriptRegistry(store=store)
+    return ScriptRegistry(store=store, sandbox_timeout=sandbox_timeout)
 
 
 # 全局单例，供 API 与调度器共享。
