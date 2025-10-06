@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Protocol, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Protocol, Set, TYPE_CHECKING
 
 import numpy as np
 
@@ -36,6 +36,7 @@ from .models import (
     HouseholdState,
     MacroState,
     StateUpdateCommand,
+    TickLogEntry,
     TickResult,
     WorldState,
 )
@@ -453,6 +454,8 @@ class DataAccessLayer:
     _participants: Dict[str, Set[str]] = field(default_factory=dict)
     _known_simulations: Set[str] = field(default_factory=set)
     _hydrated_simulations: bool = field(default=False, init=False, repr=False)
+    _tick_logs: Dict[str, List[TickLogEntry]] = field(default_factory=dict)
+    _log_retention: int = field(default=1000)
 
     @classmethod
     def with_default_store(
@@ -524,10 +527,12 @@ class DataAccessLayer:
         if existing is not None:
             world_state = WorldState.model_validate(existing)
             self._known_simulations.add(simulation_id)
+            self._tick_logs.setdefault(simulation_id, [])
             return world_state
 
         world_state = self._build_initial_world_state(simulation_id)
         await self._persist_state(world_state)
+        self._tick_logs[simulation_id] = []
         return world_state
 
     async def reset_simulation(self, simulation_id: str) -> WorldState:
@@ -535,6 +540,7 @@ class DataAccessLayer:
 
         world_state = self._build_initial_world_state(simulation_id)
         await self._persist_state(world_state)
+        self._tick_logs[simulation_id] = []
         return world_state
 
     async def delete_simulation(self, simulation_id: str) -> int:
@@ -551,6 +557,7 @@ class DataAccessLayer:
             removed = await self.participant_store.remove_simulation(simulation_id)
             removed_count = max(removed_count, removed)
         self._known_simulations.discard(simulation_id)
+        self._tick_logs.pop(simulation_id, None)
         return removed_count
 
     async def get_world_state(self, simulation_id: str) -> WorldState:
@@ -579,6 +586,12 @@ class DataAccessLayer:
     async def record_tick(self, tick_result: TickResult) -> None:
         """记录仿真步执行结果，当前仅持久化最新世界状态。"""
         await self._persist_state(tick_result.world_state)
+        simulation_id = tick_result.world_state.simulation_id
+        if tick_result.logs:
+            stored = self._tick_logs.setdefault(simulation_id, [])
+            stored.extend(tick_result.logs)
+            if len(stored) > self._log_retention:
+                stored[:] = stored[-self._log_retention :]
 
     async def register_participant(self, simulation_id: str, user_id: str) -> None:
         """登记参与同一仿真实例的用户，用于共享会话管理。"""
@@ -600,6 +613,20 @@ class DataAccessLayer:
             if participants:
                 self._participants[simulation_id] = participants
         return sorted(participants or [])
+
+    async def get_recent_logs(
+        self, simulation_id: str, limit: Optional[int] = None
+    ) -> list[TickLogEntry]:
+        """返回指定仿真实例的最近日志条目。"""
+
+        entries = self._tick_logs.get(simulation_id, [])
+        if not entries:
+            return []
+        if limit is None or limit <= 0:
+            window = entries
+        else:
+            window = entries[-limit:]
+        return [TickLogEntry.model_validate(item.model_dump()) for item in window]
 
     async def list_simulations(self) -> list[str]:
         """返回已知的仿真实例 ID 列表，必要时从持久层回填。"""

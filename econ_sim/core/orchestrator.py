@@ -75,6 +75,14 @@ class SimulationOrchestrator:
         """读取指定仿真实例的当前世界状态。"""
         return await self.data_access.get_world_state(simulation_id)
 
+    async def get_recent_logs(
+        self, simulation_id: str, limit: Optional[int] = None
+    ) -> List[TickLogEntry]:
+        """返回指定仿真实例的最近 Tick 日志。"""
+
+        await self.data_access.get_world_state(simulation_id)
+        return await self.data_access.get_recent_logs(simulation_id, limit)
+
     async def run_tick(
         self,
         simulation_id: str,

@@ -9,6 +9,17 @@
         {% if message %}<div class="status success">{{ message }}</div>{% endif %}
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
     </section>
+    {% if log_download_url %}
+        <section class="panel">
+            <h3>调试工具</h3>
+            <p>
+                可通过下方链接下载最近的执行日志（最多保留 1000 条），帮助定位脚本报错与经济状态变化。
+            </p>
+            <p>
+                <a class="button" href="{{ log_download_url }}">下载最近日志</a>
+            </p>
+        </section>
+    {% endif %}
     {% if user.user_type != "admin" %}
         <section class="panel">
             <h3>加入仿真实例</h3>

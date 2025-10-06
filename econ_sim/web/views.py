@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import io
+import json
+import logging
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
+import markdown
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
@@ -25,117 +35,65 @@ from .background import BackgroundJobManager, JobConflictError
 
 router = APIRouter(prefix="/web", tags=["web"])
 
+logger = logging.getLogger(__name__)
+
 _templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
 _orchestrator = SimulationOrchestrator()
 _background_jobs = BackgroundJobManager()
 
-ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
-    "individual": {
-        "title": "个人用户（individual）",
-        "goal": "提升家庭消费能力与现金流，适时调整劳动供给与储蓄率。",
-        "data_points": [
-            Markup(
-                "使用 <code>/simulations/{simulation_id}/state/agents?ids=...</code> 查看个人资产与就业状态。"
-            ),
-            "仪表盘“角色视角数据”板块展示家户的现金、消费与工资信息，可用于快速验证策略效果。",
-        ],
-        "api_notes": [
-            Markup(
-                "<code>POST /simulations/{simulation_id}/scripts</code> 上传或更新家户策略脚本。"
-            ),
-            Markup(
-                "<code>POST /simulations/{simulation_id}/run_tick</code> 携带 <code>decisions.households</code> 覆盖推动仿真。"
-            ),
-        ],
-    },
-    "firm": {
-        "title": "企业（firm）",
-        "goal": "平衡库存与销售，动态调整价格、产量及招聘计划。",
-        "data_points": [
-            Markup(
-                "关注 <code>/simulations/{simulation_id}/state/full</code> 中的 <code>firm</code>、<code>macro</code> 数据（库存、价格、GDP）。"
-            ),
-            "仪表盘脚本列表可了解其他参与者的企业策略，评估竞争环境。",
-        ],
-        "api_notes": [
-            Markup(
-                "<code>POST /simulations/{simulation_id}/run_tick</code> 中的 <code>decisions.firm</code> 字段可设置新一轮价格与产量。"
-            ),
-            Markup(
-                "<code>GET /simulations/{simulation_id}/scripts</code> 查看或导出当前脚本。"
-            ),
-        ],
-    },
-    "government": {
-        "title": "政府（government）",
-        "goal": "稳定就业与税收，合理设置税率、岗位数量和转移支付。",
-        "data_points": [
-            "重点监控宏观指标中的失业率 (<code>macro.unemployment_rate</code>) 与财政余额。",
-            "家户列表的就业状态可帮助评估公共岗位政策的效果。",
-        ],
-        "api_notes": [
-            Markup(
-                "<code>POST /simulations/{simulation_id}/run_tick</code> 的 <code>decisions.government</code> 字段用于更新税率与转移预算。"
-            ),
-            Markup(
-                "<code>GET /simulations/{simulation_id}/state/full</code> 用于获取财政相关数据。"
-            ),
-        ],
-    },
-    "commercial_bank": {
-        "title": "商业银行（commercial_bank）",
-        "goal": "管理存贷款利差，控制信贷配额并保持资金安全。",
-        "data_points": [
-            Markup(
-                "查看 <code>bank.balance_sheet</code> 中的存款、贷款余额以及 <code>approved_loans</code> 列表。"
-            ),
-            "关注宏观通胀率与央行政策，以调整利率策略。",
-        ],
-        "api_notes": [
-            Markup(
-                "<code>POST /simulations/{simulation_id}/run_tick</code> 的 <code>decisions.bank</code> 字段可设置存贷款利率与信贷供给。"
-            ),
-            Markup(
-                "<code>GET /simulations/{simulation_id}/state/full</code> 查询银行资产负债表。"
-            ),
-        ],
-    },
-    "central_bank": {
-        "title": "中央银行（central_bank）",
-        "goal": "调节政策利率与准备金率，使通胀与失业率围绕目标值波动。",
-        "data_points": [
-            "重点跟踪 <code>macro.inflation</code> 与 <code>macro.unemployment_rate</code>。",
-            "结合商业银行利率决策判断政策传导效果。",
-        ],
-        "api_notes": [
-            Markup(
-                "<code>POST /simulations/{simulation_id}/run_tick</code> 的 <code>decisions.central_bank</code> 字段用于设定政策利率与准备金率。"
-            ),
-            Markup(
-                "<code>GET /simulations/{simulation_id}</code> 快速查看当前 Tick/Day。"
-            ),
-        ],
-    },
-    "admin": {
-        "title": "管理员（admin）",
-        "goal": "监控仿真运行状况、维护脚本安全并协助排查问题。",
-        "data_points": [
-            Markup(
-                "通过 <code>/simulations/{simulation_id}/state/full</code> 导出完整世界状态，结合仪表盘全量视图巡检。"
-            ),
-            "脚本列表可帮助识别潜在问题策略并与参与者沟通。",
-        ],
-        "api_notes": [
-            Markup(
-                "<code>DELETE /simulations/{simulation_id}/scripts/{script_id}</code> 移除违规脚本。"
-            ),
-            "管理员账号仅用于监控，前端已禁止上传脚本。",
-        ],
-        "notes": ["请在部署后尽快修改默认管理员密码。"],
-    },
+_DOCS_ROOT = Path(__file__).resolve().parents[2] / "docs" / "user_strategies"
+
+ROLE_DOC_FILES: Dict[str, Dict[str, str]] = {
+    "individual": {"title": "家户策略指南", "filename": "household.md"},
+    "firm": {"title": "企业策略指南", "filename": "firm.md"},
+    "government": {"title": "政府策略指南", "filename": "government.md"},
+    "commercial_bank": {"title": "商业银行策略指南", "filename": "bank.md"},
+    "central_bank": {"title": "中央银行策略指南", "filename": "central_bank.md"},
 }
+
+
+@lru_cache(maxsize=32)
+def _render_markdown(relative_path: str) -> Markup:
+    doc_path = _DOCS_ROOT / relative_path
+    try:
+        raw = doc_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.error("指定的文档不存在: %s", doc_path)
+        return Markup("<p class='text-danger'>对应的文档暂时不可用，请联系管理员。</p>")
+
+    html = markdown.markdown(
+        raw,
+        extensions=["fenced_code", "codehilite", "tables", "toc"],
+        extension_configs={
+            "codehilite": {"guess_lang": False, "linenums": False},
+        },
+    )
+    return Markup(html)
+
+
+def _format_logs_for_download(entries: List[Any]) -> str:
+    if not entries:
+        return "尚无可用日志。\n"
+
+    lines: List[str] = []
+    for entry in entries:
+        tick = getattr(entry, "tick", "?")
+        day = getattr(entry, "day", "?")
+        message = getattr(entry, "message", "") or ""
+        line = f"Day {day} | Tick {tick} | {message}"
+        context = getattr(entry, "context", None)
+        if context:
+            try:
+                context_str = json.dumps(context, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                context_str = str(context)
+            if context_str:
+                line += f" | context={context_str}"
+        lines.append(line)
+
+    return "\n".join(lines) + "\n"
 
 
 def _get_session_user(request: Request) -> Optional[Dict[str, Any]]:
@@ -341,6 +299,7 @@ async def dashboard(
                 "scripts_by_user": {},
                 "user_scripts": user_scripts,
                 "attachable_scripts": attachable_scripts,
+                "log_download_url": None,
             },
             status_code=200,
         )
@@ -378,6 +337,7 @@ async def dashboard(
                 "scripts_by_user": scripts_by_user,
                 "user_scripts": [],
                 "attachable_scripts": [],
+                "log_download_url": None,
             },
         )
 
@@ -423,6 +383,9 @@ async def dashboard(
                 "scripts_by_user": {},
                 "user_scripts": user_scripts,
                 "attachable_scripts": attachable_scripts,
+                "log_download_url": (
+                    f"/web/logs/{simulation_id}/download" if simulation_id else None
+                ),
             },
             status_code=404,
         )
@@ -470,6 +433,9 @@ async def dashboard(
             "scripts_by_user": scripts_by_user,
             "user_scripts": user_scripts,
             "attachable_scripts": attachable_scripts,
+            "log_download_url": (
+                f"/web/logs/{simulation_id}/download" if simulation_id else None
+            ),
         },
     )
 
@@ -1008,15 +974,71 @@ async def register_submission(
 async def docs_page(request: Request) -> HTMLResponse:
     session_user = _get_session_user(request)
     user_type = session_user.get("user_type") if session_user else None
-    guides: list[Dict[str, Any]] = []
-    if user_type and user_type in ROLE_GUIDES:
-        guides = [ROLE_GUIDES[user_type]]
+
+    platform_doc = _render_markdown("platform_api.md")
+
+    role_docs: List[Dict[str, Any]] = []
+    if user_type == "admin":
+        role_docs = [
+            {
+                "key": role,
+                "title": meta["title"],
+                "content": _render_markdown(meta["filename"]),
+            }
+            for role, meta in ROLE_DOC_FILES.items()
+        ]
+    elif user_type and user_type in ROLE_DOC_FILES:
+        role_meta = ROLE_DOC_FILES[user_type]
+        role_docs = [
+            {
+                "key": user_type,
+                "title": role_meta["title"],
+                "content": _render_markdown(role_meta["filename"]),
+            }
+        ]
 
     return _templates.TemplateResponse(
         "docs.html",
         {
             "request": request,
-            "role_guides": guides,
+            "platform_doc": platform_doc,
+            "role_docs": role_docs,
             "active_role": user_type,
         },
+    )
+
+
+@router.get("/logs/{simulation_id}/download")
+async def download_recent_logs(
+    simulation_id: str,
+    limit: int = 500,
+    user: Dict[str, Any] = Depends(_require_session_user),
+):
+    target = simulation_id.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="仿真实例 ID 不能为空。")
+
+    limit = max(1, min(limit, 1000))
+
+    try:
+        if user.get("user_type") != "admin":
+            participants = await _orchestrator.list_participants(target)
+            if user.get("email") not in participants:
+                raise HTTPException(
+                    status_code=403, detail="只有加入该仿真实例的用户才能下载日志。"
+                )
+        logs = await _orchestrator.get_recent_logs(target, limit=limit)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail="仿真实例不存在或尚未初始化。"
+        ) from exc
+
+    text = _format_logs_for_download(logs)
+    buffer = io.BytesIO(text.encode("utf-8"))
+    buffer.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{target}-logs.txt"'}
+    return StreamingResponse(
+        buffer,
+        media_type="text/plain; charset=utf-8",
+        headers=headers,
     )

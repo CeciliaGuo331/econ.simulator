@@ -2,95 +2,32 @@
 {% block title %}文档 - Econ Simulator{% endblock %}
 {% block content %}
     <section class="panel">
-        <h2>系统文档</h2>
-        <p>这里汇总了常见操作指引、API 接入说明以及上传脚本的注意事项。</p>
+        <h2>文档中心</h2>
+        <p>这里汇总了平台 API 指南与各角色的策略手册，所有内容都与网页端可见的功能保持同步。</p>
+        <p class="hint">提示：仪表盘顶部新增“下载最近日志”按钮，可在脚本调试时快速查看输出与异常。</p>
     </section>
     <section class="panel">
-        <h3>快速开始</h3>
-        <ol>
-            <li>
-                使用页面顶部的“登录”入口，输入注册邮箱和密码。如果没有账号，可通过后端 <code>/auth/register</code> 接口创建。
-            </li>
-            <li>登录后访问仪表盘，根据账户角色查看不同的世界状态视角。</li>
-            <li>非管理员用户可在仪表盘底部上传自定义脚本，参与下一轮仿真决策。</li>
-        </ol>
+        <h2>平台 API 指南</h2>
+        <div class="markdown-body">
+            {{ platform_doc | safe }}
+        </div>
     </section>
     <section class="panel">
         <h3>角色策略指南</h3>
-        {% if role_guides %}
-            <p>下列建议根据当前登录角色（{{ active_role }}) 定制，涵盖脚本目标、重点数据与常用 API。</p>
-            <div class="role-grid">
-                {% for guide in role_guides %}
+        {% if role_docs %}
+            <p>以下内容会随登录账号的角色自动切换，覆盖数据入口、策略建议与调试要点。</p>
+            <div class="role-docs">
+                {% for doc in role_docs %}
                     <article>
-                        <h4>{{ guide.title }}</h4>
-                        <p>
-                            <strong>脚本目标：</strong>{{ guide.goal }}
-                        </p>
-                        {% if guide.data_points %}
-                            <div>
-                                <strong>推荐数据：</strong>
-                                <ul>
-                                    {% for point in guide.data_points %}<li>{{ point | safe }}</li>{% endfor %}
-                                </ul>
-                            </div>
-                        {% endif %}
-                        {% if guide.api_notes %}
-                            <div>
-                                <strong>常用 API：</strong>
-                                <ul>
-                                    {% for api in guide.api_notes %}<li>{{ api | safe }}</li>{% endfor %}
-                                </ul>
-                            </div>
-                        {% endif %}
-                        {% if guide.notes %}
-                            <div>
-                                <strong>备注：</strong>
-                                <ul>
-                                    {% for note in guide.notes %}<li>{{ note }}</li>{% endfor %}
-                                </ul>
-                            </div>
-                        {% endif %}
+                        <h4>{{ doc.title }}</h4>
+                        <div class="markdown-body">
+                            {{ doc.content | safe }}
+                        </div>
                     </article>
                 {% endfor %}
             </div>
         {% else %}
-            <p class="hint">登录后会显示与当前角色匹配的策略指南，帮助你快速定位脚本编写方向。</p>
+            <p class="hint">请先登录即可查看与你的角色匹配的策略手册与脚本示例。</p>
         {% endif %}
-    </section>
-    <section class="panel">
-        <h3>REST API 摘要</h3>
-        <p>
-            完整接口文档请参考仓库中的 <code>docs/api</code> 目录。以下列出几个核心端点：
-        </p>
-        <ul class="api-list">
-            <li>
-                <strong>POST</strong> <code>/auth/register</code> —— 注册新用户，字段包括 <code>email</code>、<code>password</code>、<code>user_type</code>。
-            </li>
-            <li>
-                <strong>POST</strong> <code>/auth/login</code> —— 登录获取访问令牌。
-            </li>
-            <li>
-                <strong>POST</strong> <code>/simulation/{simulation_id}/run</code> —— 运行单次仿真 Tick，返回更新后的世界状态。
-            </li>
-            <li>
-                <strong>GET</strong> <code>/simulation/{simulation_id}/state</code> —— 查询当前世界状态快照。
-            </li>
-        </ul>
-        <p>
-            调用时请在 <code>Authorization</code> 头中携带 <code>Bearer &lt;token&gt;</code>。
-        </p>
-    </section>
-    <section class="panel">
-        <h3>脚本上传规范</h3>
-        <ul>
-            <li>
-                脚本必须定义 <code>generate_decisions(context)</code> 函数并返回符合模型的 JSON。
-            </li>
-            <li>
-                可通过 <code>context["world_state"]</code> 和 <code>context["config"]</code> 获取世界状态与参数。
-            </li>
-            <li>脚本执行过程中禁止使用未在沙箱允许列表中的内置函数。</li>
-            <li>管理员账号仅用于审核与监控，无法上传脚本。</li>
-        </ul>
     </section>
 {% endblock %}
