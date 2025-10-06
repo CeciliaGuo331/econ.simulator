@@ -210,7 +210,9 @@
     <section class="grid">
         <article class="card wide">
             <h3>世界状态快照</h3>
+            <div class="scroll-pane">
             <pre class="json-preview">{{ context.world | tojson(indent=2) }}</pre>
+            </div>
         </article>
     </section>
     <section class="panel">

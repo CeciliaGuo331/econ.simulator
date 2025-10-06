@@ -9,6 +9,16 @@ from fastapi.testclient import TestClient
 from econ_sim.main import app
 from econ_sim.web import views
 from econ_sim.script_engine import script_registry
+from econ_sim.core.orchestrator import SimulationNotFoundError
+
+
+SCRIPT_SOURCE = (
+    "from econ_sim.script_engine.user_api import OverridesBuilder\n\n"
+    "Context = dict[str, object]\n\n"
+    "def generate_decisions(context: Context) -> dict[str, object]:\n"
+    "    builder = OverridesBuilder()\n"
+    "    return builder.build()\n"
+)
 
 
 @pytest.fixture
@@ -91,14 +101,6 @@ def test_upload_script_saved_to_library(client):
 
     asyncio.run(script_registry.clear())
 
-    script_source = (
-        "from econ_sim.script_engine.user_api import OverridesBuilder\n\n"
-        "Context = dict[str, object]\n\n"
-        "def generate_decisions(context: Context) -> dict[str, object]:\n"
-        "    builder = OverridesBuilder()\n"
-        "    return builder.build()\n"
-    )
-
     try:
         response = client.post(
             "/web/scripts",
@@ -107,7 +109,7 @@ def test_upload_script_saved_to_library(client):
                 "description": "demo",
             },
             files={
-                "script_file": ("demo.py", script_source, "text/x-python"),
+                "script_file": ("demo.py", SCRIPT_SOURCE, "text/x-python"),
             },
             follow_redirects=False,
         )
@@ -119,6 +121,227 @@ def test_upload_script_saved_to_library(client):
         scripts = asyncio.run(script_registry.list_user_scripts("player@example.com"))
         assert len(scripts) == 1
         assert scripts[0].simulation_id is None
+    finally:
+        _clear_override()
+        asyncio.run(script_registry.clear())
+
+
+def test_detach_script_requires_tick_zero(monkeypatch, client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+    metadata = asyncio.run(
+        script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+    )
+    asyncio.run(
+        script_registry.attach_script(metadata.script_id, "sim-late", user["email"])
+    )
+
+    ticks = {"sim-late": 3}
+
+    async def fake_get_state(simulation_id: str):
+        if simulation_id not in ticks:
+            raise SimulationNotFoundError()
+        return SimpleNamespace(tick=ticks[simulation_id])
+
+    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+
+    try:
+        response = client.post(
+            "/web/scripts/detach",
+            data={
+                "script_id": metadata.script_id,
+                "simulation_id": "sim-late",
+                "current_simulation_id": "sim-late",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        location = response.headers.get("location", "")
+        assert "error=" in location
+
+        meta_after = asyncio.run(
+            script_registry.get_user_script(metadata.script_id, user["email"])
+        )
+        assert meta_after.simulation_id == "sim-late"
+    finally:
+        _clear_override()
+        asyncio.run(script_registry.clear())
+
+
+def test_detach_script_allows_tick_zero(monkeypatch, client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+    metadata = asyncio.run(
+        script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+    )
+    asyncio.run(
+        script_registry.attach_script(metadata.script_id, "sim-zero", user["email"])
+    )
+
+    ticks = {"sim-zero": 0}
+
+    async def fake_get_state(simulation_id: str):
+        if simulation_id not in ticks:
+            raise SimulationNotFoundError()
+        return SimpleNamespace(tick=ticks[simulation_id])
+
+    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+
+    try:
+        response = client.post(
+            "/web/scripts/detach",
+            data={
+                "script_id": metadata.script_id,
+                "simulation_id": "sim-zero",
+                "current_simulation_id": "sim-zero",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        meta_after = asyncio.run(
+            script_registry.get_user_script(metadata.script_id, user["email"])
+        )
+        assert meta_after.simulation_id is None
+    finally:
+        _clear_override()
+        asyncio.run(script_registry.clear())
+
+
+def test_delete_script_unattached(client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+    metadata = asyncio.run(
+        script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+    )
+
+    try:
+        response = client.post(
+            "/web/scripts/delete",
+            data={
+                "script_id": metadata.script_id,
+                "current_simulation_id": "",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        scripts = asyncio.run(script_registry.list_user_scripts(user["email"]))
+        assert not scripts
+    finally:
+        _clear_override()
+        asyncio.run(script_registry.clear())
+
+
+def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+    metadata = asyncio.run(
+        script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+    )
+    asyncio.run(
+        script_registry.attach_script(metadata.script_id, "sim-run", user["email"])
+    )
+
+    ticks = {"sim-run": 4}
+
+    async def fake_get_state(simulation_id: str):
+        if simulation_id not in ticks:
+            raise SimulationNotFoundError()
+        return SimpleNamespace(tick=ticks[simulation_id])
+
+    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+
+    try:
+        response = client.post(
+            "/web/scripts/delete",
+            data={
+                "script_id": metadata.script_id,
+                "current_simulation_id": "sim-run",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        location = response.headers.get("location", "")
+        assert "error=" in location
+        meta_after = asyncio.run(
+            script_registry.get_user_script(metadata.script_id, user["email"])
+        )
+        assert meta_after.simulation_id == "sim-run"
+    finally:
+        _clear_override()
+        asyncio.run(script_registry.clear())
+
+
+def test_delete_script_attached_tick_zero(monkeypatch, client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+    metadata = asyncio.run(
+        script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+    )
+    asyncio.run(
+        script_registry.attach_script(metadata.script_id, "sim-reset", user["email"])
+    )
+
+    ticks = {"sim-reset": 0}
+
+    async def fake_get_state(simulation_id: str):
+        if simulation_id not in ticks:
+            raise SimulationNotFoundError()
+        return SimpleNamespace(tick=ticks[simulation_id])
+
+    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+
+    try:
+        response = client.post(
+            "/web/scripts/delete",
+            data={
+                "script_id": metadata.script_id,
+                "current_simulation_id": "sim-reset",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        scripts = asyncio.run(script_registry.list_user_scripts(user["email"]))
+        assert not scripts
     finally:
         _clear_override()
         asyncio.run(script_registry.clear())

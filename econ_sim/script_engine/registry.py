@@ -493,6 +493,45 @@ class ScriptRegistry:
             self._loaded_simulations.add(simulation_id)
             return new_metadata
 
+    async def get_user_script(self, script_id: str, user_id: str) -> ScriptMetadata:
+        """返回指定用户拥有的脚本元数据，若无权限则抛出异常。"""
+
+        await self._ensure_user_loaded(user_id)
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None or record.metadata.user_id != user_id:
+                raise ScriptExecutionError("脚本不存在或无权限操作。")
+            return record.metadata
+
+    async def detach_user_script(self, script_id: str, user_id: str) -> ScriptMetadata:
+        """将用户脚本从当前仿真实例中取消挂载。"""
+
+        await self._ensure_user_loaded(user_id)
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None or record.metadata.user_id != user_id:
+                raise ScriptExecutionError("脚本不存在或无权限操作。")
+            if record.metadata.simulation_id is None:
+                return record.metadata
+
+        if self._store is not None:
+            try:
+                updated = await self._store.update_simulation_binding(script_id, None)
+            except Exception as exc:  # pragma: no cover - defensive log
+                raise ScriptExecutionError(f"无法取消挂载脚本: {exc}") from exc
+            if not updated:
+                raise ScriptExecutionError("脚本不存在或已被移除。")
+
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None:
+                raise ScriptExecutionError("脚本不存在或已被移除。")
+            old_metadata = record.metadata
+            new_metadata = record.metadata.model_copy(update={"simulation_id": None})
+            record.metadata = new_metadata
+            self._update_indexes(script_id, old_metadata, new_metadata)
+            return new_metadata
+
     async def remove_script(self, simulation_id: str, script_id: str) -> None:
         """根据脚本 ID 删除已注册脚本。"""
 
@@ -541,6 +580,29 @@ class ScriptRegistry:
                 )
             removed = max(removed, len(store_removed))
         return removed
+
+    async def delete_user_script(self, script_id: str, user_id: str) -> bool:
+        """删除用户拥有的脚本，不论是否挂载。"""
+
+        await self._ensure_user_loaded(user_id)
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None or record.metadata.user_id != user_id:
+                raise ScriptExecutionError("脚本不存在或无权限操作。")
+
+        if self._store is not None:
+            try:
+                deleted = await self._store.delete_script(script_id)
+            except Exception as exc:  # pragma: no cover - defensive log
+                raise ScriptExecutionError(f"删除脚本失败: {exc}") from exc
+            if not deleted:
+                raise ScriptExecutionError("脚本不存在或已被移除。")
+
+        async with self._registry_lock:
+            record = self._records.pop(script_id, None)
+            if record is not None:
+                self._update_indexes(script_id, record.metadata, None)
+        return True
 
     async def delete_script_by_id(self, script_id: str) -> bool:
         """无论挂载状态如何，彻底删除指定脚本。"""

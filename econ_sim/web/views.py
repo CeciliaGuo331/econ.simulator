@@ -8,7 +8,7 @@ import logging
 import uuid
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlencode
 
 import markdown
@@ -188,6 +188,31 @@ def _format_tick_progress_message(
     )
 
 
+async def _build_script_tick_map(
+    current_simulation_id: str, current_tick: Optional[int], user_scripts: Iterable
+) -> Dict[str, Optional[int]]:
+    result: Dict[str, Optional[int]] = {}
+    if current_simulation_id and current_tick is not None:
+        result[current_simulation_id] = current_tick
+
+    simulation_ids = {
+        script.simulation_id
+        for script in user_scripts
+        if getattr(script, "simulation_id", None)
+        and script.simulation_id != current_simulation_id
+    }
+
+    for simulation_id in simulation_ids:
+        try:
+            state = await _orchestrator.get_state(simulation_id)
+        except SimulationNotFoundError:
+            result[simulation_id] = None
+        else:
+            result[simulation_id] = state.tick
+
+    return result
+
+
 @router.get("/", response_class=HTMLResponse)
 async def landing(request: Request) -> HTMLResponse:
     if _get_session_user(request):
@@ -307,7 +332,10 @@ async def dashboard(
         else:
             script_limit = await script_registry.get_simulation_limit(simulation_id)
 
+    current_tick: Optional[int] = None
+
     if not allow_create and not simulation_id:
+        script_tick_map = await _build_script_tick_map("", None, user_scripts)
         friendly_message = (
             message or "当前没有可加入的仿真实例，请稍后再试或联系管理员创建新实例。"
         )
@@ -334,6 +362,8 @@ async def dashboard(
                 "limits_by_sim": limits_by_sim,
                 "features": None,
                 "features_by_sim": features_by_sim,
+                "current_simulation_tick": None,
+                "script_tick_map": script_tick_map,
             },
             status_code=200,
         )
@@ -378,6 +408,8 @@ async def dashboard(
                 "limits_by_sim": limits_by_sim,
                 "features": None,
                 "features_by_sim": features_by_sim,
+                "current_simulation_tick": None,
+                "script_tick_map": {},
             },
         )
 
@@ -407,6 +439,9 @@ async def dashboard(
                 resolved_simulation_id
             )
         simulation_id = resolved_simulation_id
+        script_tick_map = await _build_script_tick_map(
+            simulation_id, None, user_scripts
+        )
         return _templates.TemplateResponse(
             request,
             template_name,
@@ -432,6 +467,8 @@ async def dashboard(
                 "limits_by_sim": limits_by_sim,
                 "features": None,
                 "features_by_sim": features_by_sim,
+                "current_simulation_tick": None,
+                "script_tick_map": script_tick_map,
             },
             status_code=404,
         )
@@ -444,6 +481,7 @@ async def dashboard(
     features_for_view = (
         world_state.get("features") if isinstance(world_state, dict) else None
     )
+    current_tick = world_state.get("tick") if isinstance(world_state, dict) else None
     if allow_create and simulation_id:
         features_by_sim[simulation_id] = features_for_view
     all_users: List[Dict[str, Any]] = []
@@ -467,6 +505,10 @@ async def dashboard(
             }
             for profile in user_profiles
         ]
+
+    script_tick_map = await _build_script_tick_map(
+        simulation_id, current_tick, user_scripts
+    )
 
     return _templates.TemplateResponse(
         request,
@@ -493,6 +535,8 @@ async def dashboard(
             "limits_by_sim": limits_by_sim,
             "features": features_for_view,
             "features_by_sim": features_by_sim,
+            "current_simulation_tick": current_tick,
+            "script_tick_map": script_tick_map,
         },
     )
 
@@ -949,6 +993,7 @@ async def upload_script(
         default_script_limit = script_registry.get_default_limit()
         limits_by_sim: Dict[str, Optional[int]] = {}
         features_by_sim: Dict[str, Optional[Dict[str, Any]]] = {}
+        current_tick: Optional[int] = None
 
         if normalized_sim_id:
             scripts_list = await script_registry.list_scripts(normalized_sim_id)
@@ -963,8 +1008,13 @@ async def upload_script(
                     user["user_type"],
                 )
                 features = world_state.get("features")
+                current_tick = world_state.get("tick")
             script_limit = await script_registry.get_simulation_limit(normalized_sim_id)
             log_download_url = f"/web/logs/{normalized_sim_id}/download"
+
+        script_tick_map = await _build_script_tick_map(
+            normalized_sim_id, current_tick, user_scripts
+        )
 
         return _templates.TemplateResponse(
             request,
@@ -989,6 +1039,8 @@ async def upload_script(
                 "limits_by_sim": limits_by_sim,
                 "features": features,
                 "features_by_sim": features_by_sim,
+                "current_simulation_tick": current_tick,
+                "script_tick_map": script_tick_map,
             },
             status_code=status_code,
         )
@@ -1081,6 +1133,122 @@ async def attach_existing_script(
     return _redirect_to_dashboard(
         target,
         message=f"脚本 {script_id} 已挂载至仿真实例 {target}。",
+    )
+
+
+@router.post("/scripts/detach")
+async def detach_script(
+    user: Dict[str, Any] = Depends(_require_session_user),
+    script_id: str = Form(...),
+    simulation_id: str = Form(...),
+    current_simulation_id: str = Form(""),
+) -> RedirectResponse:
+    if user["user_type"] == "admin":
+        return _redirect_to_dashboard(
+            current_simulation_id,
+            error="管理员账号不能执行脚本管理操作。",
+        )
+
+    target_simulation = simulation_id.strip()
+    normalized_current = (current_simulation_id or "").strip()
+    redirect_target = normalized_current or target_simulation
+
+    if not target_simulation:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error="请指定要取消挂载的仿真实例。",
+        )
+
+    try:
+        metadata = await script_registry.get_user_script(script_id, user["email"])
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(redirect_target, error=str(exc))
+
+    if metadata.simulation_id != target_simulation:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error="脚本未挂载到指定的仿真实例。",
+        )
+
+    try:
+        state = await _orchestrator.get_state(target_simulation)
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error=f"仿真实例 {target_simulation} 不存在或尚未初始化。",
+        )
+
+    if state.tick != 0:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error="仅在仿真实例处于 Tick 0 时才能取消挂载脚本。",
+        )
+
+    try:
+        await script_registry.detach_user_script(script_id, user["email"])
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(redirect_target, error=str(exc))
+
+    return _redirect_to_dashboard(
+        redirect_target,
+        message=f"脚本 {script_id} 已从仿真实例 {target_simulation} 取消挂载。",
+    )
+
+
+@router.post("/scripts/delete")
+async def delete_script(
+    user: Dict[str, Any] = Depends(_require_session_user),
+    script_id: str = Form(...),
+    current_simulation_id: str = Form(""),
+) -> RedirectResponse:
+    if user["user_type"] == "admin":
+        return _redirect_to_dashboard(
+            current_simulation_id,
+            error="管理员账号不能执行脚本管理操作。",
+        )
+
+    normalized_current = (current_simulation_id or "").strip()
+
+    try:
+        metadata = await script_registry.get_user_script(script_id, user["email"])
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(normalized_current, error=str(exc))
+
+    target_simulation = metadata.simulation_id or ""
+    redirect_target = normalized_current or target_simulation
+
+    allowed = False
+    simulation_tick: Optional[int] = None
+    if metadata.simulation_id is None:
+        allowed = True
+    else:
+        try:
+            state = await _orchestrator.get_state(metadata.simulation_id)
+        except SimulationNotFoundError:
+            allowed = True
+        else:
+            simulation_tick = state.tick
+            if simulation_tick == 0:
+                allowed = True
+
+    if not allowed:
+        if simulation_tick is None:
+            message_text = "脚本仅可在仿真实例处于 Tick 0 或未挂载时删除。"
+        else:
+            message_text = "脚本仅可在仿真实例处于 Tick 0 时删除。"
+        return _redirect_to_dashboard(
+            redirect_target,
+            error=message_text,
+        )
+
+    try:
+        await script_registry.delete_user_script(script_id, user["email"])
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(redirect_target, error=str(exc))
+
+    return _redirect_to_dashboard(
+        redirect_target,
+        message=f"脚本 {script_id} 已删除。",
     )
 
 
