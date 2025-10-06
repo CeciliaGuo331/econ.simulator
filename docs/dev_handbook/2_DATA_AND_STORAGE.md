@@ -15,10 +15,10 @@
 
 ```mermaid
 graph TD
-    Redis[Redis Instance] --> World[sim:{id}:world]
-    Redis --> Agent[sim:{id}:agent:{agent_id}]
-    Redis --> Participants[sim:{id}:participants]
-    Redis --> Logs[sim:{id}:logs]
+  Redis["Redis Instance"] --> World["sim:#123;id#125;:world"]
+  Redis --> Agent["sim:#123;id#125;:agent:#123;agent_id#125;"]
+  Redis --> Participants["sim:#123;id#125;:participants"]
+  Redis --> Logs["sim:#123;id#125;:logs"]
 
     World:::node
     Agent:::node
