@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +20,9 @@ from .validators import (
 )
 
 from .passwords import hash_password, verify_password
+
+
+logger = logging.getLogger(__name__)
 
 
 class UserAlreadyExistsError(RuntimeError):
@@ -220,6 +224,8 @@ class UserManager:
         self._store = store
         self._sessions = session_store or InMemorySessionStore()
         self._defaults_seeded = False
+        self._baseline_scripts_seeded = False
+        self._seed_lock = asyncio.Lock()
 
     @staticmethod
     def _normalize_email(email: str) -> str:
@@ -239,14 +245,45 @@ class UserManager:
         await self._store.save_user(record)
 
     async def _ensure_default_accounts(self) -> None:
-        if self._defaults_seeded:
+        if not self._defaults_seeded:
+            await self._seed_account(
+                DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD, ADMIN_USER_TYPE
+            )
+            for email, user_type in DEFAULT_BASELINE_USERS:
+                await self._seed_account(email, DEFAULT_BASELINE_PASSWORD, user_type)
+            self._defaults_seeded = True
+
+        await self._ensure_baseline_scripts()
+
+    async def _ensure_baseline_scripts(self) -> None:
+        if self._baseline_scripts_seeded:
             return
-        await self._seed_account(
-            DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD, ADMIN_USER_TYPE
-        )
-        for email, user_type in DEFAULT_BASELINE_USERS:
-            await self._seed_account(email, DEFAULT_BASELINE_PASSWORD, user_type)
-        self._defaults_seeded = True
+
+        async with self._seed_lock:
+            if self._baseline_scripts_seeded:
+                return
+
+            try:
+                from ..script_engine import script_registry
+                from ..script_engine.baseline_seed import ensure_baseline_scripts
+            except Exception:  # pragma: no cover - defensive import
+                logger.exception("无法导入基线脚本工具，跳过自动上传。")
+                self._baseline_scripts_seeded = True
+                return
+
+            try:
+                summary = await ensure_baseline_scripts(script_registry)
+            except Exception:
+                logger.exception("默认基线脚本上传失败。")
+            else:
+                created = summary.get("created", [])
+                if created:
+                    logger.info(
+                        "已为基线账号上传策略脚本: %s",
+                        ", ".join(created),
+                    )
+            finally:
+                self._baseline_scripts_seeded = True
 
     async def register_user(
         self, email: str, password: str, user_type: str
@@ -301,6 +338,7 @@ class UserManager:
         await self._store.clear()
         await self._sessions.clear()
         self._defaults_seeded = False
+        self._baseline_scripts_seeded = False
         await self._ensure_default_accounts()
 
     async def get_profile(self, email: str) -> Optional[UserProfile]:

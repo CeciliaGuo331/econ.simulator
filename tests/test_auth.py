@@ -9,6 +9,7 @@ from econ_sim.auth.user_manager import (
     DEFAULT_BASELINE_USERS,
 )
 from econ_sim.main import app
+from econ_sim.script_engine import script_registry
 
 
 @pytest.mark.asyncio
@@ -134,3 +135,18 @@ async def test_baseline_users_seeded() -> None:
                 },
             )
             assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_baseline_scripts_seeded_automatically() -> None:
+    # 清理已有基线脚本，确保测试环境明确。
+    for email, _ in DEFAULT_BASELINE_USERS:
+        await script_registry.remove_scripts_by_user(email)
+
+    await user_manager.reset()
+
+    for email, _ in DEFAULT_BASELINE_USERS:
+        scripts = await script_registry.list_user_scripts(email)
+        assert scripts, f"{email} should have at least one baseline script"
+        latest = scripts[-1]
+        assert latest.description and latest.description.startswith("[baseline]")
