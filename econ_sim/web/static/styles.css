@@ -48,7 +48,7 @@ body {
 
 .content {
   padding: 2rem;
-  max-width: 960px;
+  max-width: 1280px;
   margin: 0 auto 4rem;
 }
 
@@ -459,6 +459,7 @@ body {
   border-radius: 0.8rem;
   overflow: hidden;
   margin-top: 1rem;
+  table-layout: fixed;
 }
 
 .admin-table th,
@@ -472,6 +473,22 @@ body {
 .admin-table th {
   background-color: rgba(15, 23, 42, 0.8);
   font-weight: 600;
+}
+
+.admin-table col.col-sim-id {
+  width: 13rem;
+}
+
+.admin-table col.col-sim-limit {
+  width: 19rem;
+}
+
+.admin-table col.col-sim-actions {
+  width: 32rem;
+}
+
+.admin-table td.actions {
+  overflow: visible;
 }
 
 .inline-form {
@@ -508,6 +525,13 @@ body {
   color: var(--text);
   font-weight: 600;
   text-align: center;
+}
+
+.limit-form-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: nowrap;
 }
 
 .auto-run-form input[type="number"]::-webkit-outer-spin-button,

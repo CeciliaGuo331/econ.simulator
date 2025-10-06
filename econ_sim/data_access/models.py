@@ -52,6 +52,22 @@ class HouseholdState(BaseModel):
     reservation_wage: float = 60.0
 
 
+class HouseholdShock(BaseModel):
+    """描述家户在单个 Tick 内收到的外生冲击效果。"""
+
+    ability_multiplier: float = 1.0
+    asset_delta: float = 0.0
+
+
+class SimulationFeatures(BaseModel):
+    """记录可按仿真实例启用的可选功能开关与参数。"""
+
+    household_shock_enabled: bool = False
+    household_shock_ability_std: float = Field(default=0.08, ge=0.0)
+    household_shock_asset_std: float = Field(default=0.05, ge=0.0)
+    household_shock_max_fraction: float = Field(default=0.4, ge=0.0, le=0.9)
+
+
 class FirmState(BaseModel):
     """企业代理人的运营状态，覆盖库存、定价、雇员等信息。"""
 
@@ -130,6 +146,8 @@ class WorldState(BaseModel):
     government: GovernmentState
     central_bank: CentralBankState
     macro: MacroState
+    household_shocks: Dict[int, HouseholdShock] = Field(default_factory=dict)
+    features: SimulationFeatures = Field(default_factory=SimulationFeatures)
 
     def get_public_market_data(self) -> PublicMarketData:
         """提取公开市场数据，供策略层观察外部环境。"""

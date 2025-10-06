@@ -46,6 +46,7 @@ _background_jobs = BackgroundJobManager()
 _DOCS_ROOT = Path(__file__).resolve().parents[2] / "docs" / "user_strategies"
 
 ROLE_DOC_FILES: Dict[str, Dict[str, str]] = {
+    "admin": {"title": "管理员操作指南", "filename": "admin.md"},
     "individual": {"title": "家户策略指南", "filename": "household.md"},
     "firm": {"title": "企业策略指南", "filename": "firm.md"},
     "government": {"title": "政府策略指南", "filename": "government.md"},
@@ -267,11 +268,20 @@ async def dashboard(
     all_simulations = await _orchestrator.list_simulations()
     user_scripts: List = []
     attachable_scripts: List = []
+    features_by_sim: Dict[str, Optional[Dict[str, Any]]] = {}
     if not allow_create:
         user_scripts = await script_registry.list_user_scripts(user["email"])
         attachable_scripts = [
             script for script in user_scripts if not script.simulation_id
         ]
+    elif all_simulations:
+        for sid in all_simulations:
+            try:
+                features_model = await _orchestrator.get_simulation_features(sid)
+            except SimulationNotFoundError:
+                features_by_sim[sid] = None
+            else:
+                features_by_sim[sid] = features_model.model_dump(mode="json")
 
     normalized_id = (simulation_id or "").strip()
     if not normalized_id:
@@ -322,6 +332,8 @@ async def dashboard(
                 "script_limit": script_limit,
                 "default_script_limit": default_script_limit,
                 "limits_by_sim": limits_by_sim,
+                "features": None,
+                "features_by_sim": features_by_sim,
             },
             status_code=200,
         )
@@ -364,6 +376,8 @@ async def dashboard(
                 "script_limit": script_limit,
                 "default_script_limit": default_script_limit,
                 "limits_by_sim": limits_by_sim,
+                "features": None,
+                "features_by_sim": features_by_sim,
             },
         )
 
@@ -416,6 +430,8 @@ async def dashboard(
                 "script_limit": script_limit,
                 "default_script_limit": default_script_limit,
                 "limits_by_sim": limits_by_sim,
+                "features": None,
+                "features_by_sim": features_by_sim,
             },
             status_code=404,
         )
@@ -425,6 +441,11 @@ async def dashboard(
         scripts = await script_registry.list_scripts(simulation_id)
     context = _extract_view_data(world_state, user["user_type"])
     template_name = "dashboard.html"
+    features_for_view = (
+        world_state.get("features") if isinstance(world_state, dict) else None
+    )
+    if allow_create and simulation_id:
+        features_by_sim[simulation_id] = features_for_view
     all_users: List[Dict[str, Any]] = []
     all_scripts = []
     scripts_by_user: Dict[str, List] = {}
@@ -470,6 +491,8 @@ async def dashboard(
             "script_limit": script_limit,
             "default_script_limit": default_script_limit,
             "limits_by_sim": limits_by_sim,
+            "features": features_for_view,
+            "features_by_sim": features_by_sim,
         },
     )
 
@@ -580,6 +603,74 @@ async def admin_update_script_limit(
     else:
         note = f"仿真实例 {target} 的脚本上限已更新为每位用户 {applied} 个脚本。"
 
+    return _redirect_to_dashboard(target, message=note)
+
+
+@router.post("/admin/simulations/features")
+async def admin_update_features(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    household_shock_enabled: Optional[str] = Form(None),
+    household_shock_ability_std: str = Form(""),
+    household_shock_asset_std: str = Form(""),
+    household_shock_max_fraction: str = Form(""),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    target = simulation_id.strip()
+    fallback = current_simulation_id.strip() or "default-simulation"
+
+    if not target:
+        return _redirect_to_dashboard(
+            fallback,
+            error="请指定仿真实例 ID。",
+        )
+
+    enabled = household_shock_enabled == "1"
+
+    def _parse_float(raw: str, field_label: str) -> Optional[float]:
+        value = raw.strip()
+        if not value:
+            return None
+        try:
+            parsed = float(value)
+        except ValueError:
+            raise ValueError(f"{field_label} 必须是数值。")
+        return parsed
+
+    try:
+        updates: Dict[str, object] = {"household_shock_enabled": enabled}
+        ability_std = _parse_float(household_shock_ability_std, "能力冲击标准差")
+        asset_std = _parse_float(household_shock_asset_std, "资产冲击强度")
+        max_fraction = _parse_float(household_shock_max_fraction, "冲击上限占比")
+
+        if ability_std is not None and ability_std < 0.0:
+            raise ValueError("能力冲击标准差必须大于等于 0。")
+        if asset_std is not None and asset_std < 0.0:
+            raise ValueError("资产冲击强度必须大于等于 0。")
+        if max_fraction is not None and not (0.0 <= max_fraction <= 0.9):
+            raise ValueError("冲击上限占比需位于 0 到 0.9 之间。")
+
+        if ability_std is not None:
+            updates["household_shock_ability_std"] = ability_std
+        if asset_std is not None:
+            updates["household_shock_asset_std"] = asset_std
+        if max_fraction is not None:
+            updates["household_shock_max_fraction"] = max_fraction
+
+        await _orchestrator.update_simulation_features(target, **updates)
+    except ValueError as exc:
+        return _redirect_to_dashboard(target, error=str(exc))
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard(
+            fallback,
+            error=f"仿真实例 {target} 不存在，无法更新功能开关。",
+        )
+
+    state = await _orchestrator.get_state(target)
+    status_label = "已启用" if state.features.household_shock_enabled else "已关闭"
+    note = (
+        f"仿真实例 {target} 的家户异质性冲击功能 {status_label}，" f"参数已同步更新。"
+    )
     return _redirect_to_dashboard(target, message=note)
 
 
@@ -1076,11 +1167,10 @@ async def docs_page(request: Request) -> HTMLResponse:
     if user_type == "admin":
         role_docs = [
             {
-                "key": role,
-                "title": meta["title"],
-                "content": _render_markdown(meta["filename"]),
+                "key": "admin",
+                "title": ROLE_DOC_FILES["admin"]["title"],
+                "content": _render_markdown(ROLE_DOC_FILES["admin"]["filename"]),
             }
-            for role, meta in ROLE_DOC_FILES.items()
         ]
     elif user_type and user_type in ROLE_DOC_FILES:
         role_meta = ROLE_DOC_FILES[user_type]

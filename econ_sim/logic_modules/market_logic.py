@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -14,6 +14,7 @@ from ..data_access.models import (
     EmploymentStatus,
     FirmState,
     GovernmentState,
+    HouseholdShock,
     HouseholdState,
     MacroState,
     StateUpdateCommand,
@@ -55,15 +56,51 @@ def execute_tick_logic(
     world_state: WorldState,
     decisions: TickDecisions,
     config: WorldConfig,
+    shocks: Optional[Dict[int, HouseholdShock]] = None,
 ) -> Tuple[List[StateUpdateCommand], List[TickLogEntry]]:
     """执行完整的市场流程，返回状态更新指令与日志列表。"""
     working = _clone_world_state(world_state)
     metrics = TickEconomyMetrics()
     logs: List[TickLogEntry] = []
 
+    applied_shocks = shocks or {}
+    if applied_shocks:
+        asset_impacts: List[float] = []
+        ability_impacts: List[float] = []
+        for hid, shock in applied_shocks.items():
+            household = working.households.get(hid)
+            if household is None:
+                continue
+            household.balance_sheet.cash = max(
+                0.0, household.balance_sheet.cash + shock.asset_delta
+            )
+            asset_impacts.append(shock.asset_delta)
+            ability_impacts.append(shock.ability_multiplier)
+
+        if asset_impacts or ability_impacts:
+            logs.append(
+                TickLogEntry(
+                    tick=world_state.tick,
+                    day=world_state.day,
+                    message="household_shocks_applied",
+                    context={
+                        "households": len(applied_shocks),
+                        "asset_delta_sum": float(sum(asset_impacts)),
+                        "ability_mean": float(
+                            np.mean(ability_impacts) if ability_impacts else 1.0
+                        ),
+                        "ability_std": float(
+                            np.std(ability_impacts) if ability_impacts else 0.0
+                        ),
+                    },
+                )
+            )
+
     _apply_central_bank_policy(working, decisions)
 
-    labor_log = _resolve_labor_market(working, decisions, config, metrics, world_state)
+    labor_log = _resolve_labor_market(
+        working, decisions, config, metrics, world_state, applied_shocks
+    )
     logs.append(labor_log)
 
     production_log = _run_production_phase(
@@ -119,18 +156,27 @@ def _resolve_labor_market(
     config: WorldConfig,
     metrics: TickEconomyMetrics,
     world_state: WorldState,
+    shocks: Dict[int, HouseholdShock],
 ) -> TickLogEntry:
     """撮合劳动力市场的供需并计算失业率，记录相关日志。"""
     firm = working.firm
     government = working.government
 
-    unemployed_candidates = [
-        working.households[hid]
-        for hid, decision in decisions.households.items()
-        if working.households[hid].employment_status is EmploymentStatus.UNEMPLOYED
-        and decision.labor_supply > 0.5
-    ]
-    unemployed_candidates.sort(key=lambda h: h.skill, reverse=True)
+    unemployed_candidates = []
+    for hid, decision in decisions.households.items():
+        household = working.households[hid]
+        if (
+            household.employment_status is EmploymentStatus.UNEMPLOYED
+            and decision.labor_supply > 0.5
+        ):
+            unemployed_candidates.append(household)
+
+    def _effective_skill(h: HouseholdState) -> float:
+        shock = shocks.get(h.id)
+        multiplier = shock.ability_multiplier if shock else 1.0
+        return h.skill * max(0.1, multiplier)
+
+    unemployed_candidates.sort(key=_effective_skill, reverse=True)
 
     desired_firm_workers = max(0, len(firm.employees) + decisions.firm.hiring_demand)
     firm_employees = set(firm.employees)

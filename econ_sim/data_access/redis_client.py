@@ -35,6 +35,7 @@ from .models import (
     GovernmentState,
     HouseholdState,
     MacroState,
+    SimulationFeatures,
     StateUpdateCommand,
     TickLogEntry,
     TickResult,
@@ -754,6 +755,8 @@ class DataAccessLayer:
             government=government_state,
             central_bank=central_bank_state,
             macro=macro_state,
+            features=SimulationFeatures(),
+            household_shocks={},
         )
 
     def _apply_single_update(

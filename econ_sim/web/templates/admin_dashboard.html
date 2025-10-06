@@ -53,11 +53,16 @@
         </form>
         {% if all_simulations %}
             <table class="admin-table">
+                <colgroup>
+                    <col class="col-sim-id">
+                    <col class="col-sim-limit">
+                    <col class="col-sim-actions">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>仿真实例 ID</th>
-                        <th>脚本上限</th>
-                        <th>操作</th>
+                        <th class="limit-header">脚本上限</th>
+                        <th class="actions-header">操作</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -98,51 +103,101 @@
                                 </form>
                             </td>
                             <td class="actions">
-                                <form method="post"
-                                      action="/web/admin/simulations/run"
-                                      class="inline-form"
-                                      data-async="true"
-                                      data-action-type="run-tick"
-                                      data-reload="true"
-                                      data-reload-delay="1200">
-                                    <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                    <input type="hidden"
-                                           name="current_simulation_id"
-                                           value="{{ simulation_id }}">
-                                    <button type="submit">执行 Tick</button>
-                                </form>
-                                <form method="post"
-                                      action="/web/admin/simulations/run_days"
-                                      class="inline-form auto-run-form"
-                                      data-async="true"
-                                      data-action-type="run-days"
-                                      data-reload="true"
-                                      data-reload-delay="1600">
-                                    <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                    <input type="hidden"
-                                           name="current_simulation_id"
-                                           value="{{ simulation_id }}">
-                                    <button type="submit" class="auto-run-button">自动执行</button>
-                                    <label class="auto-run-input-wrap">
-                                        <input type="number" name="days" min="1" value="1" required>
-                                        <span class="auto-run-suffix">day</span>
-                                    </label>
-                                </form>
-                                <form method="post"
-                                      action="/web/admin/simulations/reset"
-                                      class="inline-form">
-                                    <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                    <button type="submit">重置</button>
-                                </form>
-                                <form method="post"
-                                      action="/web/admin/simulations/delete"
-                                      class="inline-form">
-                                    <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                    <input type="hidden"
-                                           name="current_simulation_id"
-                                           value="{{ simulation_id }}">
-                                    <button type="submit" class="danger">删除</button>
-                                </form>
+                                {% set row_features = features_by_sim.get(sid) %}
+                                <div class="action-row primary-actions">
+                                    <form method="post"
+                                          action="/web/admin/simulations/run"
+                                          class="inline-form"
+                                          data-async="true"
+                                          data-action-type="run-tick"
+                                          data-reload="true"
+                                          data-reload-delay="1200">
+                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <button type="submit">执行 Tick</button>
+                                    </form>
+                                    <form method="post"
+                                          action="/web/admin/simulations/run_days"
+                                          class="inline-form auto-run-form"
+                                          data-async="true"
+                                          data-action-type="run-days"
+                                          data-reload="true"
+                                          data-reload-delay="1600">
+                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <button type="submit" class="auto-run-button">自动执行</button>
+                                        <label class="auto-run-input-wrap">
+                                            <input type="number" name="days" min="1" value="1" required>
+                                            <span class="auto-run-suffix">day</span>
+                                        </label>
+                                    </form>
+                                    <form method="post"
+                                          action="/web/admin/simulations/reset"
+                                          class="inline-form">
+                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                        <button type="submit">重置</button>
+                                    </form>
+                                    <form method="post"
+                                          action="/web/admin/simulations/delete"
+                                          class="inline-form">
+                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <button type="submit" class="danger">删除</button>
+                                    </form>
+                                </div>
+                                <div class="action-row feature-actions">
+                                    <form method="post"
+                                          action="/web/admin/simulations/features"
+                                          class="inline-form auto-run-form feature-form">
+                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <button type="submit" class="auto-run-button">保存冲击</button>
+                                        <label class="auto-run-input-wrap feature-toggle">
+                                            <input type="checkbox"
+                                                   name="household_shock_enabled"
+                                                   value="1"
+                                                   {% if row_features and row_features.household_shock_enabled %}checked{% endif %}>
+                                            <span class="auto-run-suffix">启用</span>
+                                        </label>
+                                        <label class="auto-run-input-wrap">
+                                            <input type="number"
+                                                   step="0.01"
+                                                   min="0"
+                                                   name="household_shock_ability_std"
+                                                   value="{{ row_features.household_shock_ability_std if row_features else '' }}"
+                                                   placeholder="σ能力">
+                                            <span class="auto-run-suffix">σ</span>
+                                        </label>
+                                        <label class="auto-run-input-wrap">
+                                            <input type="number"
+                                                   step="0.01"
+                                                   min="0"
+                                                   name="household_shock_asset_std"
+                                                   value="{{ row_features.household_shock_asset_std if row_features else '' }}"
+                                                   placeholder="β资产">
+                                            <span class="auto-run-suffix">β</span>
+                                        </label>
+                                        <label class="auto-run-input-wrap">
+                                            <input type="number"
+                                                   step="0.01"
+                                                   min="0"
+                                                   max="0.9"
+                                                   name="household_shock_max_fraction"
+                                                   value="{{ row_features.household_shock_max_fraction if row_features else '' }}"
+                                                   placeholder="冲击上限">
+                                            <span class="auto-run-suffix">cash</span>
+                                        </label>
+                                    </form>
+                                    <p class="hint compact-hint">提示：留空保持当前值，资产冲击总和自动为 0。</p>
+                                </div>
                             </td>
                         </tr>
                     {% endfor %}

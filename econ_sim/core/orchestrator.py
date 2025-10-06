@@ -6,19 +6,25 @@ import asyncio
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ..data_access.models import (
     AgentKind,
+    HouseholdShock,
     StateUpdateCommand,
     TickDecisionOverrides,
     TickResult,
     TickLogEntry,
+    SimulationFeatures,
     WorldState,
 )
 from ..data_access.redis_client import DataAccessLayer, SimulationNotFoundError
 from ..logic_modules.agent_logic import collect_tick_decisions, merge_tick_overrides
 from ..logic_modules.market_logic import execute_tick_logic
+from ..logic_modules.shock_logic import (
+    apply_household_shocks_for_decision,
+    generate_household_shocks,
+)
 from ..strategies.base import StrategyBundle
 from ..utils.settings import get_world_config
 from ..script_engine import script_registry
@@ -45,6 +51,7 @@ class SimulationOrchestrator:
         config = get_world_config()
         self.data_access = data_access or DataAccessLayer.with_default_store(config)
         self.config = self.data_access.config
+        self._tick_logs: Dict[str, List[TickLogEntry]] = {}
 
     async def create_simulation(self, simulation_id: str) -> WorldState:
         """确保指定 ID 的仿真实例存在。
@@ -129,14 +136,21 @@ class SimulationOrchestrator:
         计算状态更新，并最终写回数据存储，同时返回此次 Tick 的日志和更新详情。
         """
         world_state = await self.create_simulation(simulation_id)
-        strategies = StrategyBundle(self.config, world_state)
+
+        shocks: Dict[int, HouseholdShock] = {}
+        decision_state = world_state
+        if world_state.features.household_shock_enabled:
+            shocks = generate_household_shocks(world_state, self.config)
+            decision_state = apply_household_shocks_for_decision(world_state, shocks)
+
+        strategies = StrategyBundle(self.config, decision_state)
         script_overrides = await script_registry.generate_overrides(
-            simulation_id, world_state, self.config
+            simulation_id, decision_state, self.config
         )
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
         decisions = await asyncio.to_thread(
             collect_tick_decisions,
-            world_state,
+            decision_state,
             strategies,
             combined_overrides,
         )
@@ -146,7 +160,27 @@ class SimulationOrchestrator:
             world_state,
             decisions,
             self.config,
+            shocks,
         )
+
+        if world_state.features.household_shock_enabled and shocks:
+            updates.append(
+                StateUpdateCommand.assign(
+                    AgentKind.WORLD,
+                    agent_id=None,
+                    household_shocks={
+                        hid: shock.model_dump() for hid, shock in shocks.items()
+                    },
+                )
+            )
+        elif world_state.household_shocks:
+            updates.append(
+                StateUpdateCommand.assign(
+                    AgentKind.WORLD,
+                    agent_id=None,
+                    household_shocks={},
+                )
+            )
 
         next_tick = world_state.tick + 1
         sim_config = self.config.simulation
@@ -178,8 +212,71 @@ class SimulationOrchestrator:
 
         该操作会重建世界状态的初始快照，但不会影响脚本注册或参与者信息。
         """
+        previous_features: Optional[SimulationFeatures] = None
+        try:
+            current = await self.data_access.get_world_state(simulation_id)
+            previous_features = current.features.model_copy(deep=True)
+        except SimulationNotFoundError:
+            previous_features = None
 
-        return await self.data_access.reset_simulation(simulation_id)
+        state = await self.data_access.reset_simulation(simulation_id)
+        self._tick_logs[simulation_id] = []
+
+        if previous_features is not None:
+            state = await self.update_simulation_features(
+                simulation_id,
+                **previous_features.model_dump(),
+            )
+
+        return state
+
+    async def get_simulation_features(self, simulation_id: str) -> SimulationFeatures:
+        state = await self.data_access.get_world_state(simulation_id)
+        return state.features
+
+    async def update_simulation_features(
+        self,
+        simulation_id: str,
+        **updates: object,
+    ) -> WorldState:
+        state = await self.data_access.get_world_state(simulation_id)
+        features = state.features.model_copy(deep=True)
+
+        allowed_fields = set(features.model_dump().keys())
+        mutated = False
+        for field, value in updates.items():
+            if field not in allowed_fields or value is None:
+                continue
+            setattr(features, field, value)
+            mutated = True
+
+        if not mutated:
+            return state
+
+        updated = await self.data_access.apply_updates(
+            simulation_id,
+            [
+                StateUpdateCommand.assign(
+                    AgentKind.WORLD,
+                    agent_id=None,
+                    features=features.model_dump(),
+                )
+            ],
+        )
+
+        if not features.household_shock_enabled:
+            updated = await self.data_access.apply_updates(
+                simulation_id,
+                [
+                    StateUpdateCommand.assign(
+                        AgentKind.WORLD,
+                        agent_id=None,
+                        household_shocks={},
+                    )
+                ],
+            )
+
+        return updated
 
     async def run_until_day(self, simulation_id: str, days: int) -> BatchRunResult:
         """自动执行多个 Tick，直到完成指定天数的全部 Tick。"""

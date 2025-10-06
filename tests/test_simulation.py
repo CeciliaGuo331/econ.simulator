@@ -46,6 +46,40 @@ async def test_overrides_affect_decisions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_household_shock_toggle_updates_state() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "shock-toggle"
+
+    await orchestrator.create_simulation(simulation_id)
+    updated = await orchestrator.update_simulation_features(
+        simulation_id,
+        household_shock_enabled=True,
+        household_shock_ability_std=0.1,
+        household_shock_asset_std=0.05,
+        household_shock_max_fraction=0.3,
+    )
+
+    assert updated.features.household_shock_enabled is True
+    assert updated.features.household_shock_ability_std == pytest.approx(0.1)
+
+    tick_result = await orchestrator.run_tick(simulation_id)
+    assert tick_result.world_state.features.household_shock_enabled is True
+    assert (
+        len(tick_result.world_state.household_shocks)
+        == orchestrator.config.simulation.num_households
+    )
+
+    disabled = await orchestrator.update_simulation_features(
+        simulation_id,
+        household_shock_enabled=False,
+    )
+    assert disabled.features.household_shock_enabled is False
+
+    result_without_shock = await orchestrator.run_tick(simulation_id)
+    assert not result_without_shock.world_state.household_shocks
+
+
+@pytest.mark.asyncio
 async def test_run_until_day_executes_required_ticks() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "run-days"
@@ -335,6 +369,58 @@ async def test_admin_can_set_and_get_script_limit() -> None:
             headers=headers_admin,
         )
         assert invalid.status_code == 422
+
+    await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_can_toggle_features_via_api() -> None:
+    await user_manager.reset()
+    await script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "feature-toggle"
+        created = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+        assert created.status_code == 200
+
+        applied = await client.put(
+            f"/simulations/{simulation_id}/settings/features",
+            json={
+                "household_shock_enabled": True,
+                "household_shock_ability_std": 0.12,
+                "household_shock_asset_std": 0.04,
+                "household_shock_max_fraction": 0.25,
+            },
+            headers=headers_admin,
+        )
+        assert applied.status_code == 200
+        payload = applied.json()
+        assert payload["household_shock_enabled"] is True
+        assert payload["household_shock_ability_std"] == pytest.approx(0.12)
+
+        fetched = await client.get(
+            f"/simulations/{simulation_id}/settings/features",
+            headers=headers_admin,
+        )
+        assert fetched.status_code == 200
+        snapshot = fetched.json()
+        assert snapshot["household_shock_enabled"] is True
+        assert snapshot["household_shock_asset_std"] == pytest.approx(0.04)
 
     await script_registry.clear()
 

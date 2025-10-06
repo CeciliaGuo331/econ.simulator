@@ -71,6 +71,8 @@ POST /auth/login
 | `POST` | `/simulations/{id}/run_days` | 管理员 | 批量执行多日 Tick |
 | `GET` | `/simulations/{id}/state/full` | 已登录 | 拉取完整 `WorldState`（调试用途） |
 | `GET` | `/simulations/{id}/state/agents` | 已登录 | 查询家户状态，可通过 `ids` 参数筛选 |
+| `PUT` | `/simulations/{id}/settings/features` | 管理员 | 更新仿真实例功能开关（如家户外生冲击） |
+| `GET` | `/simulations/{id}/settings/features` | 管理员 | 查看仿真实例当前的功能开关参数 |
 
 `POST /simulations` 可选字段：`simulation_id`（缺省随机 UUID）、`config_path`（自定义场景）、`user_id`（预登记参与者）。
 

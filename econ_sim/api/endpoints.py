@@ -164,6 +164,25 @@ class ScriptLimitResponse(BaseModel):
     max_scripts_per_user: Optional[int] = Field(default=None, ge=1)
 
 
+class SimulationFeatureUpdateRequest(BaseModel):
+    """更新仿真功能开关与参数时的请求体。"""
+
+    household_shock_enabled: Optional[bool] = None
+    household_shock_ability_std: Optional[float] = Field(default=None, ge=0.0)
+    household_shock_asset_std: Optional[float] = Field(default=None, ge=0.0)
+    household_shock_max_fraction: Optional[float] = Field(default=None, ge=0.0, le=0.9)
+
+
+class SimulationFeatureResponse(BaseModel):
+    """返回仿真实例当前的功能开关与参数。"""
+
+    simulation_id: str
+    household_shock_enabled: bool
+    household_shock_ability_std: float
+    household_shock_asset_std: float
+    household_shock_max_fraction: float
+
+
 class RunTickResponse(BaseModel):
     """执行单步仿真后的结果摘要与日志。"""
 
@@ -404,6 +423,58 @@ async def get_script_limit(
         raise HTTPException(status_code=404, detail=str(exc))
 
     return ScriptLimitResponse(simulation_id=simulation_id, max_scripts_per_user=limit)
+
+
+@router.put(
+    "/{simulation_id}/settings/features",
+    response_model=SimulationFeatureResponse,
+)
+async def update_simulation_features(
+    simulation_id: str,
+    payload: SimulationFeatureUpdateRequest,
+    admin: UserProfile = Depends(require_admin_user),
+) -> SimulationFeatureResponse:
+    """更新指定仿真实例的功能开关与冲击参数。"""
+
+    updates = payload.model_dump(exclude_none=True)
+
+    try:
+        state = await _orchestrator.update_simulation_features(simulation_id, **updates)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    features = state.features
+    return SimulationFeatureResponse(
+        simulation_id=simulation_id,
+        household_shock_enabled=features.household_shock_enabled,
+        household_shock_ability_std=features.household_shock_ability_std,
+        household_shock_asset_std=features.household_shock_asset_std,
+        household_shock_max_fraction=features.household_shock_max_fraction,
+    )
+
+
+@router.get(
+    "/{simulation_id}/settings/features",
+    response_model=SimulationFeatureResponse,
+)
+async def get_simulation_features(
+    simulation_id: str,
+    admin: UserProfile = Depends(require_admin_user),
+) -> SimulationFeatureResponse:
+    """查询仿真实例的功能开关配置。"""
+
+    try:
+        features = await _orchestrator.get_simulation_features(simulation_id)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return SimulationFeatureResponse(
+        simulation_id=simulation_id,
+        household_shock_enabled=features.household_shock_enabled,
+        household_shock_ability_std=features.household_shock_ability_std,
+        household_shock_asset_std=features.household_shock_asset_std,
+        household_shock_max_fraction=features.household_shock_max_fraction,
+    )
 
 
 @scripts_router.post("", response_model=ScriptUploadResponse)
