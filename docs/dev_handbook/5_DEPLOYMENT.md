@@ -61,6 +61,25 @@ docker compose up -d
 - 服务暴露端口：应用 `8000`、PostgreSQL `5432`、Redis `6379`。
 - 默认使用 `config/docker.env` 提供的环境变量，可按需复制修改。
 - 持久化目录：PostgreSQL → `postgres-data` 卷，Redis → `redis-data` 卷。
+- 用户上传的策略脚本会持久化在 PostgreSQL `scripts` 表中，对应数据卷 `postgres-data`。
+- 首次启动应用时，会自动播种一个管理员账号（`admin@econ.sim`）与五个基线账户，默认口令如下：
+  | 邮箱 | 角色 | 默认密码 |
+  | ---- | ---- | -------- |
+  | `admin@econ.sim` | 管理员 | `ChangeMe123!` |
+  | `baseline.household@econ.sim` | 家户代理 | `BaselinePass123!` |
+  | `baseline.firm@econ.sim` | 企业代理 | `BaselinePass123!` |
+  | `baseline.bank@econ.sim` | 商业银行 | `BaselinePass123!` |
+  | `baseline.central_bank@econ.sim` | 央行代理 | `BaselinePass123!` |
+  | `baseline.government@econ.sim` | 政府代理 | `BaselinePass123!` |
+  启动后请尽快登录管理员账号并修改密码，再按需更新基线账户密码或禁用。
+- 需要模拟真实用户时，可运行 `python scripts/seed_baseline_scripts.py --simulation <sim-id> --attach --overwrite` 将
+  `deploy/baseline_scripts/` 下的五类基线脚本写入数据库；在 Docker Compose 中执行：
+
+  ```bash
+  docker compose run --rm app python scripts/seed_baseline_scripts.py --simulation demo-sim --attach --overwrite
+  ```
+
+  该脚本会为五类角色创建脚本记录（用户 ID 形如 `baseline.<role>@econ.sim`），可重复运行保持幂等。
 
 ## 5. 生产部署建议
 

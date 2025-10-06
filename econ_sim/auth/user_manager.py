@@ -7,7 +7,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Protocol
+from typing import Dict, List, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, field_validator
 
@@ -31,6 +31,14 @@ class AuthenticationError(RuntimeError):
 
 DEFAULT_ADMIN_EMAIL = "admin@econ.sim"
 DEFAULT_ADMIN_PASSWORD = "ChangeMe123!"
+DEFAULT_BASELINE_PASSWORD = "BaselinePass123!"
+DEFAULT_BASELINE_USERS: Tuple[Tuple[str, str], ...] = (
+    ("baseline.household@econ.sim", "individual"),
+    ("baseline.firm@econ.sim", "firm"),
+    ("baseline.bank@econ.sim", "commercial_bank"),
+    ("baseline.central_bank@econ.sim", "central_bank"),
+    ("baseline.government@econ.sim", "government"),
+)
 
 
 @dataclass
@@ -211,31 +219,39 @@ class UserManager:
     ) -> None:
         self._store = store
         self._sessions = session_store or InMemorySessionStore()
-        self._admin_seeded = False
+        self._defaults_seeded = False
 
     @staticmethod
     def _normalize_email(email: str) -> str:
         return email.strip().lower()
 
-    async def _ensure_admin_exists(self) -> None:
-        if self._admin_seeded:
-            return
-        normalized_email = self._normalize_email(DEFAULT_ADMIN_EMAIL)
+    async def _seed_account(self, email: str, password: str, user_type: str) -> None:
+        normalized_email = self._normalize_email(email)
         existing = await self._store.get_user(normalized_email)
-        if existing is None:
-            record = UserRecord(
-                email=normalized_email,
-                password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
-                created_at=datetime.now(timezone.utc),
-                user_type=validate_user_type(ADMIN_USER_TYPE, allow_admin=True),
-            )
-            await self._store.save_user(record)
-        self._admin_seeded = True
+        if existing is not None:
+            return
+        record = UserRecord(
+            email=normalized_email,
+            password_hash=hash_password(password),
+            created_at=datetime.now(timezone.utc),
+            user_type=validate_user_type(user_type, allow_admin=True),
+        )
+        await self._store.save_user(record)
+
+    async def _ensure_default_accounts(self) -> None:
+        if self._defaults_seeded:
+            return
+        await self._seed_account(
+            DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD, ADMIN_USER_TYPE
+        )
+        for email, user_type in DEFAULT_BASELINE_USERS:
+            await self._seed_account(email, DEFAULT_BASELINE_PASSWORD, user_type)
+        self._defaults_seeded = True
 
     async def register_user(
         self, email: str, password: str, user_type: str
     ) -> UserProfile:
-        await self._ensure_admin_exists()
+        await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
         normalized_type = validate_user_type(user_type)
@@ -255,7 +271,7 @@ class UserManager:
         )
 
     async def authenticate_user(self, email: str, password: str) -> str:
-        await self._ensure_admin_exists()
+        await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
         record = await self._store.get_user(normalized)
@@ -266,7 +282,7 @@ class UserManager:
         return await self._sessions.create_session(normalized)
 
     async def get_profile_by_token(self, token: str) -> Optional[UserProfile]:
-        await self._ensure_admin_exists()
+        await self._ensure_default_accounts()
         if not token:
             return None
         email = await self._sessions.get_email(token)
@@ -284,11 +300,11 @@ class UserManager:
     async def reset(self) -> None:
         await self._store.clear()
         await self._sessions.clear()
-        self._admin_seeded = False
-        await self._ensure_admin_exists()
+        self._defaults_seeded = False
+        await self._ensure_default_accounts()
 
     async def get_profile(self, email: str) -> Optional[UserProfile]:
-        await self._ensure_admin_exists()
+        await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
         record = await self._store.get_user(normalized)
@@ -301,7 +317,7 @@ class UserManager:
         )
 
     async def list_users(self) -> List[UserProfile]:
-        await self._ensure_admin_exists()
+        await self._ensure_default_accounts()
         records = await self._store.list_users()
         profiles = [
             UserProfile(
@@ -315,7 +331,7 @@ class UserManager:
         return profiles
 
     async def delete_user(self, email: str) -> None:
-        await self._ensure_admin_exists()
+        await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
         if normalized == self._normalize_email(DEFAULT_ADMIN_EMAIL):
@@ -337,4 +353,8 @@ __all__ = [
     "InMemorySessionStore",
     "SessionStore",
     "PUBLIC_USER_TYPES",
+    "DEFAULT_ADMIN_EMAIL",
+    "DEFAULT_ADMIN_PASSWORD",
+    "DEFAULT_BASELINE_PASSWORD",
+    "DEFAULT_BASELINE_USERS",
 ]

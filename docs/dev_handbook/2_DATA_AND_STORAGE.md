@@ -93,6 +93,12 @@ sequenceDiagram
 3. 删除仿真只解绑脚本（`simulation_id` 置空），脚本仍可再次挂载。
 4. 管理员或用户可调用删除接口彻底移除脚本（数据库记录与内存索引同步删除）。
 
+### 3.4 基线脚本（Baseline Scripts）
+
+- 目录 `deploy/baseline_scripts/` 存放五类主体的参考脚本，主要用于部署环境模拟真实用户接入。
+- `scripts/seed_baseline_scripts.py` 会读取该目录并将脚本注册到 `ScriptRegistry`，可选挂载到指定仿真实例。
+- Docker Compose 环境可运行 `docker compose run --rm app python scripts/seed_baseline_scripts.py --simulation demo-sim --attach --overwrite` 完成批量导入。
+
 ## 4. 世界状态结构细节
 
 下表基于 `WorldState` Pydantic 定义，总结了 Redis 中同名 JSON 文档的主要字段，便于在调试时定位各主体的数据来源。
@@ -139,7 +145,7 @@ sequenceDiagram
 | 数据域 | 存储方式 | 说明 |
 | ------ | -------- | ---- |
 | 参与者列表 | Redis Set `sim:{id}:participants` | `SimulationOrchestrator.register_participant` 维护，供协作 UI 使用 |
-| 用户账号 | `UserManager` 封装，默认内存；可切换 Redis Hash `econ_sim:users` | 包含邮箱、密码哈希、用户类型、创建时间 |
+| 用户账号 | `UserManager` 封装，默认内存；可切换 Redis Hash `econ_sim:users` | 包含邮箱、密码哈希、用户类型、创建时间；首次启动会自动播种管理员与五个基线账号（默认密码详见部署章节），可按需修改 |
 | 登录会话 | `SessionManager` 内存字典；可扩展 Redis `econ_sim:sessions` 或 `SETEX` | 记录 token → email 映射，用于 Bearer 认证 |
 | Tick 日志 | Redis List `sim:{id}:logs` | 存放 `TickLogEntry` 序列化结果，用于审计与前端展示 |
 

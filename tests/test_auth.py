@@ -2,7 +2,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from econ_sim.auth import user_manager
-from econ_sim.auth.user_manager import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
+from econ_sim.auth.user_manager import (
+    DEFAULT_ADMIN_EMAIL,
+    DEFAULT_ADMIN_PASSWORD,
+    DEFAULT_BASELINE_PASSWORD,
+    DEFAULT_BASELINE_USERS,
+)
 from econ_sim.main import app
 
 
@@ -112,3 +117,20 @@ async def test_default_admin_can_login() -> None:
             },
         )
         assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_baseline_users_seeded() -> None:
+    await user_manager.reset()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for email, _ in DEFAULT_BASELINE_USERS:
+            response = await client.post(
+                "/auth/login",
+                json={
+                    "email": email,
+                    "password": DEFAULT_BASELINE_PASSWORD,
+                },
+            )
+            assert response.status_code == 200, response.text
