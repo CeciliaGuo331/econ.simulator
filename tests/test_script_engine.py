@@ -157,3 +157,135 @@ def generate_decisions(context):
 
     with pytest.raises(ScriptExecutionError):
         await registry.generate_overrides("slow", world_state, config)
+
+
+@pytest.mark.asyncio
+async def test_simulation_specific_limit_overrides_default() -> None:
+    registry = ScriptRegistry(max_scripts_per_user=3)
+
+    await registry.set_simulation_limit("sim-override", 1)
+
+    await registry.register_script(
+        simulation_id="sim-override",
+        user_id="over-user",
+        script_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 9.0}}
+""",
+    )
+
+    with pytest.raises(ScriptExecutionError):
+        await registry.register_script(
+            simulation_id="sim-override",
+            user_id="over-user",
+            script_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 8.5}}
+""",
+        )
+
+    limit = await registry.get_simulation_limit("sim-override")
+    assert limit == 1
+
+    await registry.set_simulation_limit("sim-override", None)
+    restored_limit = await registry.get_simulation_limit("sim-override")
+    assert restored_limit == 3
+
+
+@pytest.mark.asyncio
+async def test_register_script_enforces_per_user_limit() -> None:
+    registry = ScriptRegistry(max_scripts_per_user=1)
+
+    await registry.register_script(
+        simulation_id="limit-sim",
+        user_id="limited-user",
+        script_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 10.0}}
+""",
+    )
+
+    with pytest.raises(ScriptExecutionError):
+        await registry.register_script(
+            simulation_id="limit-sim",
+            user_id="limited-user",
+            script_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 11.0}}
+""",
+        )
+
+    scripts = await registry.list_scripts("limit-sim")
+    assert len(scripts) == 1
+
+
+@pytest.mark.asyncio
+async def test_attach_script_respects_per_user_limit() -> None:
+    registry = ScriptRegistry(max_scripts_per_user=1)
+
+    primary = await registry.register_script(
+        simulation_id="attach-sim",
+        user_id="limited-user",
+        script_code="""
+def generate_decisions(context):
+    return {"bank": {"deposit_rate": 0.02}}
+""",
+    )
+
+    queued = await registry.register_script(
+        simulation_id=None,
+        user_id="limited-user",
+        script_code="""
+def generate_decisions(context):
+    return {"bank": {"deposit_rate": 0.03}}
+""",
+    )
+
+    assert primary.simulation_id == "attach-sim"
+    assert queued.simulation_id is None
+
+    with pytest.raises(ScriptExecutionError):
+        await registry.attach_script(
+            queued.script_id,
+            "attach-sim",
+            "limited-user",
+        )
+
+    scripts = await registry.list_scripts("attach-sim")
+    assert len(scripts) == 1
+
+
+class StubLimitStore:
+    def __init__(self) -> None:
+        self._limits: dict[str, int] = {}
+
+    async def set_script_limit(self, simulation_id: str, limit: int) -> None:
+        self._limits[simulation_id] = limit
+
+    async def delete_script_limit(self, simulation_id: str) -> None:
+        self._limits.pop(simulation_id, None)
+
+    async def get_script_limit(self, simulation_id: str) -> int | None:
+        return self._limits.get(simulation_id)
+
+    async def list_script_limits(self) -> dict[str, int]:
+        return dict(self._limits)
+
+    async def clear(self) -> None:
+        self._limits.clear()
+
+
+@pytest.mark.asyncio
+async def test_limits_are_persisted_via_store() -> None:
+    store = StubLimitStore()
+    registry = ScriptRegistry(limit_store=store)
+
+    await registry.set_simulation_limit("persisted-sim", 2)
+    assert store._limits["persisted-sim"] == 2
+
+    recovered = ScriptRegistry(limit_store=store)
+    limit = await recovered.get_simulation_limit("persisted-sim")
+    assert limit == 2
+
+    await recovered.set_simulation_limit("persisted-sim", None)
+    assert "persisted-sim" not in store._limits

@@ -275,6 +275,215 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+async def test_admin_can_set_and_get_script_limit() -> None:
+    await user_manager.reset()
+    await script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "limit-control"
+        created = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+        assert created.status_code == 200
+
+        applied = await client.put(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            json={"max_scripts_per_user": 2},
+            headers=headers_admin,
+        )
+        assert applied.status_code == 200
+        assert applied.json()["max_scripts_per_user"] == 2
+
+        fetched = await client.get(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            headers=headers_admin,
+        )
+        assert fetched.status_code == 200
+        assert fetched.json()["max_scripts_per_user"] == 2
+
+        removed = await client.put(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            json={"max_scripts_per_user": None},
+            headers=headers_admin,
+        )
+        assert removed.status_code == 200
+        assert removed.json()["max_scripts_per_user"] is None
+
+        reset_fetch = await client.get(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            headers=headers_admin,
+        )
+        assert reset_fetch.status_code == 200
+        assert reset_fetch.json()["max_scripts_per_user"] is None
+
+        invalid = await client.put(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            json={"max_scripts_per_user": 0},
+            headers=headers_admin,
+        )
+        assert invalid.status_code == 422
+
+    await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_limit_setting_blocks_additional_scripts() -> None:
+    await user_manager.reset()
+    await script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/auth/register",
+            json={
+                "email": "limit-user@test.com",
+                "password": "StrongPass123",
+                "user_type": "individual",
+            },
+        )
+        user_login = await client.post(
+            "/auth/login",
+            json={"email": "limit-user@test.com", "password": "StrongPass123"},
+        )
+        user_token = user_login.json()["access_token"]
+
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+
+        headers_user = {"Authorization": f"Bearer {user_token}"}
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "limit-enforced"
+        await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+
+        await client.put(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            json={"max_scripts_per_user": 1},
+            headers=headers_admin,
+        )
+
+        script_template = """
+def generate_decisions(context):
+    return {}
+"""
+
+        first = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json={"code": script_template, "description": "first"},
+            headers=headers_user,
+        )
+        assert first.status_code == 200
+
+        second = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json={"code": script_template, "description": "second"},
+            headers=headers_user,
+        )
+        assert second.status_code == 400
+
+    await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_lowering_limit_below_existing_scripts_is_rejected() -> None:
+    await user_manager.reset()
+    await script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/auth/register",
+            json={
+                "email": "limit-reduce@test.com",
+                "password": "StrongPass123",
+                "user_type": "individual",
+            },
+        )
+        user_login = await client.post(
+            "/auth/login",
+            json={
+                "email": "limit-reduce@test.com",
+                "password": "StrongPass123",
+            },
+        )
+        user_token = user_login.json()["access_token"]
+
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+
+        headers_user = {"Authorization": f"Bearer {user_token}"}
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "limit-reduction"
+        await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+
+        script_one = """
+def generate_decisions(context):
+    return {"firm": {"price": 10}}
+"""
+        script_two = """
+def generate_decisions(context):
+    return {"firm": {"price": 11}}
+"""
+
+        first = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json={"code": script_one},
+            headers=headers_user,
+        )
+        assert first.status_code == 200
+
+        second = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json={"code": script_two},
+            headers=headers_user,
+        )
+        assert second.status_code == 200
+
+        lowered = await client.put(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            json={"max_scripts_per_user": 1},
+            headers=headers_admin,
+        )
+        assert lowered.status_code == 400
+
+    await script_registry.clear()
+
+
+@pytest.mark.asyncio
 async def test_run_days_endpoint_advances_day() -> None:
     await user_manager.reset()
     await script_registry.clear()

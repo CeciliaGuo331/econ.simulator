@@ -149,6 +149,21 @@ class ScriptDeleteResponse(BaseModel):
     message: str
 
 
+class ScriptLimitUpdateRequest(BaseModel):
+    """管理员为仿真实例设置脚本上限时的请求体。"""
+
+    max_scripts_per_user: Optional[int] = Field(
+        default=None, ge=1, description="单个用户允许上传的脚本数量上限"
+    )
+
+
+class ScriptLimitResponse(BaseModel):
+    """返回仿真实例当前的脚本上限设定。"""
+
+    simulation_id: str
+    max_scripts_per_user: Optional[int] = Field(default=None, ge=1)
+
+
 class RunTickResponse(BaseModel):
     """执行单步仿真后的结果摘要与日志。"""
 
@@ -346,6 +361,49 @@ async def list_participants(simulation_id: str) -> SimulationParticipantResponse
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return SimulationParticipantResponse(participants=participants)
+
+
+@router.put(
+    "/{simulation_id}/settings/script_limit",
+    response_model=ScriptLimitResponse,
+)
+async def update_script_limit(
+    simulation_id: str,
+    payload: ScriptLimitUpdateRequest,
+    admin: UserProfile = Depends(require_admin_user),
+) -> ScriptLimitResponse:
+    """为指定仿真实例设置每位用户的脚本数量上限。"""
+
+    try:
+        applied = await _orchestrator.set_script_limit(
+            simulation_id, payload.max_scripts_per_user
+        )
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return ScriptLimitResponse(
+        simulation_id=simulation_id, max_scripts_per_user=applied
+    )
+
+
+@router.get(
+    "/{simulation_id}/settings/script_limit",
+    response_model=ScriptLimitResponse,
+)
+async def get_script_limit(
+    simulation_id: str,
+    admin: UserProfile = Depends(require_admin_user),
+) -> ScriptLimitResponse:
+    """查询指定仿真实例当前的脚本数量上限。"""
+
+    try:
+        limit = await _orchestrator.get_script_limit(simulation_id)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return ScriptLimitResponse(simulation_id=simulation_id, max_scripts_per_user=limit)
 
 
 @scripts_router.post("", response_model=ScriptUploadResponse)

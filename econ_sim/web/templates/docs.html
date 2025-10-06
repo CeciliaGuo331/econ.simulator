@@ -8,9 +8,7 @@
     </section>
     <section class="panel">
         <h2>平台 API 指南</h2>
-        <div class="markdown-body">
-            {{ platform_doc | safe }}
-        </div>
+        <div class="markdown-body">{{ platform_doc | safe }}</div>
     </section>
     <section class="panel">
         <h3>角色策略指南</h3>
@@ -20,9 +18,7 @@
                 {% for doc in role_docs %}
                     <article>
                         <h4>{{ doc.title }}</h4>
-                        <div class="markdown-body">
-                            {{ doc.content | safe }}
-                        </div>
+                        <div class="markdown-body">{{ doc.content | safe }}</div>
                     </article>
                 {% endfor %}
             </div>

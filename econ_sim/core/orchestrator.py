@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections import Counter
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -65,6 +66,40 @@ class SimulationOrchestrator:
 
         await self.data_access.get_world_state(simulation_id)
         return await self.data_access.list_participants(simulation_id)
+
+    async def set_script_limit(
+        self, simulation_id: str, limit: Optional[int]
+    ) -> Optional[int]:
+        """为指定仿真实例设置每位用户的脚本数量上限。"""
+
+        if limit is not None and limit <= 0:
+            raise ValueError("script limit must be positive or null")
+
+        await self.data_access.get_world_state(simulation_id)
+
+        normalized_limit = int(limit) if limit is not None else None
+
+        if normalized_limit is not None:
+            scripts = await script_registry.list_scripts(simulation_id)
+            user_counts = Counter(meta.user_id for meta in scripts)
+            exceeding = [
+                user for user, count in user_counts.items() if count > normalized_limit
+            ]
+            if exceeding:
+                raise ValueError(
+                    "Existing scripts exceed the requested limit for users: "
+                    + ", ".join(sorted(set(exceeding)))
+                )
+
+        return await script_registry.set_simulation_limit(
+            simulation_id, normalized_limit
+        )
+
+    async def get_script_limit(self, simulation_id: str) -> Optional[int]:
+        """获取指定仿真实例当前生效的脚本数量上限。"""
+
+        await self.data_access.get_world_state(simulation_id)
+        return await script_registry.get_simulation_limit(simulation_id)
 
     async def list_simulations(self) -> list[str]:
         """列出已知仿真实例 ID。"""

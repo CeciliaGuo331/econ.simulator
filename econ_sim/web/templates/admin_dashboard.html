@@ -6,6 +6,20 @@
         <p>
             当前仿真实例：<strong>{{ simulation_id }}</strong>
         </p>
+        <p>
+            当前脚本上限：
+            {% if simulation_id %}
+                {% if script_limit is not none %}
+                    <strong>{{ script_limit }}</strong> 个脚本 / 用户
+                {% elif default_script_limit is not none %}
+                    <strong>{{ default_script_limit }}</strong> 个脚本 / 用户（默认）
+                {% else %}
+                    <strong>无限制</strong>
+                {% endif %}
+            {% else %}
+                <span class="empty">未选择仿真实例</span>
+            {% endif %}
+        </p>
         <p>管理员账户可查看完整世界状态和所有脚本。</p>
         <div class="status success{% if not message %} hidden{% endif %}"
              data-status-box
@@ -42,6 +56,7 @@
                 <thead>
                     <tr>
                         <th>仿真实例 ID</th>
+                        <th>脚本上限</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -55,6 +70,32 @@
                                     <a href="/web/dashboard?simulation_id={{ sid }}"
                                        data-remember-scroll="true">{{ sid }}</a>
                                 {% endif %}
+                            </td>
+                            <td class="limit-cell">
+                                {% set limit = limits_by_sim.get(sid) %}
+                                <form method="post"
+                                      action="/web/admin/simulations/script_limit"
+                                      class="inline-form limit-form auto-run-form">
+                                    <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                    <input type="hidden"
+                                           name="current_simulation_id"
+                                           value="{{ simulation_id }}">
+                                    <label class="auto-run-input-wrap limit-input-wrap">
+                                        <input type="number"
+                                               name="max_scripts_per_user"
+                                               min="1"
+                                               value="{{ limit if limit is not none else '' }}"
+                                               aria-label="脚本上限">
+                                        <span class="auto-run-suffix limit-suffix">个</span>
+                                    </label>
+                                    <div class="limit-form-actions">
+                                        <button type="submit"
+                                                class="auto-run-button"
+                                                name="submit_action"
+                                                value="apply">保存</button>
+                                        <button type="submit" name="submit_action" value="clear">清除</button>
+                                    </div>
+                                </form>
                             </td>
                             <td class="actions">
                                 <form method="post"

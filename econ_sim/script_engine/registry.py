@@ -17,7 +17,6 @@ from typing import (
     Set,
     TYPE_CHECKING,
 )
-
 from pydantic import BaseModel, ValidationError
 
 from ..data_access.models import TickDecisionOverrides, WorldState
@@ -83,6 +82,16 @@ class ScriptStore(Protocol):
     async def clear(self) -> None: ...
 
 
+class SimulationLimitStore(Protocol):
+    async def set_script_limit(self, simulation_id: str, limit: int) -> None: ...
+
+    async def delete_script_limit(self, simulation_id: str) -> None: ...
+
+    async def get_script_limit(self, simulation_id: str) -> Optional[int]: ...
+
+    async def list_script_limits(self) -> Dict[str, int]: ...
+
+
 class ScriptRegistry:
     """维护脚本与仿真实例之间关联关系的容器。"""
 
@@ -91,6 +100,8 @@ class ScriptRegistry:
         store: Optional[ScriptStore] = None,
         *,
         sandbox_timeout: float = DEFAULT_SANDBOX_TIMEOUT,
+        max_scripts_per_user: Optional[int] = None,
+        limit_store: Optional[SimulationLimitStore] = None,
     ) -> None:
         self._store = store
         self._records: Dict[str, _ScriptRecord] = {}
@@ -102,6 +113,73 @@ class ScriptRegistry:
         self._registry_lock = asyncio.Lock()
         self._sandbox_timeout = sandbox_timeout
         self._allowed_modules = set(ALLOWED_MODULES)
+        self._default_script_limit = self._normalize_limit(max_scripts_per_user)
+        self._simulation_limits: Dict[str, int] = {}
+        self._limit_missing: Set[str] = set()
+        self._limit_store = limit_store
+
+    @staticmethod
+    def _normalize_limit(limit: Optional[int]) -> Optional[int]:
+        if limit is None:
+            return None
+        if limit <= 0:
+            return None
+        return int(limit)
+
+    def _get_effective_limit_unlocked(self, simulation_id: str) -> Optional[int]:
+        if simulation_id in self._simulation_limits:
+            return self._simulation_limits[simulation_id]
+        return self._default_script_limit
+
+    async def set_simulation_limit(
+        self, simulation_id: str, limit: Optional[int]
+    ) -> Optional[int]:
+        normalized = self._normalize_limit(limit)
+        async with self._registry_lock:
+            if normalized is None:
+                self._simulation_limits.pop(simulation_id, None)
+                self._limit_missing.discard(simulation_id)
+            else:
+                self._simulation_limits[simulation_id] = normalized
+                self._limit_missing.discard(simulation_id)
+        if self._limit_store is not None:
+            if normalized is None:
+                await self._limit_store.delete_script_limit(simulation_id)
+            else:
+                await self._limit_store.set_script_limit(simulation_id, normalized)
+        return normalized
+
+    async def get_simulation_limit(self, simulation_id: str) -> Optional[int]:
+        async with self._registry_lock:
+            if simulation_id in self._simulation_limits:
+                return self._simulation_limits[simulation_id]
+            if simulation_id in self._limit_missing:
+                return self._default_script_limit
+
+        if self._limit_store is not None:
+            stored = await self._limit_store.get_script_limit(simulation_id)
+            async with self._registry_lock:
+                if stored is not None:
+                    self._simulation_limits[simulation_id] = stored
+                    self._limit_missing.discard(simulation_id)
+                    return stored
+                self._limit_missing.add(simulation_id)
+        return self._default_script_limit
+
+    async def list_simulation_limits(self) -> Dict[str, Optional[int]]:
+        if self._limit_store is None:
+            async with self._registry_lock:
+                return dict(self._simulation_limits)
+
+        stored = await self._limit_store.list_script_limits()
+        async with self._registry_lock:
+            for simulation_id, limit in stored.items():
+                self._simulation_limits[simulation_id] = limit
+                self._limit_missing.discard(simulation_id)
+        return {**stored}
+
+    def get_default_limit(self) -> Optional[int]:
+        return self._default_script_limit
 
     def _update_indexes(
         self,
@@ -223,6 +301,39 @@ class ScriptRegistry:
                 self._user_index.setdefault(user_id, set())
                 self._loaded_users.add(user_id)
 
+    def _count_user_scripts_unlocked(self, simulation_id: str, user_id: str) -> int:
+        script_ids = self._simulation_index.get(simulation_id, set())
+        return sum(
+            1
+            for script_id in script_ids
+            if script_id in self._records
+            and self._records[script_id].metadata.user_id == user_id
+        )
+
+    async def _count_user_scripts(self, simulation_id: str, user_id: str) -> int:
+        await self._ensure_simulation_loaded(simulation_id)
+        await self._ensure_user_loaded(user_id)
+        async with self._registry_lock:
+            return self._count_user_scripts_unlocked(simulation_id, user_id)
+
+    async def _enforce_script_limit(self, simulation_id: str, user_id: str) -> None:
+        limit = await self.get_simulation_limit(simulation_id)
+        if limit is None:
+            return
+        count = await self._count_user_scripts(simulation_id, user_id)
+        if count >= limit:
+            raise ScriptExecutionError(
+                self._format_limit_message(simulation_id, user_id, limit)
+            )
+
+    def _format_limit_message(
+        self, simulation_id: str, user_id: str, limit: int
+    ) -> str:
+        return (
+            "达到脚本数量上限：用户 "
+            f"{user_id} 在仿真实例 {simulation_id} 中最多允许 {limit} 个脚本"
+        )
+
     async def register_script(
         self,
         simulation_id: Optional[str],
@@ -233,6 +344,9 @@ class ScriptRegistry:
         """编译并注册脚本，使其在后续 Tick 中参与决策。"""
 
         self._validate_script(script_code)
+
+        if simulation_id is not None:
+            await self._enforce_script_limit(simulation_id, user_id)
 
         metadata = ScriptMetadata(
             script_id=str(uuid.uuid4()),
@@ -246,15 +360,45 @@ class ScriptRegistry:
         if self._store is not None:
             await self._store.save_script(metadata, script_code)
 
+        limit_violation: Optional[str] = None
         async with self._registry_lock:
-            self._records[metadata.script_id] = _ScriptRecord(
-                metadata=metadata,
-                code=script_code,
-            )
-            self._update_indexes(metadata.script_id, None, metadata)
-            self._loaded_users.add(user_id)
             if simulation_id:
-                self._loaded_simulations.add(simulation_id)
+                limit = self._get_effective_limit_unlocked(simulation_id)
+                if (
+                    limit is not None
+                    and self._count_user_scripts_unlocked(simulation_id, user_id)
+                    >= limit
+                ):
+                    limit_violation = self._format_limit_message(
+                        simulation_id, user_id, limit
+                    )
+                else:
+                    self._records[metadata.script_id] = _ScriptRecord(
+                        metadata=metadata,
+                        code=script_code,
+                    )
+                    self._update_indexes(metadata.script_id, None, metadata)
+                    self._loaded_users.add(user_id)
+                    self._loaded_simulations.add(simulation_id)
+            else:
+                self._records[metadata.script_id] = _ScriptRecord(
+                    metadata=metadata,
+                    code=script_code,
+                )
+                self._update_indexes(metadata.script_id, None, metadata)
+                self._loaded_users.add(user_id)
+
+        if limit_violation is not None:
+            if self._store is not None:
+                try:
+                    await self._store.delete_script(metadata.script_id)
+                except Exception as exc:  # pragma: no cover - defensive log
+                    logger.error(
+                        "Rollback persisted script %s failed",
+                        metadata.script_id,
+                        exc_info=exc,
+                    )
+            raise ScriptExecutionError(limit_violation)
 
         return metadata
 
@@ -320,6 +464,15 @@ class ScriptRegistry:
                 raise ScriptExecutionError("脚本不存在或无权限操作。")
             if record.metadata.simulation_id == simulation_id:
                 return record.metadata
+
+            limit = self._get_effective_limit_unlocked(simulation_id)
+            if (
+                limit is not None
+                and self._count_user_scripts_unlocked(simulation_id, user_id) >= limit
+            ):
+                raise ScriptExecutionError(
+                    self._format_limit_message(simulation_id, user_id, limit)
+                )
 
             if self._store is not None:
                 try:
@@ -418,11 +571,20 @@ class ScriptRegistry:
             self._user_index.clear()
             self._loaded_simulations.clear()
             self._loaded_users.clear()
+            self._simulation_limits.clear()
+            self._limit_missing.clear()
         if self._store is not None:
             try:
                 await self._store.clear()
             except Exception:  # pragma: no cover - best effort
                 logger.exception("Failed to clear script store")
+        if self._limit_store is not None:
+            clear_method = getattr(self._limit_store, "clear", None)
+            if callable(clear_method):
+                try:
+                    await clear_method()
+                except Exception:  # pragma: no cover - defensive log
+                    logger.exception("Failed to clear simulation limit store")
 
     async def detach_simulation(self, simulation_id: str) -> int:
         """移除与指定仿真实例关联的所有脚本，返回解除数量。"""
@@ -446,6 +608,8 @@ class ScriptRegistry:
             if not script_ids:
                 self._simulation_index.pop(simulation_id, None)
                 self._loaded_simulations.discard(simulation_id)
+                self._simulation_limits.pop(simulation_id, None)
+                self._limit_missing.discard(simulation_id)
                 return 0
 
             detached = 0
@@ -463,7 +627,17 @@ class ScriptRegistry:
 
             self._simulation_index.pop(simulation_id, None)
             self._loaded_simulations.discard(simulation_id)
-            return detached
+            self._simulation_limits.pop(simulation_id, None)
+            self._limit_missing.discard(simulation_id)
+        if self._limit_store is not None:
+            try:
+                await self._limit_store.delete_script_limit(simulation_id)
+            except Exception:  # pragma: no cover - defensive log
+                logger.exception(
+                    "Failed to delete script limit for simulation %s",
+                    simulation_id,
+                )
+        return detached
 
     async def generate_overrides(
         self,

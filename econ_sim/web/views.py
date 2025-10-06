@@ -197,6 +197,7 @@ async def landing(request: Request) -> HTMLResponse:
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, message: Optional[str] = None) -> HTMLResponse:
     return _templates.TemplateResponse(
+        request,
         "login.html",
         {"request": request, "error": None, "message": message},
     )
@@ -215,6 +216,7 @@ async def login_submission(
             raise AuthenticationError("Profile not found")
     except AuthenticationError:
         return _templates.TemplateResponse(
+            request,
             "login.html",
             {
                 "request": request,
@@ -279,11 +281,28 @@ async def dashboard(
             normalized_id = ""
     simulation_id = normalized_id
 
+    default_script_limit = script_registry.get_default_limit()
+    limits_by_sim: Dict[str, Optional[int]] = {}
+    script_limit: Optional[int] = None
+
+    if allow_create:
+        for sid in all_simulations:
+            limits_by_sim[sid] = await script_registry.get_simulation_limit(sid)
+
+    if simulation_id:
+        if allow_create:
+            script_limit = limits_by_sim.get(simulation_id)
+            if simulation_id not in limits_by_sim:
+                script_limit = await script_registry.get_simulation_limit(simulation_id)
+        else:
+            script_limit = await script_registry.get_simulation_limit(simulation_id)
+
     if not allow_create and not simulation_id:
         friendly_message = (
             message or "当前没有可加入的仿真实例，请稍后再试或联系管理员创建新实例。"
         )
         return _templates.TemplateResponse(
+            request,
             "dashboard.html",
             {
                 "request": request,
@@ -300,6 +319,9 @@ async def dashboard(
                 "user_scripts": user_scripts,
                 "attachable_scripts": attachable_scripts,
                 "log_download_url": None,
+                "script_limit": script_limit,
+                "default_script_limit": default_script_limit,
+                "limits_by_sim": limits_by_sim,
             },
             status_code=200,
         )
@@ -322,6 +344,7 @@ async def dashboard(
         ]
 
         return _templates.TemplateResponse(
+            request,
             "admin_dashboard.html",
             {
                 "request": request,
@@ -338,6 +361,9 @@ async def dashboard(
                 "user_scripts": [],
                 "attachable_scripts": [],
                 "log_download_url": None,
+                "script_limit": script_limit,
+                "default_script_limit": default_script_limit,
+                "limits_by_sim": limits_by_sim,
             },
         )
 
@@ -368,6 +394,7 @@ async def dashboard(
             )
         simulation_id = resolved_simulation_id
         return _templates.TemplateResponse(
+            request,
             template_name,
             {
                 "request": request,
@@ -386,6 +413,9 @@ async def dashboard(
                 "log_download_url": (
                     f"/web/logs/{simulation_id}/download" if simulation_id else None
                 ),
+                "script_limit": script_limit,
+                "default_script_limit": default_script_limit,
+                "limits_by_sim": limits_by_sim,
             },
             status_code=404,
         )
@@ -418,6 +448,7 @@ async def dashboard(
         ]
 
     return _templates.TemplateResponse(
+        request,
         template_name,
         {
             "request": request,
@@ -436,6 +467,9 @@ async def dashboard(
             "log_download_url": (
                 f"/web/logs/{simulation_id}/download" if simulation_id else None
             ),
+            "script_limit": script_limit,
+            "default_script_limit": default_script_limit,
+            "limits_by_sim": limits_by_sim,
         },
     )
 
@@ -493,6 +527,60 @@ async def admin_create_simulation(
     if generated:
         note += " (自动生成 ID)"
     return _redirect_to_dashboard(desired_id, message=note)
+
+
+@router.post("/admin/simulations/script_limit")
+async def admin_update_script_limit(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    max_scripts_per_user: str = Form(""),
+    submit_action: str = Form("apply"),
+    current_simulation_id: str = Form("default-simulation"),
+) -> RedirectResponse:
+    target = simulation_id.strip()
+    fallback = current_simulation_id.strip() or "default-simulation"
+
+    if not target:
+        return _redirect_to_dashboard(
+            fallback,
+            error="请指定仿真实例 ID。",
+        )
+
+    action = (submit_action or "apply").strip().lower()
+    raw_value = (max_scripts_per_user or "").strip()
+    limit_value: Optional[int]
+
+    try:
+        if action == "clear" or not raw_value:
+            limit_value = None
+        else:
+            limit_value = int(raw_value)
+        applied = await _orchestrator.set_script_limit(target, limit_value)
+    except ValueError as exc:
+        detail = str(exc)
+        redirect_target = target or fallback
+        if "script limit must be positive" in detail:
+            friendly_error = "脚本上限必须为正整数，或留空表示不设限制。"
+        elif detail.startswith("Existing scripts exceed"):
+            friendly_error = (
+                "部分用户已拥有超过该上限的脚本，请先移除多余脚本后再尝试。"
+            )
+        else:
+            friendly_error = "脚本上限必须为正整数，或留空表示不设限制。"
+        return _redirect_to_dashboard(redirect_target, error=friendly_error)
+    except SimulationNotFoundError:
+        redirect_target = target or fallback
+        return _redirect_to_dashboard(
+            redirect_target,
+            error=f"仿真实例 {target or fallback} 不存在，无法更新脚本上限。",
+        )
+
+    if applied is None:
+        note = f"已取消仿真实例 {target} 的脚本上限限制。"
+    else:
+        note = f"仿真实例 {target} 的脚本上限已更新为每位用户 {applied} 个脚本。"
+
+    return _redirect_to_dashboard(target, message=note)
 
 
 @router.post("/admin/simulations/run")
@@ -736,6 +824,7 @@ async def upload_script(
         if simulation_id:
             scripts_for_view = await script_registry.list_scripts(simulation_id)
         return _templates.TemplateResponse(
+            request,
             "dashboard.html",
             {
                 "request": request,
@@ -769,6 +858,7 @@ async def upload_script(
                 )
 
         return _templates.TemplateResponse(
+            request,
             "dashboard.html",
             {
                 "request": request,
@@ -894,6 +984,7 @@ async def attach_existing_script(
 @router.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request) -> HTMLResponse:
     return _templates.TemplateResponse(
+        request,
         "register.html",
         {
             "request": request,
@@ -915,6 +1006,7 @@ async def register_submission(
 ) -> HTMLResponse:
     if password != confirm_password:
         return _templates.TemplateResponse(
+            request,
             "register.html",
             {
                 "request": request,
@@ -930,6 +1022,7 @@ async def register_submission(
         await user_manager.register_user(email, password, user_type)
     except UserAlreadyExistsError:
         return _templates.TemplateResponse(
+            request,
             "register.html",
             {
                 "request": request,
@@ -942,6 +1035,7 @@ async def register_submission(
         )
     except ValueError as exc:
         return _templates.TemplateResponse(
+            request,
             "register.html",
             {
                 "request": request,
@@ -954,6 +1048,7 @@ async def register_submission(
         )
     except Exception:
         return _templates.TemplateResponse(
+            request,
             "register.html",
             {
                 "request": request,
@@ -998,6 +1093,7 @@ async def docs_page(request: Request) -> HTMLResponse:
         ]
 
     return _templates.TemplateResponse(
+        request,
         "docs.html",
         {
             "request": request,
