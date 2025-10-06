@@ -51,6 +51,7 @@
             </label>
             <button type="submit">创建仿真实例</button>
         </form>
+        <div class="scroll-pane">
         {% if all_simulations %}
             <table class="admin-table">
                 <colgroup>
@@ -98,7 +99,6 @@
                                                 class="auto-run-button"
                                                 name="submit_action"
                                                 value="apply">保存</button>
-                                        <button type="submit" name="submit_action" value="clear">清除</button>
                                     </div>
                                 </form>
                             </td>
@@ -206,6 +206,7 @@
         {% else %}
             <p class="empty">尚未创建任何仿真实例。</p>
         {% endif %}
+        </div>
     </section>
     <section class="grid">
         <article class="card wide">
@@ -217,6 +218,7 @@
     </section>
     <section class="panel">
         <h3>用户管理</h3>
+        <div class="scroll-pane">
         {% if all_users %}
             <table class="admin-table">
                 <thead>
@@ -255,9 +257,11 @@
         {% else %}
             <p class="empty">暂无注册用户。</p>
         {% endif %}
+        </div>
     </section>
     <section class="panel">
         <h3>脚本管理</h3>
+        <div class="scroll-pane">
         {% if all_scripts %}
             <table class="admin-table">
                 <thead>
@@ -274,9 +278,9 @@
                 <tbody>
                     {% for script in all_scripts %}
                         <tr>
-                            <td>{{ script.script_id }}</td>
-                            <td>{{ script.code_version }}</td>
-                            <td>
+                            <td class="cell-id">{{ script.script_id }}</td>
+                            <td class="cell-id">{{ script.code_version }}</td>
+                            <td class="cell-simulation">
                                 {% if script.simulation_id %}
                                     {% if script.simulation_id == simulation_id %}
                                         <strong>{{ script.simulation_id }}</strong>
@@ -288,16 +292,16 @@
                                     <span class="empty">未挂载</span>
                                 {% endif %}
                             </td>
-                            <td>{{ script.user_id }}</td>
-                            <td>
+                            <td class="cell-user">{{ script.user_id }}</td>
+                            <td class="cell-description">
                                 {% if script.description %}
                                     {{ script.description }}
                                 {% else %}
                                     <span class="empty">无</span>
                                 {% endif %}
                             </td>
-                            <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
-                            <td>
+                            <td class="cell-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                            <td class="cell-actions">
                                 <form method="post" action="/web/admin/scripts/delete" class="inline-form">
                                     <input type="hidden"
                                            name="simulation_id"
@@ -316,6 +320,7 @@
         {% else %}
             <p class="empty">暂时没有上传脚本。</p>
         {% endif %}
+        </div>
     </section>
     <script>
 document.addEventListener("DOMContentLoaded", () => {

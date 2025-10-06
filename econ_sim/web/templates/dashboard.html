@@ -66,19 +66,23 @@
                     <ul class="script-list">
                         {% for script in scripts %}
                             <li>
-                                <div class="script-meta">
-                                    <span class="script-owner">{{ script.user_id }}</span>
-                                    <span class="script-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                                <div class="script-item">
+                                    <div class="script-detail">
+                                        <span class="label">上传者</span>
+                                        <span class="value">{{ script.user_id }}</span>
+                                        <span class="label">上传时间</span>
+                                        <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                                        <span class="label">脚本 ID</span>
+                                        <span class="value">{{ script.script_id }}</span>
+                                        <span class="label">版本</span>
+                                        <span class="value">{{ script.code_version }}</span>
+                                    </div>
+                                    {% if script.description %}
+                                        <p class="script-desc">{{ script.description }}</p>
+                                    {% else %}
+                                        <p class="script-desc empty">（无描述）</p>
+                                    {% endif %}
                                 </div>
-                                <div class="script-meta">
-                                    <span class="script-id">ID: {{ script.script_id }}</span>
-                                    <span class="script-version">版本: {{ script.code_version }}</span>
-                                </div>
-                                {% if script.description %}
-                                    <p class="script-desc">{{ script.description }}</p>
-                                {% else %}
-                                    <p class="script-desc empty">（无描述）</p>
-                                {% endif %}
                                 {% if user.user_type != "admin" and script.user_id == user.email %}
                                     {% set allow_detach = current_simulation_tick == 0 %}
                                     <div class="script-actions">
@@ -109,28 +113,31 @@
                     <ul class="script-list">
                         {% for script in user_scripts %}
                             <li>
-                                <div class="script-meta">
-                                    <span class="script-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
-                                    <span class="script-owner">{{ script.user_id }}</span>
+                                <div class="script-item">
+                                    <div class="script-detail">
+                                        <span class="label">上传时间</span>
+                                        <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                                        <span class="label">上传者</span>
+                                        <span class="value">{{ script.user_id }}</span>
+                                        <span class="label">脚本 ID</span>
+                                        <span class="value">{{ script.script_id }}</span>
+                                        <span class="label">版本</span>
+                                        <span class="value">{{ script.code_version }}</span>
+                                        <span class="label">状态</span>
+                                        <span class="value">
+                                            {% if script.simulation_id %}
+                                                已挂载至 {{ script.simulation_id }}
+                                            {% else %}
+                                                未挂载
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% if script.description %}
+                                        <p class="script-desc">{{ script.description }}</p>
+                                    {% else %}
+                                        <p class="script-desc empty">（无描述）</p>
+                                    {% endif %}
                                 </div>
-                                <div class="script-meta">
-                                    <span class="script-id">ID: {{ script.script_id }}</span>
-                                    <span class="script-version">版本: {{ script.code_version }}</span>
-                                </div>
-                                <div class="script-meta">
-                                    <span class="script-status">状态:
-                                        {% if script.simulation_id %}
-                                            已挂载至 {{ script.simulation_id }}
-                                        {% else %}
-                                            未挂载
-                                        {% endif %}
-                                    </span>
-                                </div>
-                                {% if script.description %}
-                                    <p class="script-desc">{{ script.description }}</p>
-                                {% else %}
-                                    <p class="script-desc empty">（无描述）</p>
-                                {% endif %}
                                 {% set script_tick = script_tick_map.get(script.simulation_id) %}
                                 {% set detach_enabled = script.simulation_id and script_tick == 0 %}
                                 {% set delete_enabled = (script.simulation_id is none) or (script_tick is none) or (script_tick == 0) %}
@@ -169,8 +176,6 @@
             </label>
             <p class="form-hint">
                 脚本必须定义 <code>generate_decisions(context)</code> 函数。
-            </p>
-            <p class="form-hint">若当前尚未加入仿真实例，脚本会先保存到个人脚本库，稍后可在下方挂载。</p>
             {% if simulation_id %}
                 <p class="form-hint">
                     当前仿真实例：<strong>{{ simulation_id }}</strong>。新脚本会先保存到个人脚本库，您可以在下方选择挂载到该仿真实例。

@@ -424,6 +424,41 @@ body {
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
 }
 
+.script-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.script-detail {
+  display: grid;
+  grid-template-columns: minmax(120px, 140px) 1fr;
+  column-gap: 1.1rem;
+  row-gap: 0.35rem;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.script-detail .label {
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.script-detail .value {
+  color: rgba(226, 232, 240, 0.92);
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .script-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .script-detail .label {
+    color: rgba(226, 232, 240, 0.75);
+  }
+}
+
 .script-meta {
   display: flex;
   align-items: center;
@@ -695,11 +730,37 @@ body {
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
   text-align: left;
   vertical-align: middle;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .admin-table th {
   background-color: rgba(15, 23, 42, 0.8);
   font-weight: 600;
+}
+
+.admin-table td.cell-id {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.88rem;
+}
+
+.admin-table td.cell-user {
+  font-weight: 500;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.admin-table td.cell-description {
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.admin-table td.cell-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-table td.cell-actions {
+  white-space: nowrap;
 }
 
 .admin-table col.col-sim-id {
