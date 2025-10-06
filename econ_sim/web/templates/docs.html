@@ -1,29 +1,154 @@
 {% extends "base.html" %}
 {% block title %}文档 - Econ Simulator{% endblock %}
 {% block content %}
-    <section class="panel">
+    <section class="panel docs-hero">
         <h2>文档中心</h2>
-        <p>这里汇总了平台 API 指南与各角色的策略手册，所有内容都与网页端可见的功能保持同步。</p>
-        <p class="hint">提示：仪表盘顶部新增“下载最近日志”按钮，可在脚本调试时快速查看输出与异常。</p>
+        <p>这里汇总了平台 API 指南与各角色的策略手册，所有内容与网页端功能保持同步，并提供快速导航与章节预览。</p>
+        <p class="hint">提示：仪表盘顶部的“下载最近日志”按钮支持快速定位脚本输出与异常。</p>
     </section>
-    <section class="panel">
-        <h2>平台 API 指南</h2>
-        <div class="markdown-body">{{ platform_doc | safe }}</div>
-    </section>
-    <section class="panel">
-        <h3>角色策略指南</h3>
-        {% if role_docs %}
-            <p>以下内容会随登录账号的角色自动切换，覆盖数据入口、策略建议与调试要点。</p>
-            <div class="role-docs">
+    <div class="docs-shell">
+        <nav class="panel docs-nav">
+            <h3>文档列表</h3>
+            <ul>
+                <li>
+                    <a href="#doc-platform"
+                       class="docs-nav-link is-active"
+                       data-doc-target="doc-platform">平台策略脚本 API 指南</a>
+                </li>
+                {% if role_docs %}
+                    {% for doc in role_docs %}
+                        <li>
+                            <a href="#doc-{{ doc.key }}"
+                               class="docs-nav-link"
+                               data-doc-target="doc-{{ doc.key }}">{{ doc.title }}</a>
+                        </li>
+                    {% endfor %}
+                {% else %}
+                    <li class="docs-nav-empty">登录即可查看与你角色匹配的策略手册。</li>
+                {% endif %}
+            </ul>
+        </nav>
+        <main class="panel docs-main" data-docs-main>
+            <article id="doc-platform" class="doc-article is-active" data-doc-article>
+                <div class="markdown-body">{{ platform_doc | safe }}</div>
+            </article>
+            {% if role_docs %}
                 {% for doc in role_docs %}
-                    <article>
-                        <h4>{{ doc.title }}</h4>
+                    <article id="doc-{{ doc.key }}" class="doc-article" data-doc-article>
                         <div class="markdown-body">{{ doc.content | safe }}</div>
                     </article>
                 {% endfor %}
-            </div>
-        {% else %}
-            <p class="hint">请先登录即可查看与你的角色匹配的策略手册与脚本示例。</p>
-        {% endif %}
-    </section>
+            {% endif %}
+        </main>
+        <aside class="panel docs-toc" data-toc-panel>
+            <h3>章节目录</h3>
+            <ol class="docs-toc-list" data-toc-list>
+            </ol>
+            <p class="toc-empty">当前文档暂无可用章节标题。</p>
+        </aside>
+    </div>
+    <script>
+document.addEventListener("DOMContentLoaded", () => {
+    const main = document.querySelector("[data-docs-main]");
+    const tocList = document.querySelector("[data-toc-list]");
+    const tocPanel = document.querySelector("[data-toc-panel]");
+    const navLinks = Array.from(document.querySelectorAll("[data-doc-target]"));
+    const articles = main ? Array.from(main.querySelectorAll("[data-doc-article]")) : [];
+    if (!main || !tocList || !tocPanel || !articles.length) {
+        return;
+    }
+
+    const clearToc = () => {
+        while (tocList.firstChild) {
+            tocList.removeChild(tocList.firstChild);
+        }
+    };
+
+    const buildToc = (article) => {
+        clearToc();
+        const headings = article.querySelectorAll("h1, h2, h3");
+        let count = 0;
+        headings.forEach((heading) => {
+            const level = Number(heading.tagName.replace("H", ""));
+            if (!Number.isFinite(level) || level < 1 || level > 3) {
+                return;
+            }
+            if (!heading.id) {
+                count += 1;
+                heading.id = `doc-section-${count}`;
+            }
+            const item = document.createElement("li");
+            item.classList.add(`toc-level-${level}`);
+            const link = document.createElement("a");
+            link.href = `#${heading.id}`;
+            link.textContent = heading.textContent.trim();
+            item.appendChild(link);
+            tocList.appendChild(item);
+        });
+
+        if (!tocList.children.length) {
+            tocPanel.classList.add("is-empty");
+        } else {
+            tocPanel.classList.remove("is-empty");
+        }
+    };
+
+    const setActiveArticle = (targetId, { updateHash = true, scrollIntoView = false } = {}) => {
+        if (!targetId) {
+            return false;
+        }
+        const article = articles.find((item) => item.id === targetId);
+        if (!article) {
+            return false;
+        }
+
+        articles.forEach((item) => {
+            item.classList.toggle("is-active", item === article);
+        });
+        navLinks.forEach((link) => {
+            link.classList.toggle("is-active", link.dataset.docTarget === targetId);
+        });
+
+        buildToc(article);
+
+        if (scrollIntoView) {
+            article.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
+        if (updateHash && window.history && window.history.replaceState) {
+            window.history.replaceState(null, "", `#${targetId}`);
+        }
+
+        return true;
+    };
+
+    main.classList.add("is-ready");
+
+    const initialTarget = window.location.hash ? window.location.hash.substring(1) : "";
+    if (!setActiveArticle(initialTarget, { updateHash: false })) {
+        setActiveArticle(articles[0].id, { updateHash: false });
+    }
+
+    navLinks.forEach((link) => {
+        link.addEventListener("click", (event) => {
+            const targetId = link.dataset.docTarget;
+            if (!targetId) {
+                return;
+            }
+            event.preventDefault();
+            setActiveArticle(targetId, { scrollIntoView: true });
+        });
+    });
+
+    window.addEventListener("hashchange", () => {
+        const target = window.location.hash ? window.location.hash.substring(1) : "";
+        setActiveArticle(target, { updateHash: false, scrollIntoView: false });
+    });
+
+    const activeArticle = articles.find((item) => item.classList.contains("is-active"));
+    if (activeArticle) {
+        buildToc(activeArticle);
+    }
+});
+    </script>
 {% endblock %}
