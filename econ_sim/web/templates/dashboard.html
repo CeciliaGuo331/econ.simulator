@@ -86,11 +86,17 @@
                                 {% if user.user_type != "admin" and script.user_id == user.email %}
                                     {% set allow_detach = current_simulation_tick == 0 %}
                                     <div class="script-actions">
-                                        <form method="post" action="/web/scripts/detach" class="script-action-form inline-form">
+                                        <form method="post"
+                                              action="/web/scripts/detach"
+                                              class="script-action-form inline-form">
                                             <input type="hidden" name="script_id" value="{{ script.script_id }}">
                                             <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
-                                            <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
-                                            <button type="submit" class="danger"{% if not allow_detach %} disabled{% endif %}>取消挂载</button>
+                                            <input type="hidden"
+                                                   name="current_simulation_id"
+                                                   value="{{ simulation_id }}">
+                                            <button type="submit"
+                                                    class="danger"
+                                                    {% if not allow_detach %}disabled{% endif %}>取消挂载</button>
                                         </form>
                                     </div>
                                 {% endif %}
@@ -142,10 +148,16 @@
                                 {% set detach_enabled = script.simulation_id and script_tick == 0 %}
                                 {% set delete_enabled = (script.simulation_id is none) or (script_tick is none) or (script_tick == 0) %}
                                 <div class="script-actions">
-                                    <form method="post" action="/web/scripts/delete" class="script-action-form inline-form">
+                                    <form method="post"
+                                          action="/web/scripts/delete"
+                                          class="script-action-form inline-form">
                                         <input type="hidden" name="script_id" value="{{ script.script_id }}">
-                                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
-                                        <button type="submit" class="danger"{% if not delete_enabled %} disabled{% endif %}>删除脚本</button>
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <button type="submit"
+                                                class="danger"
+                                                {% if not delete_enabled %}disabled{% endif %}>删除脚本</button>
                                     </form>
                                 </div>
                             </li>
@@ -165,7 +177,9 @@
               action="/web/scripts"
               class="script-form"
               enctype="multipart/form-data">
-            <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
+            <input type="hidden"
+                   name="current_simulation_id"
+                   value="{{ simulation_id }}">
             <label>
                 脚本说明（可选）
                 <input type="text" name="description" placeholder="简单描述脚本用途">

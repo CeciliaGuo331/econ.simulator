@@ -52,279 +52,276 @@
             <button type="submit">创建仿真世界</button>
         </form>
         <div class="scroll-pane">
-        {% if all_simulations %}
-            <table class="admin-table">
-                <colgroup>
-                    <col class="col-sim-id">
-                    <col class="col-sim-households">
-                    <col class="col-sim-limit">
-                    <col class="col-sim-actions">
-                </colgroup>
-                <thead>
-                    <tr>
-                        <th>仿真世界 ID</th>
-                        <th class="household-header">当前家户个数</th>
-                        <th class="limit-header">单用户脚本数上限</th>
-                        <th class="actions-header">操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for sid in all_simulations %}
+            {% if all_simulations %}
+                <table class="admin-table">
+                    <colgroup>
+                        <col class="col-sim-id">
+                        <col class="col-sim-households">
+                        <col class="col-sim-limit">
+                        <col class="col-sim-actions">
+                    </colgroup>
+                    <thead>
                         <tr>
-                            <td>
-                                {% if sid == simulation_id %}
-                                    <strong>{{ sid }}</strong>
-                                {% else %}
-                                    <a href="/web/dashboard?simulation_id={{ sid }}"
-                                       data-remember-scroll="true">{{ sid }}</a>
-                                {% endif %}
-                            </td>
-                            <td class="household-count">
-                                {{ household_counts_by_sim.get(sid, 0) }} 户
-                            </td>
-                            <td class="limit-cell">
-                                {% set limit = limits_by_sim.get(sid) %}
-                                <form method="post"
-                                      action="/web/admin/simulations/script_limit"
-                                      class="inline-form limit-form auto-run-form">
-                                    <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                    <input type="hidden"
-                                           name="current_simulation_id"
-                                           value="{{ simulation_id }}">
-                                    <label class="auto-run-input-wrap limit-input-wrap">
-                                        <input type="number"
-                                               name="max_scripts_per_user"
-                                               min="1"
-                                               value="{{ limit if limit is not none else '' }}"
-                                               aria-label="脚本上限">
-                                        <span class="auto-run-suffix limit-suffix">个</span>
-                                    </label>
-                                    <div class="limit-form-actions">
-                                        <button type="submit"
-                                                class="auto-run-button"
-                                                name="submit_action"
-                                                value="apply">保存</button>
-                                    </div>
-                                </form>
-                            </td>
-                            <td class="actions">
-                                {% set row_features = features_by_sim.get(sid) %}
-                                <div class="action-row primary-actions">
-                                    <form method="post"
-                                          action="/web/admin/simulations/run"
-                                          class="inline-form"
-                                          data-async="true"
-                                          data-action-type="run-tick"
-                                          data-reload="true"
-                                          data-reload-delay="1200">
-                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                        <input type="hidden"
-                                               name="current_simulation_id"
-                                               value="{{ simulation_id }}">
-                                        <button type="submit">执行 Tick</button>
-                                    </form>
-                                    <form method="post"
-                                          action="/web/admin/simulations/run_days"
-                                          class="inline-form auto-run-form"
-                                          data-async="true"
-                                          data-action-type="run-days"
-                                          data-reload="true"
-                                          data-reload-delay="1600">
-                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                        <input type="hidden"
-                                               name="current_simulation_id"
-                                               value="{{ simulation_id }}">
-                                        <button type="submit" class="auto-run-button">自动执行</button>
-                                        <label class="auto-run-input-wrap">
-                                            <input type="number" name="days" min="1" value="1" required>
-                                            <span class="auto-run-suffix">day</span>
-                                        </label>
-                                    </form>
-                                    <form method="post"
-                                          action="/web/admin/simulations/reset"
-                                          class="inline-form">
-                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                        <button type="submit">重置</button>
-                                    </form>
-                                    <form method="post"
-                                          action="/web/admin/simulations/delete"
-                                          class="inline-form">
-                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                        <input type="hidden"
-                                               name="current_simulation_id"
-                                               value="{{ simulation_id }}">
-                                        <button type="submit" class="danger">删除</button>
-                                    </form>
-                                </div>
-                                <div class="action-row feature-actions">
-                                    <form method="post"
-                                          action="/web/admin/simulations/features"
-                                          class="inline-form auto-run-form feature-form">
-                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
-                                        <input type="hidden"
-                                               name="current_simulation_id"
-                                               value="{{ simulation_id }}">
-                                        <button type="submit" class="auto-run-button">保存冲击</button>
-                                        <label class="auto-run-input-wrap feature-toggle">
-                                            <input type="checkbox"
-                                                   name="household_shock_enabled"
-                                                   value="1"
-                                                   {% if row_features and row_features.household_shock_enabled %}checked{% endif %}>
-                                            <span class="auto-run-suffix">启用</span>
-                                        </label>
-                                        <label class="auto-run-input-wrap">
-                                            <input type="number"
-                                                   step="0.01"
-                                                   min="0"
-                                                   name="household_shock_ability_std"
-                                                   value="{{ row_features.household_shock_ability_std if row_features else '' }}"
-                                                   placeholder="σ能力">
-                                            <span class="auto-run-suffix">σ</span>
-                                        </label>
-                                        <label class="auto-run-input-wrap">
-                                            <input type="number"
-                                                   step="0.01"
-                                                   min="0"
-                                                   name="household_shock_asset_std"
-                                                   value="{{ row_features.household_shock_asset_std if row_features else '' }}"
-                                                   placeholder="β资产">
-                                            <span class="auto-run-suffix">β</span>
-                                        </label>
-                                        <label class="auto-run-input-wrap">
-                                            <input type="number"
-                                                   step="0.01"
-                                                   min="0"
-                                                   max="0.9"
-                                                   name="household_shock_max_fraction"
-                                                   value="{{ row_features.household_shock_max_fraction if row_features else '' }}"
-                                                   placeholder="冲击上限">
-                                            <span class="auto-run-suffix">cash</span>
-                                        </label>
-                                    </form>
-                                    <p class="hint compact-hint">提示：留空保持当前值，资产冲击总和自动为 0。</p>
-                                </div>
-                            </td>
+                            <th>仿真世界 ID</th>
+                            <th class="household-header">当前家户个数</th>
+                            <th class="limit-header">单用户脚本数上限</th>
+                            <th class="actions-header">操作</th>
                         </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p class="empty">尚未创建任何仿真世界。</p>
-        {% endif %}
+                    </thead>
+                    <tbody>
+                        {% for sid in all_simulations %}
+                            <tr>
+                                <td>
+                                    {% if sid == simulation_id %}
+                                        <strong>{{ sid }}</strong>
+                                    {% else %}
+                                        <a href="/web/dashboard?simulation_id={{ sid }}"
+                                           data-remember-scroll="true">{{ sid }}</a>
+                                    {% endif %}
+                                </td>
+                                <td class="household-count">{{ household_counts_by_sim.get(sid, 0) }} 户</td>
+                                <td class="limit-cell">
+                                    {% set limit = limits_by_sim.get(sid) %}
+                                    <form method="post"
+                                          action="/web/admin/simulations/script_limit"
+                                          class="inline-form limit-form auto-run-form">
+                                        <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <label class="auto-run-input-wrap limit-input-wrap">
+                                            <input type="number"
+                                                   name="max_scripts_per_user"
+                                                   min="1"
+                                                   value="{{ limit if limit is not none else '' }}"
+                                                   aria-label="脚本上限">
+                                            <span class="auto-run-suffix limit-suffix">个</span>
+                                        </label>
+                                        <div class="limit-form-actions">
+                                            <button type="submit"
+                                                    class="auto-run-button"
+                                                    name="submit_action"
+                                                    value="apply">保存</button>
+                                        </div>
+                                    </form>
+                                </td>
+                                <td class="actions">
+                                    {% set row_features = features_by_sim.get(sid) %}
+                                    <div class="action-row primary-actions">
+                                        <form method="post"
+                                              action="/web/admin/simulations/run"
+                                              class="inline-form"
+                                              data-async="true"
+                                              data-action-type="run-tick"
+                                              data-reload="true"
+                                              data-reload-delay="1200">
+                                            <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                            <input type="hidden"
+                                                   name="current_simulation_id"
+                                                   value="{{ simulation_id }}">
+                                            <button type="submit">执行 Tick</button>
+                                        </form>
+                                        <form method="post"
+                                              action="/web/admin/simulations/run_days"
+                                              class="inline-form auto-run-form"
+                                              data-async="true"
+                                              data-action-type="run-days"
+                                              data-reload="true"
+                                              data-reload-delay="1600">
+                                            <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                            <input type="hidden"
+                                                   name="current_simulation_id"
+                                                   value="{{ simulation_id }}">
+                                            <button type="submit" class="auto-run-button">自动执行</button>
+                                            <label class="auto-run-input-wrap">
+                                                <input type="number" name="days" min="1" value="1" required>
+                                                <span class="auto-run-suffix">day</span>
+                                            </label>
+                                        </form>
+                                        <form method="post"
+                                              action="/web/admin/simulations/reset"
+                                              class="inline-form">
+                                            <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                            <button type="submit">重置</button>
+                                        </form>
+                                        <form method="post"
+                                              action="/web/admin/simulations/delete"
+                                              class="inline-form">
+                                            <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                            <input type="hidden"
+                                                   name="current_simulation_id"
+                                                   value="{{ simulation_id }}">
+                                            <button type="submit" class="danger">删除</button>
+                                        </form>
+                                    </div>
+                                    <div class="action-row feature-actions">
+                                        <form method="post"
+                                              action="/web/admin/simulations/features"
+                                              class="inline-form auto-run-form feature-form">
+                                            <input type="hidden" name="simulation_id" value="{{ sid }}">
+                                            <input type="hidden"
+                                                   name="current_simulation_id"
+                                                   value="{{ simulation_id }}">
+                                            <button type="submit" class="auto-run-button">保存冲击</button>
+                                            <label class="auto-run-input-wrap feature-toggle">
+                                                <input type="checkbox"
+                                                       name="household_shock_enabled"
+                                                       value="1"
+                                                       {% if row_features and row_features.household_shock_enabled %}checked{% endif %}>
+                                                <span class="auto-run-suffix">启用</span>
+                                            </label>
+                                            <label class="auto-run-input-wrap">
+                                                <input type="number"
+                                                       step="0.01"
+                                                       min="0"
+                                                       name="household_shock_ability_std"
+                                                       value="{{ row_features.household_shock_ability_std if row_features else '' }}"
+                                                       placeholder="σ能力">
+                                                <span class="auto-run-suffix">σ</span>
+                                            </label>
+                                            <label class="auto-run-input-wrap">
+                                                <input type="number"
+                                                       step="0.01"
+                                                       min="0"
+                                                       name="household_shock_asset_std"
+                                                       value="{{ row_features.household_shock_asset_std if row_features else '' }}"
+                                                       placeholder="β资产">
+                                                <span class="auto-run-suffix">β</span>
+                                            </label>
+                                            <label class="auto-run-input-wrap">
+                                                <input type="number"
+                                                       step="0.01"
+                                                       min="0"
+                                                       max="0.9"
+                                                       name="household_shock_max_fraction"
+                                                       value="{{ row_features.household_shock_max_fraction if row_features else '' }}"
+                                                       placeholder="冲击上限">
+                                                <span class="auto-run-suffix">cash</span>
+                                            </label>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="empty">尚未创建任何仿真世界。</p>
+            {% endif %}
         </div>
     </section>
     <section class="grid">
         <article class="card wide">
             <h3>世界状态快照</h3>
             <div class="scroll-pane">
-            <pre class="json-preview">{{ context.world | tojson(indent=2) }}</pre>
+                <pre class="json-preview">{{ context.world | tojson(indent=2) }}</pre>
             </div>
         </article>
     </section>
     <section class="panel">
         <h3>用户管理</h3>
         <div class="scroll-pane">
-        {% if all_users %}
-            <table class="admin-table">
-                <thead>
-                    <tr>
-                        <th>邮箱</th>
-                        <th>角色</th>
-                        <th>注册时间 (UTC)</th>
-                        <th>脚本数</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for item in all_users %}
+            {% if all_users %}
+                <table class="admin-table">
+                    <thead>
                         <tr>
-                            <td>{{ item.email }}</td>
-                            <td>{{ item.user_type }}</td>
-                            <td>{{ item.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
-                            <td>{{ item.script_count }}</td>
-                            <td>
-                                {% if item.email == user.email %}
-                                    <span class="hint">当前账号</span>
-                                {% else %}
-                                    <form method="post" action="/web/admin/users/delete" class="inline-form">
-                                        <input type="hidden" name="email" value="{{ item.email }}">
-                                        <input type="hidden"
-                                               name="current_simulation_id"
-                                               value="{{ simulation_id }}">
-                                        <button type="submit">删除</button>
-                                    </form>
-                                {% endif %}
-                            </td>
+                            <th>邮箱</th>
+                            <th>角色</th>
+                            <th>注册时间 (UTC)</th>
+                            <th>脚本数</th>
+                            <th>操作</th>
                         </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p class="empty">暂无注册用户。</p>
-        {% endif %}
+                    </thead>
+                    <tbody>
+                        {% for item in all_users %}
+                            <tr>
+                                <td>{{ item.email }}</td>
+                                <td>{{ item.user_type }}</td>
+                                <td>{{ item.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                                <td>{{ item.script_count }}</td>
+                                <td>
+                                    {% if item.email == user.email %}
+                                        <span class="hint">当前账号</span>
+                                    {% else %}
+                                        <form method="post" action="/web/admin/users/delete" class="inline-form">
+                                            <input type="hidden" name="email" value="{{ item.email }}">
+                                            <input type="hidden"
+                                                   name="current_simulation_id"
+                                                   value="{{ simulation_id }}">
+                                            <button type="submit">删除</button>
+                                        </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="empty">暂无注册用户。</p>
+            {% endif %}
         </div>
     </section>
     <section class="panel">
         <h3>脚本管理</h3>
         <div class="scroll-pane">
-        {% if all_scripts %}
-            <table class="admin-table">
-                <thead>
-                    <tr>
-                        <th>脚本 ID</th>
-                        <th>版本号</th>
-                        <th>仿真世界</th>
-                        <th>用户</th>
-                        <th>描述</th>
-                        <th>上传时间 (UTC)</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for script in all_scripts %}
+            {% if all_scripts %}
+                <table class="admin-table">
+                    <thead>
                         <tr>
-                            <td class="cell-id">{{ script.script_id }}</td>
-                            <td class="cell-id">{{ script.code_version }}</td>
-                            <td class="cell-simulation">
-                                {% if script.simulation_id %}
-                                    {% if script.simulation_id == simulation_id %}
-                                        <strong>{{ script.simulation_id }}</strong>
-                                    {% else %}
-                                        <a href="/web/dashboard?simulation_id={{ script.simulation_id }}"
-                                           data-remember-scroll="true">{{ script.simulation_id }}</a>
-                                    {% endif %}
-                                {% else %}
-                                    <span class="empty">未挂载</span>
-                                {% endif %}
-                            </td>
-                            <td class="cell-user">{{ script.user_id }}</td>
-                            <td class="cell-description">
-                                {% if script.description %}
-                                    {{ script.description }}
-                                {% else %}
-                                    <span class="empty">无</span>
-                                {% endif %}
-                            </td>
-                            <td class="cell-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
-                            <td class="cell-actions">
-                                <form method="post" action="/web/admin/scripts/delete" class="inline-form">
-                                    <input type="hidden"
-                                           name="simulation_id"
-                                           value="{{ script.simulation_id or '' }}">
-                                    <input type="hidden" name="script_id" value="{{ script.script_id }}">
-                                    <input type="hidden"
-                                           name="current_simulation_id"
-                                           value="{{ simulation_id }}">
-                                    <button type="submit">删除</button>
-                                </form>
-                            </td>
+                            <th>脚本 ID</th>
+                            <th>版本号</th>
+                            <th>仿真世界</th>
+                            <th>用户</th>
+                            <th>描述</th>
+                            <th>上传时间 (UTC)</th>
+                            <th>操作</th>
                         </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p class="empty">暂时没有上传脚本。</p>
-        {% endif %}
+                    </thead>
+                    <tbody>
+                        {% for script in all_scripts %}
+                            <tr>
+                                <td class="cell-id">{{ script.script_id }}</td>
+                                <td class="cell-id">{{ script.code_version }}</td>
+                                <td class="cell-simulation">
+                                    {% if script.simulation_id %}
+                                        {% if script.simulation_id == simulation_id %}
+                                            <strong>{{ script.simulation_id }}</strong>
+                                        {% else %}
+                                            <a href="/web/dashboard?simulation_id={{ script.simulation_id }}"
+                                               data-remember-scroll="true">{{ script.simulation_id }}</a>
+                                        {% endif %}
+                                    {% else %}
+                                        <span class="empty">未挂载</span>
+                                    {% endif %}
+                                </td>
+                                <td class="cell-user">{{ script.user_id }}</td>
+                                <td class="cell-description">
+                                    {% if script.description %}
+                                        {{ script.description }}
+                                    {% else %}
+                                        <span class="empty">无</span>
+                                    {% endif %}
+                                </td>
+                                <td class="cell-time">{{ script.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                                <td class="cell-actions">
+                                    <form method="post" action="/web/admin/scripts/delete" class="inline-form">
+                                        <input type="hidden"
+                                               name="simulation_id"
+                                               value="{{ script.simulation_id or '' }}">
+                                        <input type="hidden" name="script_id" value="{{ script.script_id }}">
+                                        <input type="hidden"
+                                               name="current_simulation_id"
+                                               value="{{ simulation_id }}">
+                                        <button type="submit">删除</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="empty">暂时没有上传脚本。</p>
+            {% endif %}
         </div>
     </section>
     <script>
