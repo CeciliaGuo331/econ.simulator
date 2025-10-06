@@ -294,6 +294,25 @@ async def dashboard(
     user_scripts: List = []
     attachable_scripts: List = []
     features_by_sim: Dict[str, Optional[Dict[str, Any]]] = {}
+    household_counts_by_sim: Dict[str, int] = {}
+    user_profiles: List[Any] = []
+    user_type_index: Dict[str, str] = {}
+    if allow_create:
+        user_profiles = await user_manager.list_users()
+        user_type_index = {
+            profile.email.lower(): profile.user_type for profile in user_profiles
+        }
+        for sid in all_simulations:
+            try:
+                participants = await _orchestrator.list_participants(sid)
+            except SimulationNotFoundError:
+                participants = []
+            household_counts_by_sim[sid] = sum(
+                1
+                for participant in participants
+                if user_type_index.get(participant.lower(), "") == "individual"
+            )
+
     if not allow_create:
         user_scripts = await script_registry.list_user_scripts(user["email"])
         attachable_scripts = [
@@ -337,7 +356,7 @@ async def dashboard(
     if not allow_create and not simulation_id:
         script_tick_map = await _build_script_tick_map("", None, user_scripts)
         friendly_message = (
-            message or "当前没有可加入的仿真实例，请稍后再试或联系管理员创建新实例。"
+            message or "当前没有可加入的仿真世界，请稍后再试或联系管理员创建新实例。"
         )
         return _templates.TemplateResponse(
             request,
@@ -364,12 +383,12 @@ async def dashboard(
                 "features_by_sim": features_by_sim,
                 "current_simulation_tick": None,
                 "script_tick_map": script_tick_map,
+                "household_counts_by_sim": household_counts_by_sim,
             },
             status_code=200,
         )
 
     if allow_create and not simulation_id:
-        user_profiles = await user_manager.list_users()
         all_scripts = await script_registry.list_all_scripts()
         scripts_by_user: Dict[str, List] = {}
         for metadata in all_scripts:
@@ -410,6 +429,7 @@ async def dashboard(
                 "features_by_sim": features_by_sim,
                 "current_simulation_tick": None,
                 "script_tick_map": {},
+                "household_counts_by_sim": household_counts_by_sim,
             },
         )
 
@@ -469,6 +489,7 @@ async def dashboard(
                 "features_by_sim": features_by_sim,
                 "current_simulation_tick": None,
                 "script_tick_map": script_tick_map,
+                "household_counts_by_sim": household_counts_by_sim,
             },
             status_code=404,
         )
@@ -491,7 +512,6 @@ async def dashboard(
     if allow_create:
         template_name = "admin_dashboard.html"
         context["world"] = world_state
-        user_profiles = await user_manager.list_users()
         all_scripts = await script_registry.list_all_scripts()
         for metadata in all_scripts:
             scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
@@ -537,6 +557,7 @@ async def dashboard(
             "features_by_sim": features_by_sim,
             "current_simulation_tick": current_tick,
             "script_tick_map": script_tick_map,
+            "household_counts_by_sim": household_counts_by_sim,
         },
     )
 

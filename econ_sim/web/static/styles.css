@@ -764,15 +764,30 @@ body {
 }
 
 .admin-table col.col-sim-id {
-  width: 13rem;
+  width: clamp(11rem, 18vw, 14rem);
+}
+
+.admin-table col.col-sim-households {
+  width: clamp(7.5rem, 12vw, 10rem);
 }
 
 .admin-table col.col-sim-limit {
-  width: 19rem;
+  width: clamp(15rem, 22vw, 18rem);
 }
 
 .admin-table col.col-sim-actions {
-  width: 32rem;
+  width: clamp(24rem, 36vw, 30rem);
+}
+
+.admin-table th.household-header,
+.admin-table td.household-count {
+  text-align: center;
+}
+
+.admin-table td.household-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.95);
 }
 
 .admin-table td.actions {

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -377,6 +378,82 @@ def test_admin_can_update_script_limit(monkeypatch, client):
         location = response.headers.get("location", "")
         assert location.startswith("/web/dashboard")
         assert "simulation_id=sim-42" in location
+    finally:
+        _clear_override()
+
+
+def test_admin_dashboard_displays_household_counts(monkeypatch, client):
+    admin_user = {"email": "admin@example.com", "user_type": "admin"}
+    _override_user(admin_user)
+
+    class DummyFeatures:
+        def model_dump(self, mode: str = "json"):
+            return {"household_shock_enabled": False}
+
+    class DummyWorldState:
+        def model_dump(self, mode: str = "json"):
+            return {
+                "tick": 0,
+                "day": 0,
+                "world": {},
+                "features": {"household_shock_enabled": False},
+            }
+
+    class DummyOrchestrator:
+        async def list_simulations(self):
+            return ["sim-main"]
+
+        async def get_simulation_features(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return DummyFeatures()
+
+        async def list_participants(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return ["household@example.com", "firm@example.com"]
+
+        async def get_state(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return DummyWorldState()
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+
+    async def fake_list_users():
+        base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        return [
+            SimpleNamespace(
+                email="household@example.com",
+                created_at=base_time,
+                user_type="individual",
+            ),
+            SimpleNamespace(
+                email="firm@example.com",
+                created_at=base_time,
+                user_type="firm",
+            ),
+            SimpleNamespace(
+                email="admin@example.com",
+                created_at=base_time,
+                user_type="admin",
+            ),
+        ]
+
+    async def fake_list_all_scripts():
+        return []
+
+    async def fake_list_scripts(simulation_id):
+        assert simulation_id == "sim-main"
+        return []
+
+    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
+    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
+    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+
+    try:
+        response = client.get("/web/dashboard?simulation_id=sim-main")
+        assert response.status_code == 200
+        assert "当前家户个数" in response.text
+        assert 'class="household-count"' in response.text
+        assert re.search(r'class="household-count"[^>]*>\s*1\s*户', response.text)
     finally:
         _clear_override()
 

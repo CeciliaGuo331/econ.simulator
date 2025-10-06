@@ -4,10 +4,10 @@
     <section class="panel">
         <h2>管理员中心</h2>
         <p>
-            当前仿真实例：<strong>{{ simulation_id }}</strong>
+            当前仿真世界：<strong>{{ simulation_id }}</strong>
         </p>
         <p>
-            当前脚本上限：
+            当前单用户脚本数上限：
             {% if simulation_id %}
                 {% if script_limit is not none %}
                     <strong>{{ script_limit }}</strong> 个脚本 / 用户
@@ -17,7 +17,7 @@
                     <strong>无限制</strong>
                 {% endif %}
             {% else %}
-                <span class="empty">未选择仿真实例</span>
+                <span class="empty">未选择仿真世界</span>
             {% endif %}
         </p>
         <p>管理员账户可查看完整世界状态和所有脚本。</p>
@@ -31,14 +31,14 @@
     {% if log_download_url %}
         <section class="panel">
             <h3>调试工具</h3>
-            <p>选择仿真实例后，可以直接下载最近的执行日志，便于排查玩家脚本或系统状态。</p>
+            <p>选择仿真世界后，可以直接下载最近的执行日志，便于排查玩家脚本或系统状态。</p>
             <p>
                 <a class="button" href="{{ log_download_url }}">下载最近日志</a>
             </p>
         </section>
     {% endif %}
     <section class="panel">
-        <h3>仿真实例管理</h3>
+        <h3>仿真世界管理</h3>
         <form method="post"
               action="/web/admin/simulations/create"
               class="admin-form">
@@ -46,23 +46,25 @@
                    name="current_simulation_id"
                    value="{{ simulation_id }}">
             <label>
-                新仿真实例 ID（留空自动生成）
+                新仿真世界 ID（留空自动生成）
                 <input type="text" name="simulation_id" placeholder="sim-2025">
             </label>
-            <button type="submit">创建仿真实例</button>
+            <button type="submit">创建仿真世界</button>
         </form>
         <div class="scroll-pane">
         {% if all_simulations %}
             <table class="admin-table">
                 <colgroup>
                     <col class="col-sim-id">
+                    <col class="col-sim-households">
                     <col class="col-sim-limit">
                     <col class="col-sim-actions">
                 </colgroup>
                 <thead>
                     <tr>
-                        <th>仿真实例 ID</th>
-                        <th class="limit-header">脚本上限</th>
+                        <th>仿真世界 ID</th>
+                        <th class="household-header">当前家户个数</th>
+                        <th class="limit-header">单用户脚本数上限</th>
                         <th class="actions-header">操作</th>
                     </tr>
                 </thead>
@@ -76,6 +78,9 @@
                                     <a href="/web/dashboard?simulation_id={{ sid }}"
                                        data-remember-scroll="true">{{ sid }}</a>
                                 {% endif %}
+                            </td>
+                            <td class="household-count">
+                                {{ household_counts_by_sim.get(sid, 0) }} 户
                             </td>
                             <td class="limit-cell">
                                 {% set limit = limits_by_sim.get(sid) %}
@@ -204,7 +209,7 @@
                 </tbody>
             </table>
         {% else %}
-            <p class="empty">尚未创建任何仿真实例。</p>
+            <p class="empty">尚未创建任何仿真世界。</p>
         {% endif %}
         </div>
     </section>
@@ -268,7 +273,7 @@
                     <tr>
                         <th>脚本 ID</th>
                         <th>版本号</th>
-                        <th>仿真实例</th>
+                        <th>仿真世界</th>
                         <th>用户</th>
                         <th>描述</th>
                         <th>上传时间 (UTC)</th>
@@ -539,11 +544,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
             let pendingMessage = "操作进行中，请稍候...";
             if (actionType === "run-days") {
-                pendingMessage = `正在执行仿真实例 ${
+                pendingMessage = `正在执行仿真世界 ${
                     simId || "?"
                 } 的 ${daysValue || "?"} day(s)，请稍候...`;
             } else if (simId) {
-                pendingMessage = `正在执行仿真实例 ${simId}，请稍候...`;
+                pendingMessage = `正在执行仿真世界 ${simId}，请稍候...`;
             }
             showStatus(pendingMessage);
 

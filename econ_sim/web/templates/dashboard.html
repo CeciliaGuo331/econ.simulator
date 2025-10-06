@@ -4,7 +4,7 @@
     <section class="panel">
         <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
         <p>
-            当前仿真实例：<strong>{{ simulation_id or "未选择" }}</strong>
+            当前仿真世界：<strong>{{ simulation_id or "未选择" }}</strong>
         </p>
         {% if simulation_id %}
             <p>
@@ -36,11 +36,11 @@
     {% endif %}
     {% if user.user_type != "admin" %}
         <section class="panel">
-            <h3>查看仿真实例</h3>
+            <h3>查看仿真世界</h3>
             {% if all_simulations %}
                 <form method="post" action="/web/simulations/join" class="join-form">
                     <label class="join-field" for="simulation-select">
-                        <span class="join-label">选择仿真实例</span>
+                        <span class="join-label">选择仿真世界</span>
                         <select id="simulation-select" name="simulation_id">
                             {% for sid in all_simulations %}
                                 <option value="{{ sid }}"{% if sid == simulation_id %} selected{% endif %}>{{ sid }}</option>
@@ -50,7 +50,7 @@
                     <button type="submit" class="button">切换</button>
                 </form>
             {% else %}
-                <p class="empty">暂无可查看的仿真实例，请稍后再试或联系管理员。</p>
+                <p class="empty">暂无可查看的仿真世界，请稍后再试或联系管理员。</p>
             {% endif %}
         </section>
     {% endif %}
@@ -60,7 +60,7 @@
             <pre class="json-preview scroll-pane">{{ context | tojson(indent=2) }}</pre>
         </article>
         <article class="card">
-            <h3>当前仿真实例脚本</h3>
+            <h3>当前仿真世界脚本</h3>
             {% if simulation_id and scripts %}
                 <div class="scroll-pane">
                     <ul class="script-list">
@@ -100,10 +100,10 @@
                 </div>
             {% elif simulation_id %}
                 <div class="scroll-pane">
-                    <p class="empty">尚未有脚本上传。</p>
+                    <p class="empty">尚未有脚本挂载。</p>
                 </div>
             {% else %}
-                <p class="empty">请选择或加入仿真实例后查看脚本列表。</p>
+                <p class="empty">请选择或加入仿真世界后查看脚本列表。</p>
             {% endif %}
         </article>
         <article class="card">
@@ -176,9 +176,11 @@
             </label>
             <p class="form-hint">
                 脚本必须定义 <code>generate_decisions(context)</code> 函数。
+            </p>
+            <p class="form-hint">若当前尚未加入仿真世界，脚本会先保存到个人脚本库，稍后可在下方挂载。</p>
             {% if simulation_id %}
                 <p class="form-hint">
-                    当前仿真实例：<strong>{{ simulation_id }}</strong>。新脚本会先保存到个人脚本库，您可以在下方选择挂载到该仿真实例。
+                    当前仿真世界：<strong>{{ simulation_id }}</strong>。新脚本会先保存到个人脚本库，您可以在下方选择挂载到该仿真世界。
                 </p>
             {% endif %}
             <button type="submit">提交脚本</button>
@@ -201,7 +203,7 @@
                             {% endfor %}
                         </select>
                     </label>
-                    <p class="form-hint">将脚本挂载到当前仿真实例后，它会立即参与决策逻辑。</p>
+                    <p class="form-hint">将脚本挂载到当前仿真世界后，它会立即参与决策逻辑。</p>
                     <button type="submit">挂载脚本</button>
                 </form>
             {% else %}
