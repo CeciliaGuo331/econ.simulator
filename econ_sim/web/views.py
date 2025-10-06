@@ -505,18 +505,18 @@ async def join_simulation(
     if user.get("user_type") == "admin":
         return _redirect_to_dashboard(
             simulation_id,
-            error="管理员账号无需加入仿真实例。",
+            error="管理员无需切换仿真实例。",
         )
 
     target = simulation_id.strip()
     if not target:
         return _redirect_to_dashboard(
             "",
-            error="请选择仿真实例后再加入。",
+            error="请选择仿真实例后再查看。",
         )
 
     try:
-        await _orchestrator.register_participant(target, user["email"])
+        await _orchestrator.get_state(target)
     except SimulationNotFoundError:
         return _redirect_to_dashboard(
             "",
@@ -525,7 +525,7 @@ async def join_simulation(
 
     return _redirect_to_dashboard(
         target,
-        message=f"已加入仿真实例 {target}。",
+        message=f"已切换至仿真实例 {target} 的视图。",
     )
 
 
@@ -906,21 +906,23 @@ async def admin_delete_user(
 async def upload_script(
     request: Request,
     user: Dict[str, Any] = Depends(_require_session_user),
-    simulation_id: str = Form(""),
+    current_simulation_id: str = Form(""),
     description: str = Form(""),
     script_file: UploadFile = File(...),
 ) -> HTMLResponse:
+    normalized_sim_id = (current_simulation_id or "").strip()
+
     if user["user_type"] == "admin":
         scripts_for_view: List = []
-        if simulation_id:
-            scripts_for_view = await script_registry.list_scripts(simulation_id)
+        if normalized_sim_id:
+            scripts_for_view = await script_registry.list_scripts(normalized_sim_id)
         return _templates.TemplateResponse(
             request,
             "dashboard.html",
             {
                 "request": request,
                 "user": user,
-                "simulation_id": simulation_id,
+                "simulation_id": normalized_sim_id,
                 "scripts": scripts_for_view,
                 "context": {},
                 "error": "管理员账号不能上传脚本。",
@@ -933,20 +935,36 @@ async def upload_script(
         *,
         status_code: int = 400,
     ) -> HTMLResponse:
+        all_simulations = await _orchestrator.list_simulations()
+        user_scripts = await script_registry.list_user_scripts(user["email"])
+        attachable_scripts = [
+            script for script in user_scripts if not script.simulation_id
+        ]
+
         scripts_list: List = []
-        if simulation_id:
-            scripts_list = await script_registry.list_scripts(simulation_id)
         context_payload: Dict[str, Any] = {}
-        if simulation_id:
+        features: Optional[Dict[str, Any]] = None
+        log_download_url: Optional[str] = None
+        script_limit: Optional[int] = None
+        default_script_limit = script_registry.get_default_limit()
+        limits_by_sim: Dict[str, Optional[int]] = {}
+        features_by_sim: Dict[str, Optional[Dict[str, Any]]] = {}
+
+        if normalized_sim_id:
+            scripts_list = await script_registry.list_scripts(normalized_sim_id)
             try:
-                world_state = await _orchestrator.get_state(simulation_id)
+                world_state_model = await _orchestrator.get_state(normalized_sim_id)
             except SimulationNotFoundError:
                 context_payload = {}
             else:
+                world_state = world_state_model.model_dump(mode="json")
                 context_payload = _extract_view_data(
-                    world_state.model_dump(mode="json"),
+                    world_state,
                     user["user_type"],
                 )
+                features = world_state.get("features")
+            script_limit = await script_registry.get_simulation_limit(normalized_sim_id)
+            log_download_url = f"/web/logs/{normalized_sim_id}/download"
 
         return _templates.TemplateResponse(
             request,
@@ -954,10 +972,23 @@ async def upload_script(
             {
                 "request": request,
                 "user": user,
-                "simulation_id": simulation_id,
+                "simulation_id": normalized_sim_id,
                 "scripts": scripts_list,
                 "context": context_payload,
                 "error": message,
+                "message": None,
+                "all_simulations": all_simulations,
+                "all_users": [],
+                "all_scripts": [],
+                "scripts_by_user": {},
+                "user_scripts": user_scripts,
+                "attachable_scripts": attachable_scripts,
+                "log_download_url": log_download_url,
+                "script_limit": script_limit,
+                "default_script_limit": default_script_limit,
+                "limits_by_sim": limits_by_sim,
+                "features": features,
+                "features_by_sim": features_by_sim,
             },
             status_code=status_code,
         )
@@ -995,40 +1026,21 @@ async def upload_script(
         )
 
     description_text = (description or "").strip()
-
-    target_simulation = simulation_id.strip()
+    target_simulation = normalized_sim_id
 
     try:
-        if target_simulation:
-            await _orchestrator.register_participant(target_simulation, user["email"])
-            await script_registry.register_script(
-                simulation_id=target_simulation,
-                user_id=user["email"],
-                script_code=code,
-                description=description_text or None,
-            )
-            return _redirect_to_dashboard(
-                target_simulation,
-                message="脚本已上传并挂载至当前仿真实例。",
-            )
-
         await script_registry.register_script(
             simulation_id=None,
             user_id=user["email"],
             script_code=code,
             description=description_text or None,
         )
-    except SimulationNotFoundError:
-        return _redirect_to_dashboard(
-            "",
-            error="仿真实例不存在，请联系管理员创建后再上传脚本。",
-        )
     except ScriptExecutionError as exc:
         return await render_dashboard_error(str(exc), status_code=400)
 
     return _redirect_to_dashboard(
         target_simulation,
-        message="脚本已上传到个人脚本库，可在加入仿真实例后挂载。",
+        message="脚本已上传到个人脚本库，可在下方选择挂载到仿真实例。",
     )
 
 

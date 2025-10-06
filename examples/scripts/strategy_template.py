@@ -1,13 +1,13 @@
 """用户自定义策略的标准模板。"""
 
-from __future__ import annotations
-
-from typing import Any, Dict
-
 from econ_sim.script_engine.user_api import OverridesBuilder
 
 
-def generate_decisions(context: Dict[str, Any]) -> Dict[str, Any]:
+Context = dict[str, object]
+DecisionOverrides = dict[str, object]
+
+
+def generate_decisions(context: Context) -> DecisionOverrides:
     """根据平台提供的 `context` 构造决策覆盖。"""
 
     world = context["world_state"]

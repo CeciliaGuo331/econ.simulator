@@ -1,13 +1,13 @@
 """Baseline central bank strategy for Docker deployments."""
 
-from __future__ import annotations
-
-from typing import Any, Dict
-
 from econ_sim.script_engine.user_api import OverridesBuilder, clamp
 
 
-def generate_decisions(context: Dict[str, Any]) -> Dict[str, Any]:
+Context = dict[str, object]
+DecisionOverrides = dict[str, object]
+
+
+def generate_decisions(context: Context) -> DecisionOverrides:
     world = context["world_state"]
     macro = world["macro"]
     cb = world["central_bank"]

@@ -85,6 +85,45 @@ def test_dashboard_displays_script_limit(client):
         asyncio.run(_cleanup())
 
 
+def test_upload_script_saved_to_library(client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+
+    script_source = (
+        "from econ_sim.script_engine.user_api import OverridesBuilder\n\n"
+        "Context = dict[str, object]\n\n"
+        "def generate_decisions(context: Context) -> dict[str, object]:\n"
+        "    builder = OverridesBuilder()\n"
+        "    return builder.build()\n"
+    )
+
+    try:
+        response = client.post(
+            "/web/scripts",
+            data={
+                "current_simulation_id": "sim-upload",
+                "description": "demo",
+            },
+            files={
+                "script_file": ("demo.py", script_source, "text/x-python"),
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        location = response.headers.get("location", "")
+        assert "simulation_id=sim-upload" in location
+
+        scripts = asyncio.run(script_registry.list_user_scripts("player@example.com"))
+        assert len(scripts) == 1
+        assert scripts[0].simulation_id is None
+    finally:
+        _clear_override()
+        asyncio.run(script_registry.clear())
+
+
 def test_admin_can_update_script_limit(monkeypatch, client):
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)

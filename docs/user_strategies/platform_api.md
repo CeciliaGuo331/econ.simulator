@@ -66,6 +66,7 @@ def generate_decisions(context):
 
 - **常用内置函数**：`abs`、`sum`、`len`、`max`、`min`、`sorted`、`range`、`round` 等函数均可使用，适合进行基础计算。
 - **允许导入的模块**：`math`、`statistics`、`random`、以及平台提供的 `econ_sim` 系列模块。涉及文件、网络或系统调用的模块（例如 `os`、`pathlib`、`requests`）会被拦截。
+- **类型注解提示**：脚本运行环境不允许导入 `typing` 或 `__future__`，如需类型提示可直接使用内置泛型语法（例如 `dict[str, object]`）。
 - **辅助工具函数**（位于 `econ_sim.script_engine.user_api`）：
   - `clamp(value, lower, upper)`：把数值压在指定区间内。
   - `fraction(numerator, denominator)`：安全地做除法，如果分母接近零会返回 `0.0`。

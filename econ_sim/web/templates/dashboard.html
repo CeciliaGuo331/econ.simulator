@@ -36,7 +36,7 @@
     {% endif %}
     {% if user.user_type != "admin" %}
         <section class="panel">
-            <h3>加入仿真实例</h3>
+            <h3>查看仿真实例</h3>
             {% if all_simulations %}
                 <form method="post" action="/web/simulations/join" class="join-form">
                     <label>
@@ -47,10 +47,10 @@
                             {% endfor %}
                         </select>
                     </label>
-                    <button type="submit">加入</button>
+                    <button type="submit">切换</button>
                 </form>
             {% else %}
-                <p class="empty">暂无可加入的仿真实例，请稍后再试或联系管理员。</p>
+                <p class="empty">暂无可查看的仿真实例，请稍后再试或联系管理员。</p>
             {% endif %}
         </section>
     {% endif %}
@@ -125,11 +125,11 @@
     </section>
     <section class="panel">
         <h3>上传脚本</h3>
-        <form method="post"
-              action="/web/scripts"
-              class="script-form"
-              enctype="multipart/form-data">
-            <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
+                <form method="post"
+                            action="/web/scripts"
+                            class="script-form"
+                            enctype="multipart/form-data">
+                        <input type="hidden" name="current_simulation_id" value="{{ simulation_id }}">
             <label>
                 脚本说明（可选）
                 <input type="text" name="description" placeholder="简单描述脚本用途">
@@ -144,7 +144,7 @@
             <p class="form-hint">若当前尚未加入仿真实例，脚本会先保存到个人脚本库，稍后可在下方挂载。</p>
             {% if simulation_id %}
                 <p class="form-hint">
-                    当前仿真实例：<strong>{{ simulation_id }}</strong>，提交后脚本将立即参与后续 Tick。
+                    当前仿真实例：<strong>{{ simulation_id }}</strong>。新脚本会先保存到个人脚本库，您可以在下方选择挂载到该仿真实例。
                 </p>
             {% endif %}
             <button type="submit">提交脚本</button>
