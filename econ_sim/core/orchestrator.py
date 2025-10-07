@@ -17,6 +17,7 @@ from ..data_access.models import (
     TickResult,
     TickLogEntry,
     SimulationFeatures,
+    ScriptFailureRecord,
     WorldState,
 )
 from ..data_access.redis_client import DataAccessLayer, SimulationNotFoundError
@@ -256,6 +257,14 @@ class SimulationOrchestrator:
         await self.data_access.get_world_state(simulation_id)
         return await self.data_access.get_recent_logs(simulation_id, limit)
 
+    async def list_recent_script_failures(
+        self, simulation_id: str, limit: Optional[int] = None
+    ) -> List[ScriptFailureRecord]:
+        """查询指定仿真实例的脚本失败事件。"""
+
+        await self.data_access.get_world_state(simulation_id)
+        return await self.data_access.list_script_failures(simulation_id, limit)
+
     async def run_tick(
         self,
         simulation_id: str,
@@ -296,6 +305,8 @@ class SimulationOrchestrator:
             simulation_id, decision_state, self.config
         )
         self._dispatch_script_failures(failure_events)
+        if failure_events:
+            await self.data_access.record_script_failures(failure_events)
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
         decisions = await asyncio.to_thread(
             collect_tick_decisions,

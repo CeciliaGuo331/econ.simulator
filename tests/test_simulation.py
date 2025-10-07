@@ -157,6 +157,55 @@ async def test_run_until_day_rejects_non_positive_days() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_tick_records_script_failure_events() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "failure-record"
+
+    await orchestrator.create_simulation(simulation_id)
+
+    await script_registry.clear()
+    try:
+        await seed_required_scripts(
+            script_registry,
+            simulation_id,
+            orchestrator=orchestrator,
+            skip=[AgentKind.FIRM],
+        )
+
+        failing_code = """
+def generate_decisions(context):
+    raise RuntimeError('boom')
+"""
+
+        metadata = await script_registry.register_script(
+            simulation_id=simulation_id,
+            user_id="firm@failure",
+            script_code=failing_code,
+            description="firm failure",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_seed",
+        )
+        await orchestrator.data_access.ensure_entity_state(
+            simulation_id,
+            metadata.agent_kind,
+            metadata.entity_id,
+        )
+
+        await orchestrator.run_tick(simulation_id)
+
+        failures = await orchestrator.list_recent_script_failures(
+            simulation_id, limit=5
+        )
+        assert failures, "expected at least one persisted failure"
+        failure = failures[0]
+        assert failure.script_id == metadata.script_id
+        assert "boom" in failure.message
+        assert "RuntimeError" in failure.traceback
+    finally:
+        await script_registry.clear()
+
+
+@pytest.mark.asyncio
 async def test_reset_simulation_restores_initial_state() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "reset-sim"

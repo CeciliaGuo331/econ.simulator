@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -303,6 +304,20 @@ class TickLogEntry(BaseModel):
     day: int
     message: str
     context: Dict[str, float | int | str] = Field(default_factory=dict)
+
+
+class ScriptFailureRecord(BaseModel):
+    """单次脚本执行失败的持久化记录。"""
+
+    failure_id: str
+    simulation_id: str
+    script_id: str
+    user_id: str
+    agent_kind: AgentKind
+    entity_id: str
+    message: str
+    traceback: str
+    occurred_at: datetime
 
 
 class TickResult(BaseModel):

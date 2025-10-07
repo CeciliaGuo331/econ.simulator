@@ -565,6 +565,7 @@ async def dashboard(
     scripts_by_user: Dict[str, List] = {}
     scripts_by_sim: Dict[str, List] = {}
     all_scripts: List = []
+    script_failures: List = []
     if allow_create:
         user_profiles = await user_manager.list_users()
         user_type_index = {
@@ -657,6 +658,7 @@ async def dashboard(
                 "current_simulation_tick": None,
                 "script_tick_map": script_tick_map,
                 "household_counts_by_sim": household_counts_by_sim,
+                "script_failures": script_failures,
             },
             status_code=200,
         )
@@ -699,6 +701,7 @@ async def dashboard(
                 "current_simulation_tick": None,
                 "script_tick_map": {},
                 "household_counts_by_sim": household_counts_by_sim,
+                "script_failures": script_failures,
             },
         )
 
@@ -759,6 +762,7 @@ async def dashboard(
                 "current_simulation_tick": None,
                 "script_tick_map": script_tick_map,
                 "household_counts_by_sim": household_counts_by_sim,
+                "script_failures": script_failures,
             },
             status_code=404,
         )
@@ -794,6 +798,10 @@ async def dashboard(
             }
             for profile in user_profiles
         ]
+        if simulation_id:
+            script_failures = await _orchestrator.list_recent_script_failures(
+                simulation_id, limit=50
+            )
 
     script_tick_map = await _build_script_tick_map(
         simulation_id, current_tick, user_scripts
@@ -827,6 +835,7 @@ async def dashboard(
             "current_simulation_tick": current_tick,
             "script_tick_map": script_tick_map,
             "household_counts_by_sim": household_counts_by_sim,
+            "script_failures": script_failures,
         },
     )
 

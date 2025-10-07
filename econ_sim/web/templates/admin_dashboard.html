@@ -39,6 +39,44 @@
         </section>
     {% endif %}
     <section class="panel">
+        <h3>脚本失败事件</h3>
+        {% if script_failures %}
+            <div class="scroll-pane">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>发生时间 (UTC)</th>
+                            <th>脚本 ID</th>
+                            <th>主体</th>
+                            <th>用户</th>
+                            <th>错误信息</th>
+                            <th>详情</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for failure in script_failures %}
+                            <tr>
+                                <td>{{ failure.occurred_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+                                <td class="cell-id">{{ failure.script_id | e }}</td>
+                                <td>{{ failure.agent_kind.value | e }} / {{ failure.entity_id | e }}</td>
+                                <td>{{ failure.user_id | e }}</td>
+                                <td>{{ failure.message | e }}</td>
+                                <td>
+                                    <details>
+                                        <summary>查看</summary>
+                                        <pre>{{ failure.traceback | e }}</pre>
+                                    </details>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="empty">暂时没有脚本执行失败记录。</p>
+        {% endif %}
+    </section>
+    <section class="panel">
         <h3>仿真世界管理</h3>
         <form method="post"
               action="/web/admin/simulations/create"

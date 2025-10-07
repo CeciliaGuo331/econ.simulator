@@ -6,8 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Set, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Set, TYPE_CHECKING
 
 try:  # pragma: no cover - optional dependency at runtime
     from redis.asyncio import Redis
@@ -21,12 +22,14 @@ except Exception:  # pragma: no cover - optional dependency may be absent
 
 if TYPE_CHECKING:  # pragma: no cover - typing hints only
     from asyncpg.pool import Pool as AsyncpgPool  # type: ignore
+    from ..script_engine.registry import ScriptFailureEvent
 else:  # pragma: no cover - runtime fallback when asyncpg is unavailable
     AsyncpgPool = Any  # type: ignore
 
 from .models import (
     AgentKind,
     HouseholdState,
+    ScriptFailureRecord,
     SimulationFeatures,
     StateUpdateCommand,
     TickLogEntry,
@@ -44,6 +47,7 @@ from ..core.entity_factory import (
     create_simulation_features,
 )
 from .postgres_support import get_pool
+from .postgres_failures import PostgresScriptFailureStore
 from .postgres_participants import PostgresParticipantStore
 from .postgres_utils import quote_identifier
 
@@ -66,6 +70,53 @@ class StateStore(Protocol):
 
     async def delete(self, simulation_id: str) -> None:
         """删除指定仿真实例的状态快照。"""
+
+
+class ScriptFailureStore(Protocol):
+    """抽象脚本失败事件持久化的协议。"""
+
+    async def record_many(self, records: Iterable[ScriptFailureRecord]) -> None: ...
+
+    async def list_recent(
+        self, simulation_id: str, limit: Optional[int] = None
+    ) -> List[ScriptFailureRecord]: ...
+
+    async def clear(self) -> None: ...
+
+
+class InMemoryScriptFailureStore:
+    """简易的脚本失败事件内存存储。"""
+
+    def __init__(self, retention: int = 500) -> None:
+        self._storage: Dict[str, List[ScriptFailureRecord]] = {}
+        self._retention = retention
+        self._lock = asyncio.Lock()
+
+    async def record_many(self, records: Iterable[ScriptFailureRecord]) -> None:
+        items = list(records)
+        if not items:
+            return
+        async with self._lock:
+            for record in items:
+                bucket = self._storage.setdefault(record.simulation_id, [])
+                bucket.append(record)
+                bucket.sort(key=lambda entry: entry.occurred_at)
+                if self._retention > 0 and len(bucket) > self._retention:
+                    del bucket[: -self._retention]
+
+    async def list_recent(
+        self, simulation_id: str, limit: Optional[int] = None
+    ) -> List[ScriptFailureRecord]:
+        async with self._lock:
+            entries = list(self._storage.get(simulation_id, []))
+        entries.sort(key=lambda entry: entry.occurred_at, reverse=True)
+        if limit is not None and limit > 0:
+            entries = entries[:limit]
+        return [entry.model_copy(deep=True) for entry in entries]
+
+    async def clear(self) -> None:
+        async with self._lock:
+            self._storage.clear()
 
 
 class InMemoryStateStore:
@@ -453,6 +504,9 @@ class DataAccessLayer:
     persistent_store: Optional[StateStore] = None
     fallback_store: Optional[StateStore] = None
     participant_store: Optional[PostgresParticipantStore] = None
+    failure_store: ScriptFailureStore = field(
+        default_factory=InMemoryScriptFailureStore
+    )
     _participants: Dict[str, Set[str]] = field(default_factory=dict)
     _known_simulations: Set[str] = field(default_factory=set)
     _hydrated_simulations: bool = field(default=False, init=False, repr=False)
@@ -479,6 +533,7 @@ class DataAccessLayer:
         cache_store: Optional[StateStore] = None
         persistent_store: Optional[StateStore] = None
         participant_store: Optional[PostgresParticipantStore] = None
+        failure_store: ScriptFailureStore = InMemoryScriptFailureStore()
 
         if redis_url and Redis is not None:
             redis_client = Redis.from_url(
@@ -500,6 +555,12 @@ class DataAccessLayer:
                 min_pool_size=pg_min_pool,
                 max_pool_size=pg_max_pool,
             )
+            failure_store = PostgresScriptFailureStore(
+                postgres_dsn,
+                schema=pg_schema,
+                min_pool_size=pg_min_pool,
+                max_pool_size=pg_max_pool,
+            )
 
         if cache_store or persistent_store:
             composite = CompositeStateStore(
@@ -514,6 +575,7 @@ class DataAccessLayer:
                 persistent_store=persistent_store,
                 fallback_store=fallback,
                 participant_store=participant_store,
+                failure_store=failure_store,
             )
 
         return cls(
@@ -521,6 +583,7 @@ class DataAccessLayer:
             store=fallback,
             fallback_store=fallback,
             participant_store=participant_store,
+            failure_store=failure_store,
         )
 
     async def ensure_simulation(self, simulation_id: str) -> WorldState:
@@ -733,6 +796,33 @@ class DataAccessLayer:
         else:
             window = entries[-limit:]
         return [TickLogEntry.model_validate(item.model_dump()) for item in window]
+
+    async def record_script_failures(
+        self, events: Iterable["ScriptFailureEvent"]
+    ) -> None:
+        batch = list(events)
+        if not batch:
+            return
+        records = [
+            ScriptFailureRecord(
+                failure_id=str(uuid.uuid4()),
+                simulation_id=event.simulation_id,
+                script_id=event.script_id,
+                user_id=event.user_id,
+                agent_kind=event.agent_kind,
+                entity_id=event.entity_id,
+                message=event.message,
+                traceback=event.traceback,
+                occurred_at=event.occurred_at,
+            )
+            for event in batch
+        ]
+        await self.failure_store.record_many(records)
+
+    async def list_script_failures(
+        self, simulation_id: str, limit: Optional[int] = None
+    ) -> List[ScriptFailureRecord]:
+        return await self.failure_store.list_recent(simulation_id, limit)
 
     async def list_simulations(self) -> list[str]:
         """返回已知的仿真实例 ID 列表，必要时从持久层回填。"""
