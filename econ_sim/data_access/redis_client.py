@@ -9,8 +9,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Set, TYPE_CHECKING
 
-import numpy as np
-
 try:  # pragma: no cover - optional dependency at runtime
     from redis.asyncio import Redis
 except Exception:  # pragma: no cover - fallback when redis isn't installed yet
@@ -28,13 +26,7 @@ else:  # pragma: no cover - runtime fallback when asyncpg is unavailable
 
 from .models import (
     AgentKind,
-    BalanceSheet,
-    BankState,
-    CentralBankState,
-    FirmState,
-    GovernmentState,
     HouseholdState,
-    MacroState,
     SimulationFeatures,
     StateUpdateCommand,
     TickLogEntry,
@@ -42,6 +34,15 @@ from .models import (
     WorldState,
 )
 from ..utils.settings import WorldConfig, get_world_config
+from ..core.entity_factory import (
+    create_bank_state,
+    create_central_bank_state,
+    create_firm_state,
+    create_government_state,
+    create_household_state,
+    create_macro_state,
+    create_simulation_features,
+)
 from .postgres_support import get_pool
 from .postgres_participants import PostgresParticipantStore
 from .postgres_utils import quote_identifier
@@ -584,6 +585,110 @@ class DataAccessLayer:
         await self._persist_state(updated_state)
         return updated_state
 
+    async def ensure_entity_state(
+        self,
+        simulation_id: str,
+        agent_kind: AgentKind,
+        entity_id: str,
+    ) -> WorldState:
+        """确保指定主体实体存在，若缺失则按默认模板创建。"""
+
+        state = await self.get_world_state(simulation_id)
+        mutated = state.model_copy(deep=True)
+        changed = False
+
+        if agent_kind is AgentKind.HOUSEHOLD:
+            try:
+                household_id = int(entity_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Household entity_id must be an integer") from exc
+            if household_id not in mutated.households:
+                mutated.households[household_id] = create_household_state(
+                    self.config, household_id
+                )
+                mutated.household_shocks.pop(household_id, None)
+                changed = True
+        elif agent_kind is AgentKind.FIRM:
+            if mutated.firm is None or mutated.firm.id != entity_id:
+                mutated.firm = create_firm_state(self.config, entity_id)
+                changed = True
+        elif agent_kind is AgentKind.BANK:
+            if mutated.bank is None or mutated.bank.id != entity_id:
+                mutated.bank = create_bank_state(
+                    self.config, entity_id, mutated.households
+                )
+                changed = True
+        elif agent_kind is AgentKind.GOVERNMENT:
+            if mutated.government is None or mutated.government.id != entity_id:
+                mutated.government = create_government_state(self.config, entity_id)
+                changed = True
+        elif agent_kind is AgentKind.CENTRAL_BANK:
+            if mutated.central_bank is None or mutated.central_bank.id != entity_id:
+                mutated.central_bank = create_central_bank_state(self.config, entity_id)
+                changed = True
+        else:
+            raise ValueError(f"Unsupported agent kind for seeding: {agent_kind}")
+
+        if changed:
+            await self._persist_state(mutated)
+            return mutated
+        return state
+
+    async def remove_entity_state(
+        self,
+        simulation_id: str,
+        agent_kind: AgentKind,
+        entity_id: str,
+    ) -> WorldState:
+        """移除指定主体实体，若不存在则无操作。"""
+
+        state = await self.get_world_state(simulation_id)
+        mutated = state.model_copy(deep=True)
+        changed = False
+
+        if agent_kind is AgentKind.HOUSEHOLD:
+            identifiers = {entity_id}
+            try:
+                identifiers.add(int(entity_id))
+            except (TypeError, ValueError):
+                pass
+            for identifier in list(identifiers):
+                if isinstance(identifier, str):
+                    try:
+                        identifier = int(identifier)
+                    except ValueError:
+                        continue
+                if identifier in mutated.households:
+                    mutated.households.pop(identifier, None)
+                    mutated.household_shocks.pop(identifier, None)
+                    changed = True
+        elif agent_kind is AgentKind.FIRM:
+            if mutated.firm is not None and mutated.firm.id == entity_id:
+                mutated.firm = None
+                changed = True
+        elif agent_kind is AgentKind.BANK:
+            if mutated.bank is not None and mutated.bank.id == entity_id:
+                mutated.bank = None
+                changed = True
+        elif agent_kind is AgentKind.GOVERNMENT:
+            if mutated.government is not None and mutated.government.id == entity_id:
+                mutated.government = None
+                changed = True
+        elif agent_kind is AgentKind.CENTRAL_BANK:
+            if (
+                mutated.central_bank is not None
+                and mutated.central_bank.id == entity_id
+            ):
+                mutated.central_bank = None
+                changed = True
+        else:
+            raise ValueError(f"Unsupported agent kind for removal: {agent_kind}")
+
+        if changed:
+            await self._persist_state(mutated)
+            return mutated
+        return state
+
     async def record_tick(self, tick_result: TickResult) -> None:
         """记录仿真步执行结果，当前仅持久化最新世界状态。"""
         await self._persist_state(tick_result.world_state)
@@ -668,94 +773,18 @@ class DataAccessLayer:
     def _build_initial_world_state(self, simulation_id: str) -> WorldState:
         """依据配置构造新的初始世界状态。"""
         sim_cfg = self.config.simulation
-        markets = self.config.markets
-        policies = self.config.policies
-        rng = np.random.default_rng(sim_cfg.seed)
-
-        households: Dict[int, HouseholdState] = {}
-        for idx in range(sim_cfg.num_households):
-            skill = float(max(0.4, rng.normal(1.0, 0.15)))
-            preference = float(np.clip(rng.normal(0.5, 0.1), 0.2, 0.8))
-            cash = float(rng.uniform(200.0, 400.0))
-            deposits = float(rng.uniform(100.0, 200.0))
-            households[idx] = HouseholdState(
-                id=idx,
-                balance_sheet=BalanceSheet(
-                    cash=cash,
-                    deposits=deposits,
-                    loans=0.0,
-                    inventory_goods=float(np.clip(rng.normal(2.0, 1.0), 0.0, 10.0)),
-                ),
-                skill=skill,
-                preference=preference,
-                reservation_wage=float(
-                    np.clip(markets.labor.base_wage * skill * 0.8, 40.0, 120.0)
-                ),
-            )
-
-        firm_state = FirmState(
-            balance_sheet=BalanceSheet(
-                cash=50000.0,
-                deposits=10000.0,
-                loans=0.0,
-                inventory_goods=float(
-                    sim_cfg.num_households * markets.goods.subsistence_consumption * 2
-                ),
-            ),
-            price=markets.goods.base_price,
-            wage_offer=markets.labor.base_wage,
-            productivity=float(np.clip(rng.normal(1.0, 0.1), 0.6, 1.4)),
-            employees=[],
-        )
-
-        government_state = GovernmentState(
-            balance_sheet=BalanceSheet(
-                cash=100000.0, deposits=0.0, loans=0.0, inventory_goods=0.0
-            ),
-            tax_rate=policies.tax_rate,
-            unemployment_benefit=policies.unemployment_benefit,
-            spending=policies.government_spending,
-        )
-
-        bank_state = BankState(
-            balance_sheet=BalanceSheet(
-                cash=200000.0,
-                deposits=float(
-                    sum(h.balance_sheet.deposits for h in households.values())
-                ),
-                loans=0.0,
-                inventory_goods=0.0,
-            ),
-            deposit_rate=self.config.markets.finance.deposit_rate,
-            loan_rate=self.config.markets.finance.loan_rate,
-        )
-
-        central_bank_state = CentralBankState(
-            base_rate=self.config.policies.central_bank.base_rate,
-            reserve_ratio=self.config.policies.central_bank.reserve_ratio,
-            inflation_target=self.config.policies.central_bank.inflation_target,
-            unemployment_target=self.config.policies.central_bank.unemployment_target,
-        )
-
-        macro_state = MacroState(
-            gdp=0.0,
-            inflation=0.0,
-            unemployment_rate=1.0,
-            price_index=100.0,
-            wage_index=100.0,
-        )
 
         return WorldState(
             simulation_id=simulation_id,
             tick=sim_cfg.initial_tick,
             day=sim_cfg.initial_day,
-            households=households,
-            firm=firm_state,
-            bank=bank_state,
-            government=government_state,
-            central_bank=central_bank_state,
-            macro=macro_state,
-            features=SimulationFeatures(),
+            households={},
+            firm=None,
+            bank=None,
+            government=None,
+            central_bank=None,
+            macro=create_macro_state(),
+            features=create_simulation_features(self.config),
             household_shocks={},
         )
 
@@ -792,13 +821,21 @@ class DataAccessLayer:
 
             target_container = households[resolved_key]
         elif scope is AgentKind.FIRM:
-            target_container = mutable_state["firm"]
+            target_container = mutable_state.get("firm")
+            if target_container is None:
+                target_container = {}
         elif scope is AgentKind.BANK:
-            target_container = mutable_state["bank"]
+            target_container = mutable_state.get("bank")
+            if target_container is None:
+                target_container = {}
         elif scope is AgentKind.GOVERNMENT:
-            target_container = mutable_state["government"]
+            target_container = mutable_state.get("government")
+            if target_container is None:
+                target_container = {}
         elif scope is AgentKind.CENTRAL_BANK:
-            target_container = mutable_state["central_bank"]
+            target_container = mutable_state.get("central_bank")
+            if target_container is None:
+                target_container = {}
         elif scope is AgentKind.MACRO:
             target_container = mutable_state["macro"]
         elif scope is AgentKind.WORLD:
@@ -806,7 +843,9 @@ class DataAccessLayer:
         else:  # pragma: no cover - safety valve
             raise ValueError(f"Unsupported update scope: {scope}")
 
-        if not isinstance(target_container, dict):
+        if target_container is None:
+            target_container = {}
+        elif not isinstance(target_container, dict):
             target_container = dict(target_container)
 
         for path, value in update.changes.items():

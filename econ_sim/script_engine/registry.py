@@ -387,6 +387,18 @@ class ScriptRegistry:
                 "指定实体已绑定其他脚本："
                 f"simulation={simulation_id}, agent_kind={agent_kind.value}, entity_id={entity_id}"
             )
+        if agent_kind is not AgentKind.HOUSEHOLD:
+            bound_scripts = self._simulation_index.get(simulation_id, set())
+            for script_id in bound_scripts:
+                if script_id == ignore_script_id:
+                    continue
+                record = self._records.get(script_id)
+                if record is None:
+                    continue
+                if record.metadata.agent_kind is agent_kind:
+                    raise ScriptExecutionError(
+                        "仿真实例当前仅支持一个该类型的主体脚本。"
+                    )
 
     async def register_script(
         self,
@@ -401,6 +413,8 @@ class ScriptRegistry:
         """编译并注册脚本，使其在后续 Tick 中参与决策。"""
 
         entity_id = self._normalize_entity_id(entity_id)
+        if agent_kind is AgentKind.HOUSEHOLD and not entity_id.isdigit():
+            raise ScriptExecutionError("Household 脚本必须使用纯数字的 entity_id")
         self._validate_script(script_code)
 
         if simulation_id is not None:
@@ -864,6 +878,43 @@ class ScriptRegistry:
 
         return combined, failure_logs
 
+    def _serialize_entity_state(
+        self,
+        metadata: ScriptMetadata,
+        world_state: WorldState,
+    ) -> Optional[dict[str, object]]:
+        kind = metadata.agent_kind
+        if kind is AgentKind.HOUSEHOLD:
+            try:
+                household_id = int(metadata.entity_id)
+            except ValueError:
+                return None
+            entity = world_state.households.get(household_id)
+            if entity is None:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.FIRM:
+            entity = world_state.firm
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.BANK:
+            entity = world_state.bank
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.GOVERNMENT:
+            entity = world_state.government
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.CENTRAL_BANK:
+            entity = world_state.central_bank
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        return None
+
     def _execute_script(
         self,
         record: _ScriptRecord,
@@ -872,10 +923,14 @@ class ScriptRegistry:
     ) -> Optional[TickDecisionOverrides]:
         """调用脚本并解析返回的决策覆盖。"""
 
+        entity_state = self._serialize_entity_state(record.metadata, world_state)
         context = {
             "world_state": world_state.model_dump(mode="json"),
             "config": config.model_dump(mode="json"),
             "script_api_version": 1,
+            "agent_kind": record.metadata.agent_kind.value,
+            "entity_id": record.metadata.entity_id,
+            "entity_state": entity_state,
         }
 
         try:

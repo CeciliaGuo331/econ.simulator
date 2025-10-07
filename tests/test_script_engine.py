@@ -26,25 +26,41 @@ async def _seed_required_scripts(
     simulation_id: str,
     *,
     skip: set[AgentKind] | None = None,
+    orchestrator: SimulationOrchestrator | None = None,
 ) -> None:
     skip_set = skip or set()
+    if orchestrator is not None:
+        await orchestrator.create_simulation(simulation_id)
     for kind in REQUIRED_AGENT_KINDS:
         if kind in skip_set:
             continue
-        await registry.register_script(
+        entity = f"{kind.value}_seed"
+        if kind is AgentKind.HOUSEHOLD:
+            entity = "0"
+        metadata = await registry.register_script(
             simulation_id=simulation_id,
             user_id=f"seed-{kind.value}",
             script_code=BASELINE_STUB_SCRIPT,
             description=f"seed for {kind.value}",
             agent_kind=kind,
-            entity_id=f"{kind.value}_seed",
+            entity_id=entity,
         )
+        if orchestrator is not None:
+            await orchestrator.data_access.ensure_entity_state(
+                simulation_id, metadata.agent_kind, metadata.entity_id
+            )
 
 
 @pytest.mark.asyncio
 async def test_script_registry_generates_overrides() -> None:
     registry = ScriptRegistry()
-    await _seed_required_scripts(registry, "sim-a", skip={AgentKind.BANK})
+    orchestrator = SimulationOrchestrator()
+    await _seed_required_scripts(
+        registry,
+        "sim-a",
+        skip={AgentKind.BANK},
+        orchestrator=orchestrator,
+    )
     script_code = """
 def generate_decisions(context):
     macro = context["world_state"]["macro"]
@@ -63,7 +79,6 @@ def generate_decisions(context):
     assert metadata.code_version
 
     config = get_world_config()
-    orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("sim-a")
 
     overrides, failure_logs = await registry.generate_overrides(
@@ -79,7 +94,13 @@ def generate_decisions(context):
 async def test_script_overrides_affect_tick_execution() -> None:
     await script_registry.clear()
 
-    await _seed_required_scripts(script_registry, "shared-sim", skip={AgentKind.FIRM})
+    orchestrator = SimulationOrchestrator()
+    await _seed_required_scripts(
+        script_registry,
+        "shared-sim",
+        skip={AgentKind.FIRM},
+        orchestrator=orchestrator,
+    )
 
     await script_registry.register_script(
         simulation_id="shared-sim",
@@ -92,8 +113,10 @@ def generate_decisions(context):
         agent_kind=AgentKind.FIRM,
         entity_id="firm_main",
     )
+    await orchestrator.data_access.ensure_entity_state(
+        "shared-sim", AgentKind.FIRM, "firm_main"
+    )
 
-    orchestrator = SimulationOrchestrator()
     result = await orchestrator.run_tick("shared-sim")
 
     assert result.world_state.firm.price == pytest.approx(15.0)
@@ -123,10 +146,15 @@ def generate_decisions(context):
     )
     assert attached.simulation_id == "delayed-sim"
 
-    await _seed_required_scripts(registry, "delayed-sim", skip={AgentKind.GOVERNMENT})
+    orchestrator = SimulationOrchestrator()
+    await _seed_required_scripts(
+        registry,
+        "delayed-sim",
+        skip={AgentKind.GOVERNMENT},
+        orchestrator=orchestrator,
+    )
 
     config = get_world_config()
-    orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("delayed-sim")
     overrides, failure_logs = await registry.generate_overrides(
         "delayed-sim", world_state, config
@@ -149,7 +177,7 @@ def generate_decisions(context):
 """,
         description="noop script",
         agent_kind=AgentKind.HOUSEHOLD,
-        entity_id="noop_household",
+        entity_id="0",
     )
 
     scripts = await script_registry.list_user_scripts("collector")
@@ -169,7 +197,7 @@ def generate_decisions(context):
     return {}
 """,
         agent_kind=AgentKind.HOUSEHOLD,
-        entity_id="cleanup_household",
+        entity_id="0",
     )
 
     assert await registry.delete_script_by_id(meta.script_id)
@@ -192,14 +220,20 @@ def generate_decisions(context):
     return {}
 """,
             agent_kind=AgentKind.HOUSEHOLD,
-            entity_id="danger_household",
+            entity_id="0",
         )
 
 
 @pytest.mark.asyncio
 async def test_script_timeout_is_reported() -> None:
     registry = ScriptRegistry(sandbox_timeout=0.1)
-    await _seed_required_scripts(registry, "slow", skip={AgentKind.HOUSEHOLD})
+    orchestrator = SimulationOrchestrator()
+    await _seed_required_scripts(
+        registry,
+        "slow",
+        skip={AgentKind.HOUSEHOLD},
+        orchestrator=orchestrator,
+    )
     meta = await registry.register_script(
         simulation_id="slow",
         user_id="u4",
@@ -209,11 +243,10 @@ def generate_decisions(context):
         pass
 """,
         agent_kind=AgentKind.HOUSEHOLD,
-        entity_id="slow_actor",
+        entity_id="0",
     )
 
     config = get_world_config()
-    orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("slow")
 
     overrides, failure_logs = await registry.generate_overrides(

@@ -57,6 +57,14 @@ def collect_tick_decisions(
         来自玩家或外部系统的可选覆盖，允许对默认决策做细粒度修改。
     """
 
+    if (
+        world_state.firm is None
+        or world_state.bank is None
+        or world_state.government is None
+        or world_state.central_bank is None
+    ):
+        raise ValueError("缺少核心主体状态，无法生成 Tick 决策")
+
     public_data = world_state.get_public_market_data()
 
     override_households = overrides.households if overrides else {}

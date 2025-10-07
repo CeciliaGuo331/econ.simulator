@@ -140,17 +140,24 @@ class WorldState(BaseModel):
     simulation_id: str
     tick: int
     day: int
-    households: Dict[int, HouseholdState]
-    firm: FirmState
-    bank: BankState
-    government: GovernmentState
-    central_bank: CentralBankState
+    households: Dict[int, HouseholdState] = Field(default_factory=dict)
+    firm: Optional[FirmState] = None
+    bank: Optional[BankState] = None
+    government: Optional[GovernmentState] = None
+    central_bank: Optional[CentralBankState] = None
     macro: MacroState
     household_shocks: Dict[int, HouseholdShock] = Field(default_factory=dict)
     features: SimulationFeatures = Field(default_factory=SimulationFeatures)
 
     def get_public_market_data(self) -> PublicMarketData:
         """提取公开市场数据，供策略层观察外部环境。"""
+        if (
+            self.firm is None
+            or self.bank is None
+            or self.government is None
+            or self.central_bank is None
+        ):
+            raise ValueError("缺少核心主体，无法构造市场数据")
         return PublicMarketData(
             goods_price=self.firm.price,
             wage_offer=self.firm.wage_offer,

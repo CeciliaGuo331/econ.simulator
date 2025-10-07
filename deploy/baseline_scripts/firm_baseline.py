@@ -8,19 +8,22 @@ DecisionOverrides = dict[str, object]
 
 
 def generate_decisions(context: Context) -> DecisionOverrides:
-    world = context["world_state"]
-    macro = world["macro"]
-    firm = world["firm"]
+    world = context.get("world_state", {})
+    macro = world.get("macro", {})
+    firm = context.get("entity_state") or world.get("firm")
+    if not firm:
+        return {}
 
     builder = OverridesBuilder()
-    households = world["households"]
+    households = world.get("households", {})
     household_count = max(1, len(households))
     recent_consumption = sum(
         h.get("last_consumption", 0.0) for h in households.values()
     )
     demand_proxy = max(household_count * 60.0, recent_consumption * 0.8)
 
-    inventory = firm["balance_sheet"].get("inventory_goods", 0.0)
+    balance_sheet = firm.get("balance_sheet", {})
+    inventory = balance_sheet.get("inventory_goods", 0.0)
     desired_inventory = household_count * 1.5
     inventory_gap = desired_inventory - inventory
     planned_production = max(0.0, demand_proxy * 0.5 + inventory_gap)
@@ -30,7 +33,8 @@ def generate_decisions(context: Context) -> DecisionOverrides:
     )
     wage_adjustment = clamp(1.0 - macro.get("unemployment_rate", 0.0) * 0.1, 0.9, 1.1)
 
-    required_workers = int(planned_production / max(firm.get("productivity", 0.1), 0.1))
+    productivity = max(firm.get("productivity", 0.1), 0.1)
+    required_workers = int(planned_production / productivity)
     hiring_demand = max(0, required_workers - len(firm.get("employees", [])))
 
     builder.firm(

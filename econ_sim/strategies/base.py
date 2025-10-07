@@ -204,6 +204,13 @@ class StrategyBundle:
         self.households: Dict[int, BaseHouseholdStrategy] = {
             hid: BaseHouseholdStrategy(config) for hid in world_state.households
         }
+        if (
+            world_state.firm is None
+            or world_state.bank is None
+            or world_state.government is None
+            or world_state.central_bank is None
+        ):
+            raise ValueError("缺少核心主体状态，无法构建策略集合")
         self.firm = BaseFirmStrategy(config)
         self.government = BaseGovernmentStrategy(config)
         self.bank = BaseBankStrategy(config)

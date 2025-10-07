@@ -28,6 +28,7 @@ from ..logic_modules.shock_logic import (
 from ..strategies.base import StrategyBundle
 from ..utils.settings import get_world_config
 from ..script_engine import script_registry
+from ..script_engine.registry import ScriptExecutionError
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
     from ..script_engine.registry import ScriptMetadata
@@ -120,7 +121,7 @@ class SimulationOrchestrator:
         """在确保仿真处于 tick 0 的前提下上传并挂载脚本。"""
 
         await self._require_tick_zero(simulation_id)
-        return await script_registry.register_script(
+        metadata = await script_registry.register_script(
             simulation_id=simulation_id,
             user_id=user_id,
             script_code=script_code,
@@ -128,6 +129,8 @@ class SimulationOrchestrator:
             agent_kind=agent_kind,
             entity_id=entity_id,
         )
+        await self._ensure_entity_seeded(metadata)
+        return metadata
 
     async def set_script_limit(
         self, simulation_id: str, limit: Optional[int]
@@ -177,11 +180,13 @@ class SimulationOrchestrator:
         """仅在 tick 0 时允许将脚本挂载至仿真实例。"""
 
         await self._require_tick_zero(simulation_id)
-        return await script_registry.attach_script(
+        metadata = await script_registry.attach_script(
             script_id=script_id,
             simulation_id=simulation_id,
             user_id=user_id,
         )
+        await self._ensure_entity_seeded(metadata)
+        return metadata
 
     async def remove_script_from_simulation(
         self,
@@ -191,7 +196,34 @@ class SimulationOrchestrator:
         """仅在 tick 0 时允许移除已挂载的脚本。"""
 
         await self._require_tick_zero(simulation_id)
+        scripts = await script_registry.list_scripts(simulation_id)
+        target = next((meta for meta in scripts if meta.script_id == script_id), None)
+        if target is None:
+            raise ScriptExecutionError("Script not found for simulation")
+
         await script_registry.remove_script(simulation_id, script_id)
+        await self.data_access.remove_entity_state(
+            simulation_id, target.agent_kind, target.entity_id
+        )
+
+    async def detach_script_from_simulation(
+        self,
+        simulation_id: str,
+        script_id: str,
+        user_id: str,
+    ) -> "ScriptMetadata":
+        """取消脚本与仿真实例的绑定，同时移除对应实体。"""
+
+        await self._require_tick_zero(simulation_id)
+        metadata = await script_registry.get_user_script(script_id, user_id)
+        if metadata.simulation_id != simulation_id:
+            raise ScriptExecutionError("脚本未挂载到指定仿真实例。")
+
+        updated = await script_registry.detach_user_script(script_id, user_id)
+        await self.data_access.remove_entity_state(
+            simulation_id, metadata.agent_kind, metadata.entity_id
+        )
+        return updated
 
     async def get_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的当前世界状态。"""
@@ -414,8 +446,18 @@ class SimulationOrchestrator:
         }
 
     async def _require_agent_coverage(self, simulation_id: str) -> None:
-        scripts = await script_registry.list_scripts(simulation_id)
-        present = {meta.agent_kind for meta in scripts}
+        state = await self.data_access.get_world_state(simulation_id)
+        present = set()
+        if state.households:
+            present.add(AgentKind.HOUSEHOLD)
+        if state.firm is not None:
+            present.add(AgentKind.FIRM)
+        if state.bank is not None:
+            present.add(AgentKind.BANK)
+        if state.government is not None:
+            present.add(AgentKind.GOVERNMENT)
+        if state.central_bank is not None:
+            present.add(AgentKind.CENTRAL_BANK)
         missing = [agent for agent in self._required_agents if agent not in present]
         if missing:
             raise MissingAgentScriptsError(simulation_id, missing)
@@ -427,6 +469,15 @@ class SimulationOrchestrator:
         if state.tick != 0:
             raise SimulationStateError(simulation_id, state.tick)
         return state
+
+    async def _ensure_entity_seeded(self, metadata: "ScriptMetadata") -> None:
+        if metadata.simulation_id is None:
+            return
+        await self.data_access.ensure_entity_state(
+            metadata.simulation_id,
+            metadata.agent_kind,
+            metadata.entity_id,
+        )
 
 
 __all__ = [

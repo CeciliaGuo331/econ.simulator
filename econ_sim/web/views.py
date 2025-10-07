@@ -1509,7 +1509,9 @@ async def detach_script(
         )
 
     try:
-        await script_registry.detach_user_script(script_id, user["email"])
+        await _orchestrator.detach_script_from_simulation(
+            target_simulation, script_id, user["email"]
+        )
     except ScriptExecutionError as exc:
         return _redirect_to_dashboard(redirect_target, error=str(exc))
 
@@ -1566,7 +1568,12 @@ async def delete_script(
         )
 
     try:
-        await script_registry.delete_user_script(script_id, user["email"])
+        if metadata.simulation_id is not None:
+            await _orchestrator.remove_script_from_simulation(
+                metadata.simulation_id, script_id
+            )
+        else:
+            await script_registry.delete_user_script(script_id, user["email"])
     except ScriptExecutionError as exc:
         return _redirect_to_dashboard(redirect_target, error=str(exc))
 
