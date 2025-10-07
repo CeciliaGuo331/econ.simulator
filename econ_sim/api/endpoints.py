@@ -10,7 +10,11 @@ from pydantic import BaseModel, Field
 
 from ..auth import user_manager
 from ..auth.user_manager import UserProfile
-from ..core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
+from ..core.orchestrator import (
+    SimulationNotFoundError,
+    SimulationOrchestrator,
+    SimulationStateError,
+)
 from ..data_access.models import (
     HouseholdState,
     TickDecisionOverrides,
@@ -397,6 +401,14 @@ async def update_script_limit(
         applied = await _orchestrator.set_script_limit(
             simulation_id, payload.max_scripts_per_user
         )
+    except SimulationStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"仿真实例 {simulation_id} 已运行到 tick {exc.tick}，"
+                "无法再调整脚本数量上限。"
+            ),
+        )
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -440,6 +452,14 @@ async def update_simulation_features(
 
     try:
         state = await _orchestrator.update_simulation_features(simulation_id, **updates)
+    except SimulationStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"仿真实例 {simulation_id} 已运行到 tick {exc.tick}，"
+                "无法再调整外生冲击配置。"
+            ),
+        )
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -533,12 +553,20 @@ async def upload_script(
         )
 
     try:
-        await _orchestrator.register_participant(simulation_id, user.email)
-        metadata = await script_registry.register_script(
+        metadata = await _orchestrator.register_script_for_simulation(
             simulation_id=simulation_id,
             user_id=user.email,
             script_code=payload.code,
             description=payload.description,
+        )
+        await _orchestrator.register_participant(simulation_id, user.email)
+    except SimulationStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"仿真实例 {simulation_id} 已运行到 tick {exc.tick}，"
+                "仅在 tick 0 时允许挂载或上传脚本。"
+            ),
         )
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -570,11 +598,19 @@ async def attach_script(
     """将既有脚本挂载到指定仿真实例。"""
 
     try:
-        await _orchestrator.register_participant(simulation_id, user.email)
-        metadata = await script_registry.attach_script(
-            script_id=payload.script_id,
+        metadata = await _orchestrator.attach_script_to_simulation(
             simulation_id=simulation_id,
+            script_id=payload.script_id,
             user_id=user.email,
+        )
+        await _orchestrator.register_participant(simulation_id, user.email)
+    except SimulationStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"仿真实例 {simulation_id} 已运行到 tick {exc.tick}，"
+                "仅在 tick 0 时允许挂载或上传脚本。"
+            ),
         )
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

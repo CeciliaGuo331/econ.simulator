@@ -28,7 +28,11 @@ from ..auth.user_manager import (
     PUBLIC_USER_TYPES,
     UserAlreadyExistsError,
 )
-from ..core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
+from ..core.orchestrator import (
+    SimulationNotFoundError,
+    SimulationOrchestrator,
+    SimulationStateError,
+)
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
 from .background import BackgroundJobManager, JobConflictError
@@ -659,6 +663,15 @@ async def admin_update_script_limit(
         else:
             limit_value = int(raw_value)
         applied = await _orchestrator.set_script_limit(target, limit_value)
+    except SimulationStateError as exc:
+        redirect_target = target or fallback
+        return _redirect_to_dashboard(
+            redirect_target,
+            error=(
+                f"仿真实例 {target or fallback} 已运行到 tick {exc.tick}，"
+                "无法再调整脚本数量上限。"
+            ),
+        )
     except ValueError as exc:
         detail = str(exc)
         redirect_target = target or fallback
@@ -740,6 +753,14 @@ async def admin_update_features(
         await _orchestrator.update_simulation_features(target, **updates)
     except ValueError as exc:
         return _redirect_to_dashboard(target, error=str(exc))
+    except SimulationStateError as exc:
+        return _redirect_to_dashboard(
+            fallback,
+            error=(
+                f"仿真实例 {target} 已运行到 tick {exc.tick}，"
+                "无法再调整外生冲击配置。"
+            ),
+        )
     except SimulationNotFoundError:
         return _redirect_to_dashboard(
             fallback,
@@ -1152,11 +1173,19 @@ async def attach_existing_script(
         )
 
     try:
-        await _orchestrator.register_participant(target, user["email"])
-        await script_registry.attach_script(
-            script_id=script_id,
+        await _orchestrator.attach_script_to_simulation(
             simulation_id=target,
+            script_id=script_id,
             user_id=user["email"],
+        )
+        await _orchestrator.register_participant(target, user["email"])
+    except SimulationStateError as exc:
+        return _redirect_to_dashboard(
+            target,
+            error=(
+                f"仿真实例 {target} 已运行到 tick {exc.tick}，"
+                "仅在 tick 0 时允许挂载脚本。"
+            ),
         )
     except SimulationNotFoundError:
         return _redirect_to_dashboard(

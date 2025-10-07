@@ -6,7 +6,7 @@ import asyncio
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..data_access.models import (
     AgentKind,
@@ -29,6 +29,9 @@ from ..strategies.base import StrategyBundle
 from ..utils.settings import get_world_config
 from ..script_engine import script_registry
 
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from ..script_engine.registry import ScriptMetadata
+
 
 @dataclass
 class BatchRunResult:
@@ -37,6 +40,17 @@ class BatchRunResult:
     world_state: WorldState
     ticks_executed: int
     logs: List[TickLogEntry]
+
+
+class SimulationStateError(RuntimeError):
+    """在仿真状态不满足操作要求时抛出的异常。"""
+
+    def __init__(self, simulation_id: str, tick: int) -> None:
+        super().__init__(
+            f"Simulation {simulation_id} is at tick {tick}; operation requires tick 0."
+        )
+        self.simulation_id = simulation_id
+        self.tick = tick
 
 
 class SimulationOrchestrator:
@@ -74,6 +88,23 @@ class SimulationOrchestrator:
         await self.data_access.get_world_state(simulation_id)
         return await self.data_access.list_participants(simulation_id)
 
+    async def register_script_for_simulation(
+        self,
+        simulation_id: str,
+        user_id: str,
+        script_code: str,
+        description: Optional[str] = None,
+    ) -> "ScriptMetadata":
+        """在确保仿真处于 tick 0 的前提下上传并挂载脚本。"""
+
+        await self._require_tick_zero(simulation_id)
+        return await script_registry.register_script(
+            simulation_id=simulation_id,
+            user_id=user_id,
+            script_code=script_code,
+            description=description,
+        )
+
     async def set_script_limit(
         self, simulation_id: str, limit: Optional[int]
     ) -> Optional[int]:
@@ -82,7 +113,7 @@ class SimulationOrchestrator:
         if limit is not None and limit <= 0:
             raise ValueError("script limit must be positive or null")
 
-        await self.data_access.get_world_state(simulation_id)
+        await self._require_tick_zero(simulation_id)
 
         normalized_limit = int(limit) if limit is not None else None
 
@@ -112,6 +143,21 @@ class SimulationOrchestrator:
         """列出已知仿真实例 ID。"""
 
         return await self.data_access.list_simulations()
+
+    async def attach_script_to_simulation(
+        self,
+        simulation_id: str,
+        script_id: str,
+        user_id: str,
+    ) -> "ScriptMetadata":
+        """仅在 tick 0 时允许将脚本挂载至仿真实例。"""
+
+        await self._require_tick_zero(simulation_id)
+        return await script_registry.attach_script(
+            script_id=script_id,
+            simulation_id=simulation_id,
+            user_id=user_id,
+        )
 
     async def get_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的当前世界状态。"""
@@ -239,7 +285,7 @@ class SimulationOrchestrator:
         simulation_id: str,
         **updates: object,
     ) -> WorldState:
-        state = await self.data_access.get_world_state(simulation_id)
+        state = await self._require_tick_zero(simulation_id)
         features = state.features.model_copy(deep=True)
 
         allowed_fields = set(features.model_dump().keys())
@@ -327,5 +373,18 @@ class SimulationOrchestrator:
             "scripts_detached": scripts_removed,
         }
 
+    async def _require_tick_zero(self, simulation_id: str) -> WorldState:
+        """确保仿真实例仍处于 tick 0 状态，否则抛出异常。"""
 
-__all__ = ["SimulationOrchestrator", "SimulationNotFoundError", "BatchRunResult"]
+        state = await self.data_access.get_world_state(simulation_id)
+        if state.tick != 0:
+            raise SimulationStateError(simulation_id, state.tick)
+        return state
+
+
+__all__ = [
+    "SimulationOrchestrator",
+    "SimulationNotFoundError",
+    "SimulationStateError",
+    "BatchRunResult",
+]

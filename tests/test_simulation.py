@@ -3,7 +3,11 @@ from httpx import ASGITransport, AsyncClient
 
 from econ_sim.auth import user_manager
 from econ_sim.auth.user_manager import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
-from econ_sim.core.orchestrator import SimulationNotFoundError, SimulationOrchestrator
+from econ_sim.core.orchestrator import (
+    SimulationNotFoundError,
+    SimulationOrchestrator,
+    SimulationStateError,
+)
 from econ_sim.data_access.models import (
     FirmDecisionOverride,
     HouseholdDecisionOverride,
@@ -68,6 +72,9 @@ async def test_household_shock_toggle_updates_state() -> None:
         len(tick_result.world_state.household_shocks)
         == orchestrator.config.simulation.num_households
     )
+
+    # 重置仿真实例以回到 tick 0，再关闭外生冲击
+    await orchestrator.reset_simulation(simulation_id)
 
     disabled = await orchestrator.update_simulation_features(
         simulation_id,
@@ -177,6 +184,90 @@ def generate_decisions(context):
         remaining = {m.script_id: m for m in all_metadata}
         assert metadata.script_id in remaining
         assert remaining[metadata.script_id].simulation_id is None
+    finally:
+        await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_register_script_for_simulation_requires_tick_zero() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "tick-guard-register"
+
+    await orchestrator.create_simulation(simulation_id)
+
+    await script_registry.clear()
+    try:
+        metadata = await orchestrator.register_script_for_simulation(
+            simulation_id=simulation_id,
+            user_id="player@example.com",
+            script_code="""
+def generate_decisions(context):
+    return {}
+""",
+            description="first",
+        )
+        assert metadata.simulation_id == simulation_id
+
+        await orchestrator.run_tick(simulation_id)
+
+        with pytest.raises(SimulationStateError):
+            await orchestrator.register_script_for_simulation(
+                simulation_id=simulation_id,
+                user_id="player@example.com",
+                script_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 1.0}}
+""",
+                description="second",
+            )
+    finally:
+        await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_attach_script_to_simulation_requires_tick_zero() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "tick-guard-attach"
+
+    await orchestrator.create_simulation(simulation_id)
+
+    await script_registry.clear()
+    try:
+        base_script = await script_registry.register_script(
+            simulation_id=None,
+            user_id="player@example.com",
+            script_code="""
+def generate_decisions(context):
+    return {}
+""",
+            description="detached",
+        )
+
+        attached = await orchestrator.attach_script_to_simulation(
+            simulation_id=simulation_id,
+            script_id=base_script.script_id,
+            user_id="player@example.com",
+        )
+        assert attached.simulation_id == simulation_id
+
+        await orchestrator.run_tick(simulation_id)
+
+        extra_script = await script_registry.register_script(
+            simulation_id=None,
+            user_id="player@example.com",
+            script_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 2.0}}
+""",
+            description="attach-after-run",
+        )
+
+        with pytest.raises(SimulationStateError):
+            await orchestrator.attach_script_to_simulation(
+                simulation_id=simulation_id,
+                script_id=extra_script.script_id,
+                user_id="player@example.com",
+            )
     finally:
         await script_registry.clear()
 
@@ -306,6 +397,103 @@ def generate_decisions(context):
         payload = upload.json()
         assert payload["message"] == "Script registered successfully."
         assert "code_version" in payload and payload["code_version"]
+
+
+@pytest.mark.asyncio
+async def test_script_controls_blocked_after_tick_advances() -> None:
+    await user_manager.reset()
+    await script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/auth/register",
+            json={
+                "email": "late-user@test.com",
+                "password": "StrongPass123",
+                "user_type": "individual",
+            },
+        )
+        user_login = await client.post(
+            "/auth/login",
+            json={"email": "late-user@test.com", "password": "StrongPass123"},
+        )
+        user_token = user_login.json()["access_token"]
+
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+
+        headers_user = {"Authorization": f"Bearer {user_token}"}
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "late-controls"
+        created = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+        assert created.status_code == 200
+
+        # 推进一次 Tick，使仿真实例进入运行状态
+        run_once = await client.post(
+            f"/simulations/{simulation_id}/run_tick",
+            json={},
+            headers=headers_admin,
+        )
+        assert run_once.status_code == 200
+
+        script_template = """
+def generate_decisions(context):
+    return {}
+"""
+
+        late_upload = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json={"code": script_template},
+            headers=headers_user,
+        )
+        assert late_upload.status_code == 409
+        assert "tick" in late_upload.json()["detail"]
+
+        library_upload = await client.post(
+            "/scripts",
+            json={"code": script_template, "description": "library"},
+            headers=headers_user,
+        )
+        assert library_upload.status_code == 200
+        script_id = library_upload.json()["script_id"]
+
+        late_attach = await client.post(
+            f"/simulations/{simulation_id}/scripts/attach",
+            json={"script_id": script_id},
+            headers=headers_user,
+        )
+        assert late_attach.status_code == 409
+        assert "tick" in late_attach.json()["detail"]
+
+        limit_attempt = await client.put(
+            f"/simulations/{simulation_id}/settings/script_limit",
+            json={"max_scripts_per_user": 2},
+            headers=headers_admin,
+        )
+        assert limit_attempt.status_code == 409
+        assert "tick" in limit_attempt.json()["detail"]
+
+        feature_attempt = await client.put(
+            f"/simulations/{simulation_id}/settings/features",
+            json={"household_shock_enabled": True},
+            headers=headers_admin,
+        )
+        assert feature_attempt.status_code == 409
+        assert "tick" in feature_attempt.json()["detail"]
+
+    await script_registry.clear()
 
 
 @pytest.mark.asyncio
