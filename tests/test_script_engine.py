@@ -3,7 +3,7 @@ import pytest
 from econ_sim.core.orchestrator import SimulationOrchestrator
 from econ_sim.data_access.models import AgentKind
 from econ_sim.script_engine import ScriptRegistry, script_registry
-from econ_sim.script_engine.registry import ScriptExecutionError
+from econ_sim.script_engine.registry import ScriptExecutionError, ScriptFailureEvent
 from econ_sim.utils.settings import get_world_config
 from tests.utils import seed_required_scripts
 
@@ -38,13 +38,14 @@ def generate_decisions(context):
     config = get_world_config()
     world_state = await orchestrator.create_simulation("sim-a")
 
-    overrides, failure_logs = await registry.generate_overrides(
+    overrides, failure_logs, failure_events = await registry.generate_overrides(
         "sim-a", world_state, config
     )
     assert overrides is not None
     assert overrides.bank is not None
     assert overrides.bank.deposit_rate >= 0.01
     assert failure_logs == []
+    assert failure_events == []
 
 
 @pytest.mark.asyncio
@@ -113,12 +114,13 @@ def generate_decisions(context):
 
     config = get_world_config()
     world_state = await orchestrator.create_simulation("delayed-sim")
-    overrides, failure_logs = await registry.generate_overrides(
+    overrides, failure_logs, failure_events = await registry.generate_overrides(
         "delayed-sim", world_state, config
     )
     assert overrides is not None
     assert overrides.government is not None
     assert not failure_logs
+    assert not failure_events
 
 
 @pytest.mark.asyncio
@@ -206,12 +208,19 @@ def generate_decisions(context):
     config = get_world_config()
     world_state = await orchestrator.create_simulation("slow")
 
-    overrides, failure_logs = await registry.generate_overrides(
+    overrides, failure_logs, failure_events = await registry.generate_overrides(
         "slow", world_state, config
     )
     assert overrides is None
     assert len(failure_logs) == 1
     assert meta.script_id in failure_logs[0].message
+    assert len(failure_events) == 1
+    event = failure_events[0]
+    assert isinstance(event, ScriptFailureEvent)
+    assert event.script_id == meta.script_id
+    assert event.simulation_id == "slow"
+    assert "脚本执行超时" in event.message
+    assert event.traceback
 
     refreshed = await registry.get_user_script(meta.script_id, "u4")
     assert refreshed.last_failure_reason is not None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,20 @@ logger = logging.getLogger(__name__)
 
 class ScriptExecutionError(RuntimeError):
     """在脚本编译或执行阶段抛出的异常。"""
+
+
+@dataclass(slots=True)
+class ScriptFailureEvent:
+    """记录单次脚本执行失败，用于后续通知与排查。"""
+
+    script_id: str
+    simulation_id: str
+    user_id: str
+    agent_kind: AgentKind
+    entity_id: str
+    message: str
+    traceback: str
+    occurred_at: datetime
 
 
 class ScriptMetadata(BaseModel):
@@ -790,7 +805,11 @@ class ScriptRegistry:
         simulation_id: str,
         world_state: WorldState,
         config: WorldConfig,
-    ) -> tuple[Optional[TickDecisionOverrides], List[TickLogEntry]]:
+    ) -> tuple[
+        Optional[TickDecisionOverrides],
+        List[TickLogEntry],
+        List[ScriptFailureEvent],
+    ]:
         """依次执行所有脚本，并合并生成的决策覆盖与失败日志。"""
 
         await self._ensure_simulation_loaded(simulation_id)
@@ -803,12 +822,13 @@ class ScriptRegistry:
             ]
 
         if not records:
-            return None, []
+            return None, [], []
 
         records.sort(key=lambda record: record.metadata.created_at)
 
         combined: Optional[TickDecisionOverrides] = None
         failure_logs: List[TickLogEntry] = []
+        failure_events: List[ScriptFailureEvent] = []
         status_updates: List[tuple[str, Optional[datetime], Optional[str]]] = []
 
         for record in records:
@@ -822,6 +842,7 @@ class ScriptRegistry:
                     exc,
                 )
                 timestamp = datetime.now(timezone.utc)
+                failure_trace = traceback.format_exc()
                 failure_logs.append(
                     TickLogEntry(
                         tick=world_state.tick,
@@ -830,7 +851,21 @@ class ScriptRegistry:
                         context={
                             "agent_kind": record.metadata.agent_kind.value,
                             "entity_id": record.metadata.entity_id,
+                            "script_id": record.metadata.script_id,
+                            "user_id": record.metadata.user_id,
                         },
+                    )
+                )
+                failure_events.append(
+                    ScriptFailureEvent(
+                        script_id=record.metadata.script_id,
+                        simulation_id=simulation_id,
+                        user_id=record.metadata.user_id,
+                        agent_kind=record.metadata.agent_kind,
+                        entity_id=record.metadata.entity_id,
+                        message=str(exc),
+                        traceback=failure_trace,
+                        occurred_at=timestamp,
                     )
                 )
                 status_updates.append(
@@ -876,7 +911,7 @@ class ScriptRegistry:
                         script_id,
                     )
 
-        return combined, failure_logs
+        return combined, failure_logs, failure_events
 
     def _serialize_entity_state(
         self,
@@ -994,4 +1029,10 @@ class ScriptRegistry:
         )
 
 
-__all__ = ["ScriptExecutionError", "ScriptMetadata", "ScriptRegistry", "ScriptStore"]
+__all__ = [
+    "ScriptExecutionError",
+    "ScriptMetadata",
+    "ScriptRegistry",
+    "ScriptStore",
+    "ScriptFailureEvent",
+]

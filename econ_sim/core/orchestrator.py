@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
@@ -28,10 +29,17 @@ from ..logic_modules.shock_logic import (
 )
 from ..utils.settings import get_world_config
 from ..script_engine import script_registry
-from ..script_engine.registry import ScriptExecutionError
+from ..script_engine.notifications import (
+    LoggingScriptFailureNotifier,
+    ScriptFailureNotifier,
+)
+from ..script_engine.registry import ScriptExecutionError, ScriptFailureEvent
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
     from ..script_engine.registry import ScriptMetadata
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,7 +77,12 @@ class MissingAgentScriptsError(RuntimeError):
 class SimulationOrchestrator:
     """仿真调度器，负责组织数据访问、决策生成与市场结算。"""
 
-    def __init__(self, data_access: Optional[DataAccessLayer] = None) -> None:
+    def __init__(
+        self,
+        data_access: Optional[DataAccessLayer] = None,
+        *,
+        failure_notifier: Optional[ScriptFailureNotifier] = None,
+    ) -> None:
         """初始化调度器。
 
         若未显式传入数据访问层，将使用默认的内存存储配置；同时缓存世界配置，
@@ -87,6 +100,11 @@ class SimulationOrchestrator:
             AgentKind.CENTRAL_BANK,
         )
         self._fallback_manager = BaselineFallbackManager()
+        self._failure_notifier = (
+            failure_notifier
+            if failure_notifier is not None
+            else LoggingScriptFailureNotifier()
+        )
 
     async def create_simulation(self, simulation_id: str) -> WorldState:
         """确保指定 ID 的仿真实例存在。
@@ -262,15 +280,22 @@ class SimulationOrchestrator:
                 decision_state, self.config
             )
         except FallbackExecutionError as exc:
+            logger.exception(
+                "Failed to generate fallback decisions for simulation %s",
+                simulation_id,
+            )
             raise RuntimeError(
                 "Baseline fallback failed to produce required decisions"
             ) from exc
 
-        script_overrides, script_failure_logs = (
-            await script_registry.generate_overrides(
-                simulation_id, decision_state, self.config
-            )
+        (
+            script_overrides,
+            script_failure_logs,
+            failure_events,
+        ) = await script_registry.generate_overrides(
+            simulation_id, decision_state, self.config
         )
+        self._dispatch_script_failures(failure_events)
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
         decisions = await asyncio.to_thread(
             collect_tick_decisions,
@@ -486,6 +511,18 @@ class SimulationOrchestrator:
             metadata.agent_kind,
             metadata.entity_id,
         )
+
+    def _dispatch_script_failures(self, events: List[ScriptFailureEvent]) -> None:
+        if not events:
+            return
+        for event in events:
+            try:
+                self._failure_notifier.notify(event)
+            except Exception:  # pragma: no cover - best effort logging
+                logger.exception(
+                    "Failed to dispatch script failure notification for %s",
+                    event.script_id,
+                )
 
 
 __all__ = [

@@ -11,6 +11,7 @@ from econ_sim.core.orchestrator import (
     SimulationStateError,
 )
 from econ_sim.data_access.models import (
+    AgentKind,
     FirmDecisionOverride,
     HouseholdDecisionOverride,
     TickDecisionOverrides,
@@ -18,6 +19,16 @@ from econ_sim.data_access.models import (
 from econ_sim.main import app
 from econ_sim.utils.settings import get_world_config
 from econ_sim.script_engine import script_registry
+from econ_sim.script_engine.registry import ScriptFailureEvent
+from tests.utils import seed_required_scripts
+
+
+class StubFailureNotifier:
+    def __init__(self) -> None:
+        self.events: list[ScriptFailureEvent] = []
+
+    def notify(self, event: ScriptFailureEvent) -> None:
+        self.events.append(event)
 
 
 @pytest.mark.asyncio
@@ -334,6 +345,50 @@ async def test_household_baseline_script_executes_successfully() -> None:
 
         result = await orchestrator.run_tick(simulation_id)
         assert result.world_state.tick == 1
+    finally:
+        await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_script_failure_triggers_notifier() -> None:
+    await script_registry.clear()
+    notifier = StubFailureNotifier()
+    orchestrator = SimulationOrchestrator(failure_notifier=notifier)
+    simulation_id = "notify-failure"
+
+    await seed_required_scripts(
+        script_registry,
+        simulation_id,
+        orchestrator=orchestrator,
+        skip={AgentKind.BANK},
+    )
+
+    failing_code = """
+def generate_decisions(context):
+    raise RuntimeError("bank boom")
+"""
+
+    try:
+        metadata = await orchestrator.register_script_for_simulation(
+            simulation_id=simulation_id,
+            user_id="bank.fail@test",
+            script_code=failing_code,
+            description="failing bank script",
+            agent_kind=AgentKind.BANK,
+            entity_id="bank_fail",
+        )
+
+        result = await orchestrator.run_tick(simulation_id)
+
+        assert result.world_state.bank is not None
+        assert notifier.events, "expected failure notifier to capture event"
+
+        event = notifier.events[0]
+        assert event.script_id == metadata.script_id
+        assert event.user_id == metadata.user_id
+        assert event.agent_kind is AgentKind.BANK
+        assert event.entity_id == metadata.entity_id
+        assert "bank boom" in (event.message + event.traceback)
     finally:
         await script_registry.clear()
 
