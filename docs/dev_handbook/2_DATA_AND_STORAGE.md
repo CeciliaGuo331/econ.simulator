@@ -1,15 +1,27 @@
 # 数据与持久化
 
-本章聚焦运行时数据的来源、存储策略与操作流程，帮助你快速理解 Redis 与 PostgreSQL 的分工及其在代码中的映射。
+本章聚焦运行时数据的来源、存储策略与操作流程，解释平台层与仿真世界在数据层的契约。你将看到：哪些数据放在 Redis、哪些落在 PostgreSQL、两者如何通过接口协同，以及未来演进方向。
 
 ## 1. 数据概览
 
 | 数据域 | 存储介质 | 说明 |
 | ------ | -------- | ---- |
-| 仿真世界状态 (`WorldState`) | Redis | Tick/Day、宏观指标、代理人资产负债表，以 Hash / JSON 存储，支持快速读写 |
-| Tick 日志 / 参与者列表 | Redis | 统一由 `DataAccessLayer` 管理，使用 Pipeline 保证一致性 |
-| 用户上传脚本（源码 & 元数据） | PostgreSQL | 表 `scripts`，支持未挂载状态、历史版本号 |
-| 会话与认证 | Redis + 内存 | `SessionMiddleware` + `auth/user_manager.py` 提供的令牌存储 |
+| 仿真世界状态 (`WorldState`) | Redis | Tick/Day、宏观指标、主体资产负债表；高频读写，保持 JSON 化映射 |
+| Tick 日志 / 参与者列表 | Redis | 统一由 `DataAccessLayer` 管理，Pipeline 保证写一致性 |
+| 用户脚本源码 & 元数据 | PostgreSQL | 表 `scripts`，存储脚本代码、归属、挂载状态、版本号 |
+| 脚本限额 & 仿真设置 | PostgreSQL | `simulation_limits`（在 `PostgresSimulationSettingsStore` 中维护） |
+| 用户账号 / 会话 | 内存（默认）或 Redis | `UserManager`/`SessionManager` 可切换后端，默认内存够用 |
+
+### 接口一览
+
+| 接口提供者 | 关键方法 | 作用范围 |
+| ------------ | -------- | -------- |
+| `SimulationOrchestrator` | `create_simulation` / `get_state` / `run_tick` / `reset_simulation` | 对外暴露仿真世界读写能力 |
+| `DataAccessLayer` | `ensure_simulation` / `get_world_state` / `apply_updates` / `record_tick` / `list_script_failures` | Redis 读写封装，仿真世界唯一入口 |
+| `ScriptRegistry` | `register_script` / `attach_script` / `generate_overrides` / `list_scripts` | 脚本生命周期、沙箱执行、配额控制 |
+| `UserManager` | `register_user` / `authenticate_user` / `list_users` | 账号创建、登录、后台播种 |
+
+这些组件的输入输出均使用 Pydantic 模型（详见第 6 节），保证平台层与仿真层之间的契约稳定。
 
 ## 2. Redis 结构
 
@@ -61,11 +73,17 @@ erDiagram
         TIMESTAMPTZ created_at
         TEXT code
         UUID code_version
-    }
+  }
+  simulation_limits {
+    TEXT simulation_id PK
+    INT script_limit
+    TIMESTAMPTZ updated_at
+  }
 ```
 
 - `_ensure_schema` 在首次调用时完成建表和索引，并确保 `simulation_id` 允许为空。
-- `code_version` 用于判定脚本是否需要重新编译。
+- `code_version` 用于判定脚本是否需要重新编译；上传相同代码会沿用旧版本。
+- `simulation_limits` 通过 `ScriptRegistry.set_simulation_limit` 维护，用于限制每位用户在某个仿真中的挂载数量。
 
 ### 3.3 生命周期交互
 
@@ -175,14 +193,16 @@ sequenceDiagram
   - `WorldState`：仿真快照，包含 `macro`、`firm`、`households` 等子模型。
   - `StateUpdateCommand`：逻辑模块输出的更新指令，`DataAccessLayer.apply_updates` 解析执行。
   - `TickDecisionOverrides`：脚本或外部输入的决策覆盖。
-- `ScriptRegistry` 与逻辑模块通过这些模型交流，保证类型安全与边界清晰。
+- `ScriptRegistry` 与逻辑模块通过这些模型交流，保证类型安全与边界清晰。特别注意 `StateUpdateCommand.assign/delta` 语义：
+  - `assign`：直接覆盖 Redis 中的字段（常用于元数据、Tick、Day 等标量）。
+  - `delta`：对数值型字段做增量更新（例如现金余额）。
 
 ## 7. 事务与一致性
 
 | 组件 | 策略 |
 | ---- | ---- |
 | Redis | 所有写操作走 Pipeline，`reset_simulation` 会重新初始化世界状态 |
-| PostgreSQL | `asyncpg` 连接池自动提交；单行更新保证 ACID；可按需扩展显式事务 |
+| PostgreSQL | `asyncpg` 连接池自动提交；`register_script` / `attach_script` 在单协程内保持一致性；如需跨脚本更新请使用 `ScriptRegistry` 提供的方法 |
 
 ## 8. 常见排错
 
@@ -197,9 +217,9 @@ sequenceDiagram
 
 随着脚本仓库已经迁移至 PostgreSQL，下一阶段可以按如下步骤扩展更多领域的持久化能力：
 
-1. **统一接口层**：在 `DataAccessLayer` 中抽象 Redis/PG `StateStore`，默认采用写穿策略（Redis 命中写入同时落地 PG）。
-2. **数据建模**：为世界状态、参与者、用户会话设计 JSONB + 关系字段的组合表结构，并使用 Alembic 维护迁移。
-3. **同步机制**：实现后台 Flush 任务或 Outbox 队列，负责 Redis → PostgreSQL 的批量落地，保证故障恢复时有权威数据源。
-4. **运维配套**：在 `config/dev.env` 与部署文档中统一声明 `ECON_SIM_POSTGRES_*`、`ECON_SIM_REDIS_URL`，并通过 Prometheus/OpenTelemetry 采集缓存命中率、写入延迟等指标。
+1. **统一状态接口**：在 `DataAccessLayer` 中抽象 Redis/PG `StateStore`，默认采用写穿策略（Redis 命中写入同时落地 PG）。
+2. **Tick 日志归档**：将 `record_tick` 输出追加到 PostgreSQL 或对象存储，支持历史回溯与分析。
+3. **策略版本管理**：为脚本增补“活跃版本 / 草稿版本”模型，支持日更策略时继承状态（见后续目标）。
+4. **监控指标**：在 Prometheus 中暴露“主体覆盖率”“脚本失败率”等指标，与运维告警协同（详见 [5_DEPLOYMENT.md](./5_DEPLOYMENT.md)）。
 
 完成本章后，可前往 [进度与待办](./3_PROGRESS_AND_TODO.md) 了解最新状态。

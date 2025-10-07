@@ -1,141 +1,166 @@
 # 系统架构
 
-本章梳理 `econ.simulator` 的整体架构、分层职责、执行流程与关键技术栈。
+本章解释 `econ.simulator` 的分层与模块职责，帮助你厘清“平台逻辑”与“仿真世界”如何解耦又协同。阅读顺序：先理解双层模型，再逐层拆解组件，最后查看关键调用链。
 
-## 1. 顶层视图
+## 1. 双层模型总览
 
 ```mermaid
 graph TD
-    subgraph Presentation[Presentation Layer]
-        API[REST API\nFastAPI Routers]
-        WEB[Jinja2 Web UI]
+    subgraph PlatformLayer[平台层]
+        API[REST API
+(FastAPI Routers)]
+        WEB[Jinja2 Admin UI]
+        AUTH[Auth & Session]
+        SCRIPT[Script Engine
+Registry + Sandbox]
+        BACKGROUND[Background Jobs]
     end
-    subgraph Core[Core Layer]
-        ORCH[SimulationOrchestrator\nTick Scheduler]
+    subgraph SimulationLayer[仿真世界层]
+        ORCH[SimulationOrchestrator
+Tick Scheduler]
+        LOGIC[logic_modules/
+纯函数经济模型]
+        DATA[DataAccessLayer
+Redis World State]
     end
-    subgraph Logic[Logic Modules]
-        LM[Market & Agent Logic\n（纯函数）]
-    end
-    subgraph DataAccess[Data Access]
-        DAL[DataAccessLayer\nRedis Operations]
-        PG[PostgresScriptStore]
-    end
-    subgraph Scripts[Script Engine]
-        REG[ScriptRegistry\nCompilation & Sandbox]
+    subgraph Persistence[持久化]
+        REDIS[(Redis)]
+        POSTGRES[(PostgreSQL)]
     end
 
     API --> ORCH
     WEB --> API
-    ORCH --> LM
-    ORCH --> DAL
-    REG --> ORCH
-    REG --> DAL
-    REG --> PG
+    AUTH --> API
+    SCRIPT --> API
+    SCRIPT --> ORCH
+    SCRIPT --> POSTGRES
+    ORCH --> LOGIC
+    ORCH --> DATA
+    DATA --> REDIS
+    SCRIPT --> REDIS
 ```
 
-- **Presentation 层**：`econ_sim/api/` 提供 REST 接口，`econ_sim/web/` 提供管理面板。
-- **Core 层**：`SimulationOrchestrator` 组织 Tick 执行、合并策略并写回状态。
-- **Logic Modules**：`econ_sim/logic_modules/` 以纯函数实现经济学计算。
-- **Data Access**：`econ_sim/data_access/` 统一封装 Redis；`PostgresScriptStore` 负责脚本仓储。
-- **Script Engine**：`econ_sim/script_engine/` 管理脚本上传、挂载与运行时执行。
+- **平台层**（Platform Layer）：围绕玩家/管理员操作展开，负责账户、会话、脚本生命周期、可视化、后台任务。模块之间通过 Python 接口直接调用或 REST API 交互。
+- **仿真世界层**（Simulation Layer）：聚焦经济学模型。Tick 调度器协调市场逻辑、脚本覆盖、回写世界状态。世界层对外提供少量高阶方法（`run_tick`、`reset_simulation` 等）。
+- **持久化层**：Redis 存放世界状态和短期数据；PostgreSQL 存放脚本源码、元数据、配额。平台层与仿真层通过数据访问层与脚本仓库共享同一存储，实现松耦合。
 
-## 2. 代码结构速览
+## 2. 模块拆分与角色
 
-### 2.1 项目根目录地图
+### 2.1 平台层模块
+
+| 模块 | 位置 | 职责 | 关键接口 |
+| ---- | ---- | ---- | -------- |
+| API 网关 | `econ_sim/api/` | 定义 REST / JSON API；校验输入、调度 orchestrator、桥接脚本仓库 | `endpoints.py`、`auth_endpoints.py` |
+| Web 仪表盘 | `econ_sim/web/` | 服务器渲染管理界面、会话管理、触发后台任务、展示世界快照 | `views.py`（依赖 `_orchestrator` 与 `script_registry`） |
+| 认证与用户 | `econ_sim/auth/` | 注册、登录、会话存储、默认管理员播种 | `UserManager`、`SessionManager` |
+| 脚本引擎 | `econ_sim/script_engine/` | 脚本存储、沙箱执行、限额、挂载/卸载、覆盖决策生成 | `ScriptRegistry`、`Sandbox`、`postgres_store.py` |
+| 背景任务 | `econ_sim/web/background.py` | 基于 asyncio 的后台作业，如批量运行 Tick | `BackgroundJobManager` |
+
+模块交互：
+- Web/API 接口仅通过 `ScriptRegistry` 和 `SimulationOrchestrator` 访问仿真世界；不会直接触碰 Redis。
+- 脚本相关 API 始终调用 `ScriptRegistry` 完成注册、挂载，随后 orchestrator 会调用 `_ensure_entity_seeded` 让世界状态与脚本保持同步。
+- Web 仪表盘重用全局 `_orchestrator`，并在启动时由 `main.py` 自动播种 `test_world`，保证教学仿真随时可用。
+
+### 2.2 仿真世界层模块
+
+| 模块 | 位置 | 职责 | 要点 |
+| ---- | ---- | ---- | ---- |
+| 调度器 | `econ_sim/core/orchestrator.py` | Tick 管理、脚本覆盖、状态回写、日志记录、功能开关、守护策略 | `_require_agent_coverage` 强制五类主体具备脚本；`run_tick` 组合 fallback 与脚本输出 |
+| 经济学逻辑 | `econ_sim/logic_modules/` | 纯函数实现市场出清、主体决策；输入世界状态与脚本决策，输出 `StateUpdateCommand` | `agent_logic.py`、`market_logic.py`、`shock_logic.py` |
+| 世界状态模型 | `econ_sim/data_access/models.py` | 定义 `WorldState`、`TickResult` 等 Pydantic 模型，为平台层提供稳定契约 | 广泛用于 API、测试、文档 |
+| 数据访问层 | `econ_sim/data_access/redis_client.py` | Redis 封装；提供仿真初始化、状态读写、参与者列表、日志管理 | `DataAccessLayer.ensure_simulation/get_world_state/apply_updates` |
+
+仿真世界层对平台层暴露的接口集中在 `SimulationOrchestrator` 上：任何外部操作都通过 orchestrator 完成，这也是未来支持多种调度策略的挂载点。
+
+### 2.3 组合方式
+
+- 平台层组织脚本与用户；仿真层负责 Tick。脚本发动决策时，会通过 `ScriptRegistry.generate_overrides` 跑在沙箱里返回覆盖指令，再交给 `SimulationOrchestrator` 合并到 baseline fallback。
+- `SimulationOrchestrator` 是双方的“桥梁”：既调用脚本仓库获取覆盖决策，又通过数据访问层写回 Redis 世界状态。
+- 管理后台与 REST API 共享 orchestrator 和 registry 的全局实例，以便在同一个事件循环下复用连接池和缓存。
+
+## 3. 代码结构导航
 
 ```
 econ.simulator/
-├── config/                 # 仿真配置与环境变量
-├── docs/                   # 项目文档（经济设计 + 开发手册）
-├── econ_sim/               # Python 核心代码包
-├── scripts/                # 启动、维护与分析脚本
-├── tests/                  # Pytest 覆盖
-├── docker-compose.yml      # 本地编排服务
-├── requirements.txt        # 依赖定义
-└── README.md
+├── econ_sim/
+│   ├── api/                # REST 路由、Pydantic Schema
+│   ├── auth/               # 注册、登录、Session、播种
+│   ├── core/               # SimulationOrchestrator 与批量工具
+│   ├── data_access/        # Redis 封装、Pydantic 模型
+│   ├── logic_modules/      # 经济学纯函数逻辑
+│   ├── script_engine/      # ScriptRegistry、沙箱、Postgres Store
+│   ├── strategies/         # 示例策略 & 基线逻辑
+│   ├── utils/              # 配置、通用工具
+│   └── web/                # Jinja2 模板、后台视图、后台作业
+├── scripts/                # CLI 工具 & 运维脚本
+├── tests/                  # Pytest 覆盖（按模块分类）
+├── docs/                   # 经济设计 & 开发手册
+└── config/                 # 环境配置、世界参数
 ```
 
-- `config/`：集中存放 `dev.env`、`world_settings.yaml` 等运行配置。
-- `scripts/`：包含 `dev_start.sh`、`run_simulation.py` 等自动化脚本。
-- `tests/`：按模块分层组织，覆盖脚本生命周期与仿真流程。
+## 4. 关键调用链
 
-### 2.2 代码子包关系
-
-```mermaid
-graph LR
-    A[econ_sim/] --> B[api/]
-    A --> C[auth/]
-    A --> D[core/]
-    A --> E[data_access/]
-    A --> F[logic_modules/]
-    A --> G[script_engine/]
-    A --> H[strategies/]
-    A --> I[utils/]
-    A --> J[web/]
-
-    B --> B1[endpoints.py]
-    D --> D1[orchestrator.py]
-    E --> E1[models.py]
-    E --> E2[redis_client.py]
-    G --> G1[registry.py]
-    G --> G2[postgres_store.py]
-```
-
-- `api/`：REST 路由、权限校验、请求模型。
-- `core/`：仿真编排与批量执行工具。
-- `data_access/`：Redis/Postgres 封装与 Pydantic 模型。
-- `script_engine/`：脚本仓库、沙箱执行与覆盖合并。
-- `logic_modules/`：市场出清、代理行为等纯函数逻辑。
-- `web/`：仪表盘与管理界面模板。
-
-## 3. 核心流程
-
-### 3.1 启动流程
+### 4.1 应用启动
 
 ```mermaid
 sequenceDiagram
     participant Dev as 开发者
-    participant Main as main.py
+    participant Main as econ_sim.main
     participant FastAPI as FastAPI App
-    participant Script as ScriptRegistry
+    participant Registry as ScriptRegistry
+    participant Orchestrator as SimulationOrchestrator
 
     Dev->>Main: uvicorn econ_sim.main:app
-    Main->>FastAPI: 创建应用、注册路由
-    Main->>Script: 构建 ScriptRegistry (根据环境变量)
-    FastAPI-->>Dev: 服务监听 0.0.0.0:8000
+    Main->>FastAPI: 构建应用、注册路由、挂载静态资源
+    Main->>Registry: 初始化脚本仓库 (内存 / Postgres)
+    Main->>Orchestrator: 创建共享 orchestrator 实例
+    Main->>Registry: startup hook 调用 seed_test_world()
+    Main->>Orchestrator: 重用 orchestrator 播种 test_world
+    FastAPI-->>Dev: 应用监听 0.0.0.0:8000
 ```
 
-- `main.py` 初始化 FastAPI、会话中间件与脚本仓库。
-- 若配置了 `ECON_SIM_POSTGRES_DSN`，脚本仓库使用 Postgres 持久化。
+要点：
+- `ECON_SIM_SKIP_TEST_WORLD_SEED=1` 可以跳过播种；测试环境会自动跳过。
+- 脚本仓库和 orchestrator 是单例，供 Web、API、脚本共享。
 
-### 3.2 单 Tick 执行
+### 4.2 单 Tick 执行
 
 ```mermaid
 sequenceDiagram
-    participant API as REST API
+    participant Client as Web/API 调用者
     participant ORCH as SimulationOrchestrator
+    participant Registry as ScriptRegistry
+    participant Logic as logic_modules
     participant DAL as DataAccessLayer
-    participant REG as ScriptRegistry
-    participant LOGIC as Logic Modules
 
-    API->>ORCH: POST /simulations/{id}/run_tick
+    Client->>ORCH: run_tick(sim_id)
     ORCH->>DAL: ensure_simulation / get_world_state
-    ORCH->>REG: generate_overrides
-    ORCH->>LOGIC: collect_tick_decisions + execute_tick_logic
-    LOGIC-->>ORCH: StateUpdateCommand 列表 + 日志
-    ORCH->>DAL: apply_updates & record_tick
-    ORCH-->>API: 返回新 Tick/Day 与日志摘要
+    ORCH->>ORCH: _require_agent_coverage
+    ORCH->>Registry: generate_overrides()
+    ORCH->>Logic: collect_tick_decisions()
+    Logic-->>ORCH: baseline+覆盖后的 StateUpdateCommand
+    ORCH->>DAL: apply_updates()
+    ORCH->>DAL: record_tick()
+    ORCH-->>Client: TickResult (世界状态 + 日志)
 ```
 
-## 4. 技术选型
+Tick 内的脚本执行路径：`ScriptRegistry` → 沙箱跑 `generate_decisions` → 返回覆盖 → orchestrator 合并 baseline fallback。任何脚本失败会录入 `record_script_failures` 并通过 notifier 告警。
 
-| 领域 | 技术/库 | 用途 |
-| ---- | ------- | ---- |
-| Web 框架 | FastAPI + Uvicorn | REST API 与 Web 界面 |
-| 数据持久化 | Redis (aioredis)、PostgreSQL (asyncpg) | 仿真状态 / 脚本仓库 |
-| 数据建模 | Pydantic v2 | 输入输出验证 |
-| 任务调度 | asyncio | 异步 IO 与批量 Tick |
-| 容器化 | Docker, docker-compose | 快速搭建开发环境 |
-| 测试 | Pytest + pytest-asyncio | 单元与集成测试 |
+## 5. 技术选型与约束
 
-阅读完本章后，建议继续查看 [数据与持久化](./2_DATA_AND_STORAGE.md)。
+| 领域 | 现用技术 | 说明 |
+| ---- | -------- | ---- |
+| Web 框架 | FastAPI + Uvicorn | 支持异步、类型提示、自动文档 |
+| 状态存储 | Redis (`aioredis`) | Tick 间状态、日志、参与者；默认内存模式便于测试 |
+| 脚本仓库 | PostgreSQL (`asyncpg`) | 脚本源码、版本、限额；无 DSN 时退化为内存 |
+| 建模 | Pydantic v2 | 统一输入 / 输出模型，支撑 API 与逻辑层 |
+| 并发 | asyncio | Tick 执行与脚本运行均在事件循环中完成 |
+| 测试 | Pytest + pytest-asyncio | 单元 + 集成测试，覆盖脚本、仿真、Web |
+| 容器 | Docker + docker-compose | 本地一键启动全栈服务 |
+
+约束与原则：
+- **模块解耦**：平台层不可直接触碰 Redis；仿真层依赖平台层时只能调用 `ScriptRegistry`（不反向依赖 API）。
+- **纯函数逻辑**：`logic_modules/` 禁止外部副作用，便于单元测试与未来替换模型。
+- **幂等播种**：所有播种脚本（如 `seed_test_world.py`）支持重复运行，确保教学环境随时可重置。
+
+下一步建议阅读 [数据与持久化](./2_DATA_AND_STORAGE.md)，了解表结构与 Redis 键空间。

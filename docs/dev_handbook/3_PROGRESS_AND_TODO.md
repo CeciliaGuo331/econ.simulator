@@ -1,63 +1,80 @@
 # 进度与待办
 
-本章记录当前交付成果、测试状态以及后续工作规划，便于新成员快速对齐开发脉络。
+本章汇总当前成果、质量基线与路线图，让新成员快速了解“平台层 ↔ 仿真世界”双层架构的推进节奏。
 
-## 1. 当前进展快照（截至 2025-10-05）
+## 1. 版本快照（截至 2025-10-08）
 
-### 1.1 核心功能
+### 1.1 平台层交付
 
-| 模块 | 状态 | 说明 |
-| ---- | ---- | ---- |
-| 仿真调度器 (`SimulationOrchestrator`) | ✅ 已上线 | 支持单 Tick、批量推进、仿真重置与删除 |
-| 数据访问层 (`DataAccessLayer`) | ✅ 已上线 | Redis 封装完善，覆盖参与者登记、Tick 日志、状态更新 |
-| 用户脚本引擎 | ✅ 已上线 | 支持 Python 脚本上传、沙箱执行、覆盖决策合并 |
-| 脚本持久化 (PostgreSQL) | ✅ 新增 | 支持脚本先入库后挂载、自动建表与索引 |
-| Web 仪表盘 | ✅ 已上线 | 仿真状态展示、脚本上传/挂载、管理员管理入口 |
-| 认证与授权 | ✅ 已上线 | 注册、登录、Token 校验、角色区分 |
-| Docker 化 | ✅ 已上线 | `docker-compose.yml` 启动 FastAPI + Postgres + Redis |
+| 模块 | 状态 | 与仿真世界的接口 |
+| ---- | ---- | ---------------- |
+| API (`econ_sim/api/`) | ✅ 稳定 | 通过 `SimulationOrchestrator`、`ScriptRegistry` 暴露仿真与脚本生命周期 |
+| Web (`econ_sim/web/`) | ✅ 稳定 | 使用 API + Redis 会话展示状态、触发脚本挂载 |
+| 认证 (`econ_sim/auth/`) | ✅ 稳定 | `UserManager` 维护令牌，供 API 层鉴权 |
+| 脚本引擎 (`econ_sim/script_engine/`) | ✅ 稳定 | 注册、沙箱执行脚本，向 orchestrator 返回 `StateUpdateCommand` |
+| 脚本持久化 (`postgres_store.py`) | ✅ 稳定 | PostgreSQL 表自愈、支持脚本限额与版本号 |
 
-### 1.2 自动化保障
+### 1.2 仿真世界交付
 
-| 项目 | 状态 | 备注 |
-| ---- | ---- | ---- |
-| `pytest` 覆盖 | ✅ 25 项全部通过 | 包含脚本生命周期、仿真流程、认证用例 |
-| 开发脚本 | ✅ `scripts/dev_start.sh` | 自动检测 Docker、加载 `config/dev.env` |
-| 文档 | ✅ README + 开发者手册 | 同步记录架构、数据、进度 |
+| 模块 | 状态 | 功能摘要 |
+| ---- | ---- | -------- |
+| `SimulationOrchestrator` | ✅ 稳定 | 创建/销毁仿真、推进 Tick/Day、协调脚本决策 |
+| `logic_modules/agent_logic.py` | ✅ 稳定 | 家户、企业、银行、央行、政府的决策钩子 |
+| `logic_modules/market_logic.py` | ✅ 稳定 | 暂支持单市场清算，预留扩展点 |
+| `logic_modules/shock_logic.py` | ✅ 稳定 | 家户冲击模型，可通过 API 控制 |
+| `DataAccessLayer` | ✅ 稳定 | Redis 世界状态、Tick 日志、参与者列表的唯一写入口 |
 
-## 2. 近期交付内容
+### 1.3 数据与基础设施
 
-| 主题 | 亮点 |
-| ---- | ---- |
-| 脚本库重构 | “先上传后挂载” 工作流、个人脚本库 API `/scripts`、仪表盘挂载入口 |
-| 数据持久化加强 | PostgreSQL schema 自愈、脚本解绑保留、Redis 操作统一封装 |
-| 文档体系 | README 扩展、`docs/dev_handbook/` 手册、Mermaid 数据图 |
-| 教学仿真播种与守护 | `seed_test_world.py` 一键播种 404 主体、Tick 前脚本覆盖校验、幂等测试用例 |
+| 项 | 状态 | 说明 |
+| -- | ---- | ---- |
+| 测试覆盖 | ✅ `pytest` 全通过 | 涵盖脚本生命周期、仿真流程、认证、数据访问 |
+| 开发脚本 | ✅ `scripts/dev_start.sh` | 自动拉起 Postgres + Redis + 应用 |
+| 文档体系 | ✅ `docs/dev_handbook` | 章节按照层次拆分，保持单一事实来源 |
+| Docker | ✅ `docker-compose.yml` | 应用 + Postgres + Redis 一体化启动 |
 
-## 3. 待办事项
+## 2. 近期成果
 
-### 3.1 高优先级（短期）
+- **脚本工作流**：个人脚本库 → 仿真挂载 → Tick 决策合并一体化；支持脚本限额与基线兜底。
+- **数据契约**：Redis 存储世界状态，PostgreSQL 持久化脚本及限额；接口使用 Pydantic 模型保证类型安全。
+- **启动播种**：应用启动自动播种管理员与基线主体，`seed_baseline_scripts.py` 实现幂等更新。
+- **文档重构**：架构、数据章节更新，帮助区分平台层与仿真层职责。
 
-1. **脚本执行资源控制**：限定 CPU/内存/执行时间，避免脚本阻塞事件循环，可结合 `asyncio.wait_for` 与受限线程池。
-2. **脚本版本比对与回滚**：补充版本 Diff / 历史列表 API，实现一键回滚。
-3. **API 速率限制**：对 `run_tick`、`/scripts` 等关键端点增加速率限制或配额。
+## 3. TODO
 
-### 3.2 中期规划
+- **每tick交易数据持久化**：当前仅在redis。
+- **每日 Tick 批处理**：在 orchestrator 中落地 “Day → n Tick” 规则，并暴露计划任务入口。
+- **日终脚本轮换**：设计 `ScriptRegistry` “继承状态”流程，支持日终替换后延续上下文。
+- **数据模型升级**：梳理交易流水、资产负债结构的模型演进路径，准备迁移脚本。
+- **LLM API封装**：封装api，提供安全的模型接口。限制调用次数。
+- **多仿真日程表**：允许管理员为多个仿真实例设置 Tick 日历，并结合脚本轮换窗口。
+- **策略版本对比与回滚**：在 API 中提供差异查看、回滚 API，配合 Web UI。
+- **市场扩展**：新增债券/劳动力市场逻辑，封装成独立模块并接入 orchestrator。
+- **经济模型演进**：引入政策规则引擎、学习型主体。
 
-1. **指标监控与告警**：暴露 Prometheus 指标（Tick 耗时、脚本异常计数），集成告警。
-2. **脚本多仿真复用体验**：支持脚本克隆、参数化挂载，Web UI 增加搜索筛选。
-3. **仿真快照导出**：`GET /simulations/{id}/snapshot` 导出 JSON/Parquet，方便离线分析。
-4. **权限模型扩展**：从“admin/非 admin”扩展到讲师/学生/访客等角色。
 
-### 3.3 长期展望
+## 4. 高优先级目标说明
 
-1. **弹性部署**：拆分 API 与 Worker 进程，引入消息队列处理长任务，支持多实例并行。
-2. **实时可视化**：使用 WebSocket 推送 Tick 日志、市场价格，实现前端实时仪表盘。
-3. **经济模型扩展**：引入更多市场、政策模块，丰富 `logic_modules/`。
+1. **每日 Tick 调度 & 日终脚本换代**
+	- 在 `SimulationOrchestrator` 引入 `run_day_plan(days: int, ticks_per_day: int)`。
+	- Day 结束触发 `ScriptRegistry.rotate_scripts(simulation_id, household_overrides)`，实现旧脚本卸载 + 新脚本挂载 + 状态迁移。
+	- API 层新增 `/simulations/{id}/schedule/day-run`（计划）用于后台任务触发；Web 增加日终策略上传入口。
+2. **交易与主体状态模型重构**
+	- 扩展 Redis `sim:{id}:state` 结构以容纳交易撮合、账户流水。
+	- PostgreSQL 引入 `simulation_limits` 之外的 `script_versions`、`agent_snapshots`（草案），与未来状态持久化路线保持一致。
+	- 更新数据同步策略：界定 `assign` / `delta` 的使用场景，准备写穿或双写方案。
+3. **运行期脚本安全护栏**
+	- 对 `ScriptRegistry` 执行增加 `asyncio.wait_for` 超时包装；对 CPU 密集任务引入受限线程池。
+	- 失败脚本记录增强：落表 + 详细报错。
 
-## 4. 协作建议
+## 5. 协作与知识同步
 
-- **代码审查重点**：跨层接口（尤其 `data_access` 与 `script_engine`）的改动需同步测试与文档。
-- **Issue 管理**：为“脚本资源限制”“监控告警”等议题拆分 Issue，便于跟踪。
-- **文档共建**：合并 PR 时更新本手册，保持知识同步。
+- **代码审查关注点**：凡触及 `SimulationOrchestrator ↔ DataAccessLayer ↔ ScriptRegistry` 的改动，必须附带接口契约更新与相关测试。
+- **Issue 管理**：将高优路线图中的三个子任务拆分 Issue，标记 `priority/high`，并在描述中链接对应文档章节。
+- **文档更新节奏**：交付涉及数据模型或 API 变更时，需同步修改第 2、4 章并在 PR 模板中注明。
+- **测试守则**：新增功能至少包含 1 个单元测试 + 1 个集成用例；涉及脚本执行需覆盖异常路径。
 
-如需扩展本清单，请直接修改本文件或在 PR 中留下说明。
+## 6. 更新指引
+
+- 使用 `docs/dev_handbook/` 作为单一事实来源，历史文档已废弃。
+- 若需扩展清单，可直接提交 PR 或在 Issue 中 @文档维护人。

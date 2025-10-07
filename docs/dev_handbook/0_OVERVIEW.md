@@ -1,33 +1,37 @@
 # 开发者手册概览
 
-> 读者定位：本手册面向刚接手 `econ.simulator` 项目的开发者，帮助你在最短时间内掌握系统架构、数据持久化方案、现有进度与后续工作。
+欢迎来到 `econ.simulator`。这是一套“平台 + 仿真世界”双层结构的教学用宏观经济沙盒：上层平台负责账户、脚本、可视化、运维，下层世界负责经济模型和 Tick 计算。本手册帮助你在接手后的前几个小时内建立完整的心智模型。
 
-## 文档结构
+## 如何阅读本手册
 
-| 文档 | 内容摘要 |
-| ---- | -------- |
-| [1_SYSTEM_ARCHITECTURE.md](./1_SYSTEM_ARCHITECTURE.md) | 代码模块划分、执行流程、依赖边界与关键技术栈 |
-| [2_DATA_AND_STORAGE.md](./2_DATA_AND_STORAGE.md) | Redis + PostgreSQL 的混合存储方案、脚本库设计、Mermaid 数据关系图 |
-| [3_PROGRESS_AND_TODO.md](./3_PROGRESS_AND_TODO.md) | 当前功能进展、质量状态、短期与中期 TODO 列表 |
-| [4_API_REFERENCE.md](./4_API_REFERENCE.md) | 外部 REST API 清单、脚本库操作流程、交互时序 |
-| [5_DEPLOYMENT.md](./5_DEPLOYMENT.md) | 本地开发、Docker Compose、生产部署与运维建议 |
-| [user_strategies/](../user_strategies/) | 面向不同用户角色的策略编写指南（含沙箱 API 与模板） |
+| 文档 | 你能在其中找到什么 |
+| ---- | -------------------- |
+| [1_SYSTEM_ARCHITECTURE.md](./1_SYSTEM_ARCHITECTURE.md) | 平台 vs 仿真世界的边界、关键模块、调用链、依赖关系图 |
+| [2_DATA_AND_STORAGE.md](./2_DATA_AND_STORAGE.md) | Redis/PostgreSQL 结构、脚本仓库设计、数据流、接口契约 |
+| [3_PROGRESS_AND_TODO.md](./3_PROGRESS_AND_TODO.md) | 近期交付、质量状态、正在推进的里程碑与下一阶段目标 |
+| [4_API_REFERENCE.md](./4_API_REFERENCE.md) | REST API 对照表、脚本工作流、典型请求/响应示例 |
+| [5_DEPLOYMENT.md](./5_DEPLOYMENT.md) | 本地/容器化部署、运维监控、告警策略、账号播种脚本 |
+| [../user_strategies/](../user_strategies/) | 面向各主体的策略指南、沙箱 API、代码模板 |
 
-你可以按顺序阅读，也可以按需跳转。建议阅读完架构和数据两篇后，再回到 README 和代码获取动手实践的上下文；API 参考用于查阅接口细节，部署章节则汇总运行环境配置。
+推荐流程：先阅读架构与数据章节，快速理解分层；然后结合 README 与代码动手实践；最后根据场景查阅 API、部署与策略指南。
 
-## 快速参考
+## 项目速览
 
-- **运行时栈**：FastAPI + Uvicorn、Redis（仿真状态）、PostgreSQL（脚本持久化）、前端模板基于 Jinja2。
-- **主要命令**：
-  - 启动开发环境：`bash scripts/dev_start.sh`
-  - 单元测试：`pytest`
-  - Docker 编排：`docker compose up -d`
-- **核心入口**：`econ_sim/main.py`（FastAPI 应用）、`econ_sim/core/orchestrator.py`（仿真调度器）。
+- **技术栈**：FastAPI + Uvicorn（服务 & Web）、Redis（世界状态）、PostgreSQL（脚本与配置）、Jinja2（后台界面）。
+- **核心入口**：
+  - `econ_sim/main.py` —— 创建 FastAPI 服务、挂载路由、播种教学仿真。
+  - `econ_sim/core/orchestrator.py` —— 仿真调度器，封装 Tick 生命周期、脚本执行、状态写回。
+  - `econ_sim/script_engine/` —— 脚本上传、存储、沙箱执行、覆盖策略。
+- **常用命令**：
+  - `bash scripts/dev_start.sh`：启动开发环境（含依赖服务）。
+  - `python scripts/seed_test_world.py --overwrite`：播种教学仿真 `test_world`。
+  - `pytest`：运行单元 / 集成测试。
+  - `docker compose up -d`：容器化启动 FastAPI + Redis + PostgreSQL。
 
-## 协作建议
+## 与团队协作
 
-1. **保持分层边界**：新增逻辑请尽量落在 `logic_modules/`，避免跨层依赖。
-2. **优先编写测试**：`tests/` 目录已经覆盖脚本引擎、仿真流程与认证逻辑，新增功能请补充最小化测试。
-3. **文档共建**：手册随代码演进同步更新，提 PR 时可附带相关文档调整。
+- 分层：平台逻辑（账户、脚本、API、监控）与仿真模型（Tick 逻辑、市场模块）保持解耦；新增业务要么走 API / Script Engine，要么在 `logic_modules/` 内实现。
+- 质量：每一次 PR 应附最小化测试（或更新现有测试），确保 `pytest` 完整通过。
+- 文档：手册即代码说明书，更新功能时请同步文档；若新增外部接口，请补充 [4_API_REFERENCE.md](./4_API_REFERENCE.md)。
 
-准备好了的话，让我们从 [系统架构](./1_SYSTEM_ARCHITECTURE.md) 开始。
+准备好以后，继续阅读 [系统架构](./1_SYSTEM_ARCHITECTURE.md)。
