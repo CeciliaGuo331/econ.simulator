@@ -19,13 +19,13 @@ from ..data_access.models import (
     WorldState,
 )
 from ..data_access.redis_client import DataAccessLayer, SimulationNotFoundError
+from ..core.fallback_manager import BaselineFallbackManager, FallbackExecutionError
 from ..logic_modules.agent_logic import collect_tick_decisions, merge_tick_overrides
 from ..logic_modules.market_logic import execute_tick_logic
 from ..logic_modules.shock_logic import (
     apply_household_shocks_for_decision,
     generate_household_shocks,
 )
-from ..strategies.base import StrategyBundle
 from ..utils.settings import get_world_config
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
@@ -86,6 +86,7 @@ class SimulationOrchestrator:
             AgentKind.GOVERNMENT,
             AgentKind.CENTRAL_BANK,
         )
+        self._fallback_manager = BaselineFallbackManager()
 
     async def create_simulation(self, simulation_id: str) -> WorldState:
         """确保指定 ID 的仿真实例存在。
@@ -256,7 +257,15 @@ class SimulationOrchestrator:
             shocks = generate_household_shocks(world_state, self.config)
             decision_state = apply_household_shocks_for_decision(world_state, shocks)
 
-        strategies = StrategyBundle(self.config, decision_state)
+        try:
+            baseline_decisions = self._fallback_manager.generate_decisions(
+                decision_state, self.config
+            )
+        except FallbackExecutionError as exc:
+            raise RuntimeError(
+                "Baseline fallback failed to produce required decisions"
+            ) from exc
+
         script_overrides, script_failure_logs = (
             await script_registry.generate_overrides(
                 simulation_id, decision_state, self.config
@@ -265,8 +274,7 @@ class SimulationOrchestrator:
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
         decisions = await asyncio.to_thread(
             collect_tick_decisions,
-            decision_state,
-            strategies,
+            baseline_decisions,
             combined_overrides,
         )
 

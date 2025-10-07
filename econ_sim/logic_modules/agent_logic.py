@@ -1,4 +1,4 @@
-"""基于内置策略汇总各类代理人决策的工具模块。"""
+"""Tools for merging baseline decisions with player overrides."""
 
 from __future__ import annotations
 
@@ -6,20 +6,18 @@ from typing import Dict, Optional
 
 from ..data_access.models import (
     BankDecision,
+    BankDecisionOverride,
     CentralBankDecision,
+    CentralBankDecisionOverride,
     FirmDecision,
+    FirmDecisionOverride,
     GovernmentDecision,
+    GovernmentDecisionOverride,
     HouseholdDecision,
     HouseholdDecisionOverride,
-    FirmDecisionOverride,
-    GovernmentDecisionOverride,
-    BankDecisionOverride,
-    CentralBankDecisionOverride,
     TickDecisionOverrides,
     TickDecisions,
-    WorldState,
 )
-from ..strategies.base import StrategyBundle
 
 
 def _apply_override(default_decision, override) -> object:
@@ -41,71 +39,43 @@ def _apply_override(default_decision, override) -> object:
 
 
 def collect_tick_decisions(
-    world_state: WorldState,
-    strategies: StrategyBundle,
+    baseline: TickDecisions,
     overrides: Optional[TickDecisionOverrides] = None,
 ) -> TickDecisions:
-    """为一个 Tick 汇总所有代理人的行动决策。
+    """Merge optional overrides onto baseline decisions."""
 
-    参数说明
-    -------
-    world_state:
-        当前世界状态快照，包含全部代理人的数据。
-    strategies:
-        预先构建的策略集合，用于生成各代理类型的默认决策。
-    overrides:
-        来自玩家或外部系统的可选覆盖，允许对默认决策做细粒度修改。
-    """
+    households: Dict[int, HouseholdDecision] = {
+        hid: decision.model_copy() for hid, decision in baseline.households.items()
+    }
+    firm: FirmDecision = baseline.firm.model_copy()
+    bank: BankDecision = baseline.bank.model_copy()
+    government: GovernmentDecision = baseline.government.model_copy()
+    central_bank: CentralBankDecision = baseline.central_bank.model_copy()
 
-    if (
-        world_state.firm is None
-        or world_state.bank is None
-        or world_state.government is None
-        or world_state.central_bank is None
-    ):
-        raise ValueError("缺少核心主体状态，无法生成 Tick 决策")
+    if overrides is not None:
+        for household_id, override in overrides.households.items():
+            target = households.get(household_id)
+            if target is None:
+                raise ValueError(
+                    f"Override provided for unknown household {household_id}"
+                )
+            households[household_id] = _apply_override(target, override)
 
-    public_data = world_state.get_public_market_data()
-
-    override_households = overrides.households if overrides else {}
-    household_decisions: Dict[int, HouseholdDecision] = {}
-    for household_id, household_state in world_state.households.items():
-        default = strategies.household_strategy(household_id).decide(
-            household_state, public_data
-        )
-        override = override_households.get(household_id)
-        household_decisions[household_id] = _apply_override(default, override)
-
-    default_firm = strategies.firm.decide(world_state.firm, world_state)
-    firm_override = overrides.firm if overrides else None
-    firm_decision: FirmDecision = _apply_override(default_firm, firm_override)
-
-    default_government = strategies.government.decide(
-        world_state.government, world_state.macro.unemployment_rate
-    )
-    government_override = overrides.government if overrides else None
-    government_decision: GovernmentDecision = _apply_override(
-        default_government, government_override
-    )
-
-    default_bank = strategies.bank.decide(world_state.bank, world_state.central_bank)
-    bank_override = overrides.bank if overrides else None
-    bank_decision: BankDecision = _apply_override(default_bank, bank_override)
-
-    default_central_bank = strategies.central_bank.decide(
-        world_state.central_bank, public_data
-    )
-    central_bank_override = overrides.central_bank if overrides else None
-    central_bank_decision: CentralBankDecision = _apply_override(
-        default_central_bank, central_bank_override
-    )
+        if overrides.firm is not None:
+            firm = _apply_override(firm, overrides.firm)
+        if overrides.bank is not None:
+            bank = _apply_override(bank, overrides.bank)
+        if overrides.government is not None:
+            government = _apply_override(government, overrides.government)
+        if overrides.central_bank is not None:
+            central_bank = _apply_override(central_bank, overrides.central_bank)
 
     return TickDecisions(
-        households=household_decisions,
-        firm=firm_decision,
-        bank=bank_decision,
-        government=government_decision,
-        central_bank=central_bank_decision,
+        households=households,
+        firm=firm,
+        bank=bank,
+        government=government,
+        central_bank=central_bank,
     )
 
 
