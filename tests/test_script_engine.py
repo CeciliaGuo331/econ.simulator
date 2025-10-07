@@ -1,14 +1,50 @@
 import pytest
 
 from econ_sim.core.orchestrator import SimulationOrchestrator
+from econ_sim.data_access.models import AgentKind
 from econ_sim.script_engine import ScriptRegistry, script_registry
 from econ_sim.script_engine.registry import ScriptExecutionError
 from econ_sim.utils.settings import get_world_config
 
 
+REQUIRED_AGENT_KINDS = (
+    AgentKind.HOUSEHOLD,
+    AgentKind.FIRM,
+    AgentKind.BANK,
+    AgentKind.GOVERNMENT,
+    AgentKind.CENTRAL_BANK,
+)
+
+BASELINE_STUB_SCRIPT = """
+def generate_decisions(context):
+    return {}
+"""
+
+
+async def _seed_required_scripts(
+    registry: ScriptRegistry,
+    simulation_id: str,
+    *,
+    skip: set[AgentKind] | None = None,
+) -> None:
+    skip_set = skip or set()
+    for kind in REQUIRED_AGENT_KINDS:
+        if kind in skip_set:
+            continue
+        await registry.register_script(
+            simulation_id=simulation_id,
+            user_id=f"seed-{kind.value}",
+            script_code=BASELINE_STUB_SCRIPT,
+            description=f"seed for {kind.value}",
+            agent_kind=kind,
+            entity_id=f"{kind.value}_seed",
+        )
+
+
 @pytest.mark.asyncio
 async def test_script_registry_generates_overrides() -> None:
     registry = ScriptRegistry()
+    await _seed_required_scripts(registry, "sim-a", skip={AgentKind.BANK})
     script_code = """
 def generate_decisions(context):
     macro = context["world_state"]["macro"]
@@ -20,6 +56,8 @@ def generate_decisions(context):
         user_id="u1",
         script_code=script_code,
         description="bank tweak",
+        agent_kind=AgentKind.BANK,
+        entity_id="bank_main",
     )
     assert metadata.script_id
     assert metadata.code_version
@@ -28,15 +66,20 @@ def generate_decisions(context):
     orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("sim-a")
 
-    overrides = await registry.generate_overrides("sim-a", world_state, config)
+    overrides, failure_logs = await registry.generate_overrides(
+        "sim-a", world_state, config
+    )
     assert overrides is not None
     assert overrides.bank is not None
     assert overrides.bank.deposit_rate >= 0.01
+    assert failure_logs == []
 
 
 @pytest.mark.asyncio
 async def test_script_overrides_affect_tick_execution() -> None:
     await script_registry.clear()
+
+    await _seed_required_scripts(script_registry, "shared-sim", skip={AgentKind.FIRM})
 
     await script_registry.register_script(
         simulation_id="shared-sim",
@@ -46,6 +89,8 @@ def generate_decisions(context):
     return {"firm": {"price": 15.0}}
 """,
         description="force firm price",
+        agent_kind=AgentKind.FIRM,
+        entity_id="firm_main",
     )
 
     orchestrator = SimulationOrchestrator()
@@ -67,6 +112,8 @@ def generate_decisions(context):
     return {"government": {"tax_rate": 0.12}}
 """,
         description="pending policy",
+        agent_kind=AgentKind.GOVERNMENT,
+        entity_id="gov_pending",
     )
 
     assert preloaded.simulation_id is None
@@ -76,12 +123,17 @@ def generate_decisions(context):
     )
     assert attached.simulation_id == "delayed-sim"
 
+    await _seed_required_scripts(registry, "delayed-sim", skip={AgentKind.GOVERNMENT})
+
     config = get_world_config()
     orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("delayed-sim")
-    overrides = await registry.generate_overrides("delayed-sim", world_state, config)
+    overrides, failure_logs = await registry.generate_overrides(
+        "delayed-sim", world_state, config
+    )
     assert overrides is not None
     assert overrides.government is not None
+    assert not failure_logs
 
 
 @pytest.mark.asyncio
@@ -96,6 +148,8 @@ def generate_decisions(context):
     return None
 """,
         description="noop script",
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="noop_household",
     )
 
     scripts = await script_registry.list_user_scripts("collector")
@@ -114,6 +168,8 @@ async def test_delete_script_by_id() -> None:
 def generate_decisions(context):
     return {}
 """,
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="cleanup_household",
     )
 
     assert await registry.delete_script_by_id(meta.script_id)
@@ -135,13 +191,16 @@ import os
 def generate_decisions(context):
     return {}
 """,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="danger_household",
         )
 
 
 @pytest.mark.asyncio
 async def test_script_timeout_is_reported() -> None:
     registry = ScriptRegistry(sandbox_timeout=0.1)
-    await registry.register_script(
+    await _seed_required_scripts(registry, "slow", skip={AgentKind.HOUSEHOLD})
+    meta = await registry.register_script(
         simulation_id="slow",
         user_id="u4",
         script_code="""
@@ -149,14 +208,24 @@ def generate_decisions(context):
     while True:
         pass
 """,
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="slow_actor",
     )
 
     config = get_world_config()
     orchestrator = SimulationOrchestrator()
     world_state = await orchestrator.create_simulation("slow")
 
-    with pytest.raises(ScriptExecutionError):
-        await registry.generate_overrides("slow", world_state, config)
+    overrides, failure_logs = await registry.generate_overrides(
+        "slow", world_state, config
+    )
+    assert overrides is None
+    assert len(failure_logs) == 1
+    assert meta.script_id in failure_logs[0].message
+
+    refreshed = await registry.get_user_script(meta.script_id, "u4")
+    assert refreshed.last_failure_reason is not None
+    assert refreshed.last_failure_at is not None
 
 
 @pytest.mark.asyncio
@@ -172,6 +241,8 @@ async def test_simulation_specific_limit_overrides_default() -> None:
 def generate_decisions(context):
     return {"firm": {"price": 9.0}}
 """,
+        agent_kind=AgentKind.FIRM,
+        entity_id="firm_primary",
     )
 
     with pytest.raises(ScriptExecutionError):
@@ -182,6 +253,8 @@ def generate_decisions(context):
 def generate_decisions(context):
     return {"firm": {"price": 8.5}}
 """,
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_secondary",
         )
 
     limit = await registry.get_simulation_limit("sim-override")
@@ -203,6 +276,8 @@ async def test_register_script_enforces_per_user_limit() -> None:
 def generate_decisions(context):
     return {"firm": {"price": 10.0}}
 """,
+        agent_kind=AgentKind.FIRM,
+        entity_id="firm_slot",
     )
 
     with pytest.raises(ScriptExecutionError):
@@ -213,6 +288,8 @@ def generate_decisions(context):
 def generate_decisions(context):
     return {"firm": {"price": 11.0}}
 """,
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_slot_extra",
         )
 
     scripts = await registry.list_scripts("limit-sim")
@@ -230,6 +307,8 @@ async def test_attach_script_respects_per_user_limit() -> None:
 def generate_decisions(context):
     return {"bank": {"deposit_rate": 0.02}}
 """,
+        agent_kind=AgentKind.BANK,
+        entity_id="bank_primary",
     )
 
     queued = await registry.register_script(
@@ -239,6 +318,8 @@ def generate_decisions(context):
 def generate_decisions(context):
     return {"bank": {"deposit_rate": 0.03}}
 """,
+        agent_kind=AgentKind.BANK,
+        entity_id="bank_queue",
     )
 
     assert primary.simulation_id == "attach-sim"

@@ -295,7 +295,7 @@ class TickLogEntry(BaseModel):
     tick: int
     day: int
     message: str
-    context: Dict[str, float | int] = Field(default_factory=dict)
+    context: Dict[str, float | int | str] = Field(default_factory=dict)
 
 
 class TickResult(BaseModel):

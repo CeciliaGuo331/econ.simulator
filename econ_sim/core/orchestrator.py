@@ -6,7 +6,7 @@ import asyncio
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 from ..data_access.models import (
     AgentKind,
@@ -53,6 +53,18 @@ class SimulationStateError(RuntimeError):
         self.tick = tick
 
 
+class MissingAgentScriptsError(RuntimeError):
+    """当核心主体缺少脚本绑定时抛出的异常。"""
+
+    def __init__(self, simulation_id: str, missing_agents: Iterable[AgentKind]) -> None:
+        missing_list = ", ".join(sorted(agent.value for agent in missing_agents))
+        super().__init__(
+            f"Simulation {simulation_id} is missing required scripts for: {missing_list}"
+        )
+        self.simulation_id = simulation_id
+        self.missing_agents = tuple(missing_agents)
+
+
 class SimulationOrchestrator:
     """仿真调度器，负责组织数据访问、决策生成与市场结算。"""
 
@@ -66,6 +78,13 @@ class SimulationOrchestrator:
         self.data_access = data_access or DataAccessLayer.with_default_store(config)
         self.config = self.data_access.config
         self._tick_logs: Dict[str, List[TickLogEntry]] = {}
+        self._required_agents: tuple[AgentKind, ...] = (
+            AgentKind.HOUSEHOLD,
+            AgentKind.FIRM,
+            AgentKind.BANK,
+            AgentKind.GOVERNMENT,
+            AgentKind.CENTRAL_BANK,
+        )
 
     async def create_simulation(self, simulation_id: str) -> WorldState:
         """确保指定 ID 的仿真实例存在。
@@ -94,6 +113,9 @@ class SimulationOrchestrator:
         user_id: str,
         script_code: str,
         description: Optional[str] = None,
+        *,
+        agent_kind: AgentKind,
+        entity_id: str,
     ) -> "ScriptMetadata":
         """在确保仿真处于 tick 0 的前提下上传并挂载脚本。"""
 
@@ -103,6 +125,8 @@ class SimulationOrchestrator:
             user_id=user_id,
             script_code=script_code,
             description=description,
+            agent_kind=agent_kind,
+            entity_id=entity_id,
         )
 
     async def set_script_limit(
@@ -192,6 +216,7 @@ class SimulationOrchestrator:
         计算状态更新，并最终写回数据存储，同时返回此次 Tick 的日志和更新详情。
         """
         world_state = await self.create_simulation(simulation_id)
+        await self._require_agent_coverage(simulation_id)
 
         shocks: Dict[int, HouseholdShock] = {}
         decision_state = world_state
@@ -200,8 +225,10 @@ class SimulationOrchestrator:
             decision_state = apply_household_shocks_for_decision(world_state, shocks)
 
         strategies = StrategyBundle(self.config, decision_state)
-        script_overrides = await script_registry.generate_overrides(
-            simulation_id, decision_state, self.config
+        script_overrides, script_failure_logs = (
+            await script_registry.generate_overrides(
+                simulation_id, decision_state, self.config
+            )
         )
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
         decisions = await asyncio.to_thread(
@@ -218,6 +245,9 @@ class SimulationOrchestrator:
             self.config,
             shocks,
         )
+
+        if script_failure_logs:
+            logs = script_failure_logs + logs
 
         if world_state.features.household_shock_enabled and shocks:
             updates.append(
@@ -382,6 +412,13 @@ class SimulationOrchestrator:
             "participants_removed": participants_removed,
             "scripts_detached": scripts_removed,
         }
+
+    async def _require_agent_coverage(self, simulation_id: str) -> None:
+        scripts = await script_registry.list_scripts(simulation_id)
+        present = {meta.agent_kind for meta in scripts}
+        missing = [agent for agent in self._required_agents if agent not in present]
+        if missing:
+            raise MissingAgentScriptsError(simulation_id, missing)
 
     async def _require_tick_zero(self, simulation_id: str) -> WorldState:
         """确保仿真实例仍处于 tick 0 状态，否则抛出异常。"""

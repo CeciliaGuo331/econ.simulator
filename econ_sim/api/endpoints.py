@@ -11,11 +11,13 @@ from pydantic import BaseModel, Field
 from ..auth import user_manager
 from ..auth.user_manager import UserProfile
 from ..core.orchestrator import (
+    MissingAgentScriptsError,
     SimulationNotFoundError,
     SimulationOrchestrator,
     SimulationStateError,
 )
 from ..data_access.models import (
+    AgentKind,
     HouseholdState,
     TickDecisionOverrides,
     TickLogEntry,
@@ -124,6 +126,8 @@ class ScriptUploadRequest(BaseModel):
     user_id: Optional[str] = None
     code: str
     description: Optional[str] = None
+    agent_kind: AgentKind
+    entity_id: str
 
 
 class ScriptUploadResponse(BaseModel):
@@ -133,6 +137,8 @@ class ScriptUploadResponse(BaseModel):
     code_version: str
     simulation_id: Optional[str] = None
     message: str
+    agent_kind: AgentKind
+    entity_id: str
 
 
 class ScriptAttachRequest(BaseModel):
@@ -283,6 +289,11 @@ async def run_tick(
     overrides = payload.decisions if payload and payload.decisions else None
     try:
         result = await _orchestrator.run_tick(simulation_id, overrides=overrides)
+    except MissingAgentScriptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -307,6 +318,11 @@ async def run_days(
         result = await _orchestrator.run_until_day(simulation_id, payload.days)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except MissingAgentScriptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
     except RuntimeError as exc:  # pragma: no cover - defensive guard
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -516,6 +532,8 @@ async def upload_user_script(
             user_id=user.email,
             script_code=payload.code,
             description=payload.description,
+            agent_kind=payload.agent_kind,
+            entity_id=payload.entity_id,
         )
     except ScriptExecutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -525,6 +543,8 @@ async def upload_user_script(
         code_version=metadata.code_version,
         simulation_id=metadata.simulation_id,
         message="Script uploaded. Attach to a simulation when ready.",
+        agent_kind=metadata.agent_kind,
+        entity_id=metadata.entity_id,
     )
 
 
@@ -558,6 +578,8 @@ async def upload_script(
             user_id=user.email,
             script_code=payload.code,
             description=payload.description,
+            agent_kind=payload.agent_kind,
+            entity_id=payload.entity_id,
         )
         await _orchestrator.register_participant(simulation_id, user.email)
     except SimulationStateError as exc:
@@ -578,6 +600,8 @@ async def upload_script(
         code_version=metadata.code_version,
         simulation_id=metadata.simulation_id,
         message="Script registered successfully.",
+        agent_kind=metadata.agent_kind,
+        entity_id=metadata.entity_id,
     )
 
 
@@ -622,6 +646,8 @@ async def attach_script(
         code_version=metadata.code_version,
         simulation_id=metadata.simulation_id,
         message="Script attached successfully.",
+        agent_kind=metadata.agent_kind,
+        entity_id=metadata.entity_id,
     )
 
 

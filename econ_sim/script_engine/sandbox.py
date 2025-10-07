@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import multiprocessing
+import sys
 import traceback
 from multiprocessing.connection import Connection
 from types import MappingProxyType
@@ -77,7 +78,16 @@ class ScriptSandboxTimeout(ScriptSandboxError):
     """脚本执行超时。"""
 
 
-_CTX = multiprocessing.get_context("spawn")
+def _select_context():
+    if sys.platform != "win32":
+        try:
+            return multiprocessing.get_context("fork")
+        except ValueError:  # pragma: no cover - 平台不支持 fork
+            pass
+    return multiprocessing.get_context("spawn")
+
+
+_CTX = _select_context()
 
 
 def execute_script(

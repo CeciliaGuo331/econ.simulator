@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from ..data_access.models import AgentKind
 from .registry import ScriptExecutionError, ScriptMetadata, ScriptRegistry
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,8 @@ class BaselineScriptDefinition:
     user_id: str
     filename: str
     description: str
+    agent_kind: AgentKind
+    entity_id: str
 
     @property
     def path(self) -> Path:
@@ -30,26 +33,36 @@ BASELINE_DEFINITIONS: Sequence[BaselineScriptDefinition] = (
         user_id="baseline.household@econ.sim",
         filename="household_baseline.py",
         description="[baseline] Household reference strategy",
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="baseline_household",
     ),
     BaselineScriptDefinition(
         user_id="baseline.firm@econ.sim",
         filename="firm_baseline.py",
         description="[baseline] Firm reference strategy",
+        agent_kind=AgentKind.FIRM,
+        entity_id="baseline_firm",
     ),
     BaselineScriptDefinition(
         user_id="baseline.bank@econ.sim",
         filename="bank_baseline.py",
         description="[baseline] Commercial bank reference strategy",
+        agent_kind=AgentKind.BANK,
+        entity_id="baseline_bank",
     ),
     BaselineScriptDefinition(
         user_id="baseline.central_bank@econ.sim",
         filename="central_bank_baseline.py",
         description="[baseline] Central bank reference strategy",
+        agent_kind=AgentKind.CENTRAL_BANK,
+        entity_id="baseline_central_bank",
     ),
     BaselineScriptDefinition(
         user_id="baseline.government@econ.sim",
         filename="government_baseline.py",
         description="[baseline] Government reference strategy",
+        agent_kind=AgentKind.GOVERNMENT,
+        entity_id="baseline_government",
     ),
 )
 
@@ -124,7 +137,12 @@ async def ensure_baseline_scripts(
                 )
             existing: List[ScriptMetadata] = []
         else:
-            existing = await registry.list_user_scripts(user_id)
+            existing = [
+                script
+                for script in await registry.list_user_scripts(user_id)
+                if script.agent_kind == definition.agent_kind
+                and script.entity_id == definition.entity_id
+            ]
 
         if not existing:
             try:
@@ -145,6 +163,8 @@ async def ensure_baseline_scripts(
                     user_id=user_id,
                     script_code=code,
                     description=definition.description,
+                    agent_kind=definition.agent_kind,
+                    entity_id=definition.entity_id,
                 )
             except ScriptExecutionError as exc:
                 message = f"Failed to register baseline script for {user_id}: {exc}"

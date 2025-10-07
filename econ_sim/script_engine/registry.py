@@ -19,7 +19,12 @@ from typing import (
 )
 from pydantic import BaseModel, ValidationError
 
-from ..data_access.models import TickDecisionOverrides, WorldState
+from ..data_access.models import (
+    AgentKind,
+    TickDecisionOverrides,
+    TickLogEntry,
+    WorldState,
+)
 from ..logic_modules.agent_logic import merge_tick_overrides
 from ..utils.settings import WorldConfig
 from .sandbox import (
@@ -50,6 +55,10 @@ class ScriptMetadata(BaseModel):
     description: Optional[str] = None
     created_at: datetime
     code_version: str
+    agent_kind: AgentKind
+    entity_id: str
+    last_failure_at: Optional[datetime] = None
+    last_failure_reason: Optional[str] = None
 
 
 @dataclass
@@ -81,6 +90,13 @@ class ScriptStore(Protocol):
 
     async def clear(self) -> None: ...
 
+    async def update_failure_status(
+        self,
+        script_id: str,
+        failure_at: Optional[datetime],
+        failure_reason: Optional[str],
+    ) -> None: ...
+
 
 class SimulationLimitStore(Protocol):
     async def set_script_limit(self, simulation_id: str, limit: int) -> None: ...
@@ -107,6 +123,7 @@ class ScriptRegistry:
         self._records: Dict[str, _ScriptRecord] = {}
         self._simulation_index: Dict[str, Set[str]] = {}
         self._user_index: Dict[str, Set[str]] = {}
+        self._entity_index: Dict[tuple[str, AgentKind, str], str] = {}
         self._loaded_simulations: Set[str] = set()
         self._loaded_users: Set[str] = set()
         self._load_lock = asyncio.Lock()
@@ -199,6 +216,14 @@ class ScriptRegistry:
                     sim_bucket.discard(script_id)
                     if not sim_bucket:
                         self._simulation_index.pop(old_meta.simulation_id, None)
+                entity_key = (
+                    old_meta.simulation_id,
+                    old_meta.agent_kind,
+                    str(old_meta.entity_id),
+                )
+                bound = self._entity_index.get(entity_key)
+                if bound == script_id:
+                    self._entity_index.pop(entity_key, None)
 
         if new_meta is not None:
             self._user_index.setdefault(new_meta.user_id, set()).add(script_id)
@@ -206,6 +231,12 @@ class ScriptRegistry:
                 self._simulation_index.setdefault(new_meta.simulation_id, set()).add(
                     script_id
                 )
+                entity_key = (
+                    new_meta.simulation_id,
+                    new_meta.agent_kind,
+                    str(new_meta.entity_id),
+                )
+                self._entity_index[entity_key] = script_id
 
     async def _ingest_stored_scripts(
         self, stored_scripts: Iterable["StoredScript"]
@@ -334,15 +365,42 @@ class ScriptRegistry:
             f"{user_id} 在仿真实例 {simulation_id} 中最多允许 {limit} 个脚本"
         )
 
+    @staticmethod
+    def _normalize_entity_id(entity_id: str) -> str:
+        normalized = str(entity_id).strip()
+        if not normalized:
+            raise ScriptExecutionError("entity_id must not be empty")
+        return normalized
+
+    def _ensure_entity_available_unlocked(
+        self,
+        simulation_id: str,
+        agent_kind: AgentKind,
+        entity_id: str,
+        *,
+        ignore_script_id: Optional[str] = None,
+    ) -> None:
+        key = (simulation_id, agent_kind, entity_id)
+        existing = self._entity_index.get(key)
+        if existing is not None and existing != ignore_script_id:
+            raise ScriptExecutionError(
+                "指定实体已绑定其他脚本："
+                f"simulation={simulation_id}, agent_kind={agent_kind.value}, entity_id={entity_id}"
+            )
+
     async def register_script(
         self,
         simulation_id: Optional[str],
         user_id: str,
         script_code: str,
         description: Optional[str] = None,
+        *,
+        agent_kind: AgentKind,
+        entity_id: str,
     ) -> ScriptMetadata:
         """编译并注册脚本，使其在后续 Tick 中参与决策。"""
 
+        entity_id = self._normalize_entity_id(entity_id)
         self._validate_script(script_code)
 
         if simulation_id is not None:
@@ -355,6 +413,8 @@ class ScriptRegistry:
             description=description,
             created_at=datetime.now(timezone.utc),
             code_version=str(uuid.uuid4()),
+            agent_kind=agent_kind,
+            entity_id=entity_id,
         )
 
         if self._store is not None:
@@ -373,6 +433,9 @@ class ScriptRegistry:
                         simulation_id, user_id, limit
                     )
                 else:
+                    self._ensure_entity_available_unlocked(
+                        simulation_id, agent_kind, entity_id
+                    )
                     self._records[metadata.script_id] = _ScriptRecord(
                         metadata=metadata,
                         code=script_code,
@@ -473,6 +536,13 @@ class ScriptRegistry:
                 raise ScriptExecutionError(
                     self._format_limit_message(simulation_id, user_id, limit)
                 )
+
+            self._ensure_entity_available_unlocked(
+                simulation_id,
+                record.metadata.agent_kind,
+                record.metadata.entity_id,
+                ignore_script_id=script_id,
+            )
 
             if self._store is not None:
                 try:
@@ -706,8 +776,8 @@ class ScriptRegistry:
         simulation_id: str,
         world_state: WorldState,
         config: WorldConfig,
-    ) -> Optional[TickDecisionOverrides]:
-        """依次执行所有脚本，并合并生成的决策覆盖。"""
+    ) -> tuple[Optional[TickDecisionOverrides], List[TickLogEntry]]:
+        """依次执行所有脚本，并合并生成的决策覆盖与失败日志。"""
 
         await self._ensure_simulation_loaded(simulation_id)
         async with self._registry_lock:
@@ -719,16 +789,80 @@ class ScriptRegistry:
             ]
 
         if not records:
-            return None
+            return None, []
 
         records.sort(key=lambda record: record.metadata.created_at)
 
         combined: Optional[TickDecisionOverrides] = None
-        for record in records:
-            overrides = self._execute_script(record, world_state, config)
-            combined = merge_tick_overrides(combined, overrides)
+        failure_logs: List[TickLogEntry] = []
+        status_updates: List[tuple[str, Optional[datetime], Optional[str]]] = []
 
-        return combined
+        for record in records:
+            try:
+                overrides = self._execute_script(record, world_state, config)
+            except ScriptExecutionError as exc:
+                logger.error(
+                    "Script %s failed during tick %s: %s",
+                    record.metadata.script_id,
+                    world_state.tick,
+                    exc,
+                )
+                timestamp = datetime.now(timezone.utc)
+                failure_logs.append(
+                    TickLogEntry(
+                        tick=world_state.tick,
+                        day=world_state.day,
+                        message=(f"脚本执行失败: {record.metadata.script_id}"),
+                        context={
+                            "agent_kind": record.metadata.agent_kind.value,
+                            "entity_id": record.metadata.entity_id,
+                        },
+                    )
+                )
+                status_updates.append(
+                    (
+                        record.metadata.script_id,
+                        timestamp,
+                        str(exc),
+                    )
+                )
+                continue
+
+            combined = merge_tick_overrides(combined, overrides)
+            if (
+                record.metadata.last_failure_at is not None
+                or record.metadata.last_failure_reason is not None
+            ):
+                status_updates.append((record.metadata.script_id, None, None))
+
+        if status_updates:
+            async with self._registry_lock:
+                for script_id, failure_at, failure_reason in status_updates:
+                    record = self._records.get(script_id)
+                    if record is None:
+                        continue
+                    updated_meta = record.metadata.model_copy(
+                        update={
+                            "last_failure_at": failure_at,
+                            "last_failure_reason": failure_reason,
+                        }
+                    )
+                    record.metadata = updated_meta
+                    # entity/user indexes remain unchanged
+
+        if status_updates and self._store is not None:
+            for script_id, failure_at, failure_reason in status_updates:
+                try:
+                    await self._store.update_failure_status(
+                        script_id, failure_at, failure_reason
+                    )
+                except Exception:  # pragma: no cover - best effort persistence
+                    logger.exception(
+                        "Failed to persist failure status for script %s",
+                        script_id,
+                    )
+
+        return combined, failure_logs
 
     def _execute_script(
         self,
