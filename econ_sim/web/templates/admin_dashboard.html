@@ -258,74 +258,74 @@
                     <div class="state-block">
                         <h4>仿真进度</h4>
                         {{ render_table([
-                            ("仿真实例", world.simulation_id),
-                            ("当前 Tick", world.tick, True),
-                            ("当前日", world.day, True),
-                            ("家户数量", world.households | length, True),
-                            ("冲击条目", world.household_shocks | length if world.household_shocks is defined else 0, True)
+                                                ("仿真实例", world.simulation_id) ,
+                        ("当前 Tick", world.tick, True),
+                        ("当前日", world.day, True),
+                        ("家户数量", world.households | length, True),
+                        ("冲击条目", world.household_shocks | length if world.household_shocks is defined else 0, True)
                         ]) }}
                     </div>
                     <div class="state-block">
                         <h4>宏观指标</h4>
                         {{ render_table([
-                            ("GDP", world.macro.gdp if world.macro is defined else None),
-                            ("通胀率", world.macro.inflation if world.macro is defined else None),
-                            ("失业率", world.macro.unemployment_rate if world.macro is defined else None),
-                            ("物价指数", world.macro.price_index if world.macro is defined else None),
-                            ("工资指数", world.macro.wage_index if world.macro is defined else None)
+                                                ("GDP", world.macro.gdp if world.macro is defined else None) ,
+                        ("通胀率", world.macro.inflation if world.macro is defined else None),
+                        ("失业率", world.macro.unemployment_rate if world.macro is defined else None),
+                        ("物价指数", world.macro.price_index if world.macro is defined else None),
+                        ("工资指数", world.macro.wage_index if world.macro is defined else None)
                         ]) }}
                     </div>
                     <div class="state-block">
                         <h4>企业主体</h4>
                         {{ render_table([
-                            ("产品价格", world.firm.price if world.firm is defined else None),
-                            ("计划产出", world.firm.planned_production if world.firm is defined else None),
-                            ("工资报价", world.firm.wage_offer if world.firm is defined else None),
-                            ("雇员数量", world.firm.employees | length if world.firm is defined else 0, True),
-                            ("库存", world.firm.balance_sheet.inventory_goods if world.firm is defined else None),
-                            ("现金", world.firm.balance_sheet.cash if world.firm is defined else None),
-                            ("存款", world.firm.balance_sheet.deposits if world.firm is defined else None),
-                            ("贷款", world.firm.balance_sheet.loans if world.firm is defined else None)
+                                                ("产品价格", world.firm.price if world.firm is defined else None) ,
+                        ("计划产出", world.firm.planned_production if world.firm is defined else None),
+                        ("工资报价", world.firm.wage_offer if world.firm is defined else None),
+                        ("雇员数量", world.firm.employees | length if world.firm is defined else 0, True),
+                        ("库存", world.firm.balance_sheet.inventory_goods if world.firm is defined else None),
+                        ("现金", world.firm.balance_sheet.cash if world.firm is defined else None),
+                        ("存款", world.firm.balance_sheet.deposits if world.firm is defined else None),
+                        ("贷款", world.firm.balance_sheet.loans if world.firm is defined else None)
                         ]) }}
                     </div>
                     <div class="state-block">
                         <h4>商业银行</h4>
                         {{ render_table([
-                            ("存款利率", world.bank.deposit_rate if world.bank is defined else None),
-                            ("贷款利率", world.bank.loan_rate if world.bank is defined else None),
-                            ("发放贷款数", world.bank.approved_loans | length if world.bank is defined else 0, True),
-                            ("现金", world.bank.balance_sheet.cash if world.bank is defined else None),
-                            ("存款", world.bank.balance_sheet.deposits if world.bank is defined else None),
-                            ("贷款", world.bank.balance_sheet.loans if world.bank is defined else None)
+                                                ("存款利率", world.bank.deposit_rate if world.bank is defined else None) ,
+                        ("贷款利率", world.bank.loan_rate if world.bank is defined else None),
+                        ("发放贷款数", world.bank.approved_loans | length if world.bank is defined else 0, True),
+                        ("现金", world.bank.balance_sheet.cash if world.bank is defined else None),
+                        ("存款", world.bank.balance_sheet.deposits if world.bank is defined else None),
+                        ("贷款", world.bank.balance_sheet.loans if world.bank is defined else None)
                         ]) }}
                     </div>
                     <div class="state-block">
                         <h4>政府部门</h4>
                         {{ render_table([
-                            ("税率", world.government.tax_rate if world.government is defined else None),
-                            ("失业补贴", world.government.unemployment_benefit if world.government is defined else None),
-                            ("财政支出", world.government.spending if world.government is defined else None),
-                            ("雇员数量", world.government.employees | length if world.government is defined else 0, True),
-                            ("现金", world.government.balance_sheet.cash if world.government is defined else None),
-                            ("存款", world.government.balance_sheet.deposits if world.government is defined else None)
+                                                ("税率", world.government.tax_rate if world.government is defined else None) ,
+                        ("失业补贴", world.government.unemployment_benefit if world.government is defined else None),
+                        ("财政支出", world.government.spending if world.government is defined else None),
+                        ("雇员数量", world.government.employees | length if world.government is defined else 0, True),
+                        ("现金", world.government.balance_sheet.cash if world.government is defined else None),
+                        ("存款", world.government.balance_sheet.deposits if world.government is defined else None)
                         ]) }}
                     </div>
                     <div class="state-block">
                         <h4>中央银行</h4>
                         {{ render_table([
-                            ("基准利率", world.central_bank.base_rate if world.central_bank is defined else None),
-                            ("准备金率", world.central_bank.reserve_ratio if world.central_bank is defined else None),
-                            ("通胀目标", world.central_bank.inflation_target if world.central_bank is defined else None),
-                            ("失业目标", world.central_bank.unemployment_target if world.central_bank is defined else None)
+                                                ("基准利率", world.central_bank.base_rate if world.central_bank is defined else None) ,
+                        ("准备金率", world.central_bank.reserve_ratio if world.central_bank is defined else None),
+                        ("通胀目标", world.central_bank.inflation_target if world.central_bank is defined else None),
+                        ("失业目标", world.central_bank.unemployment_target if world.central_bank is defined else None)
                         ]) }}
                     </div>
                     <div class="state-block">
                         <h4>脚本功能开关</h4>
                         {{ render_table([
-                            ("家户冲击启用", world.features.household_shock_enabled if world.features is defined else None),
-                            ("能力冲击标准差", world.features.household_shock_ability_std if world.features is defined else None),
-                            ("资产冲击标准差", world.features.household_shock_asset_std if world.features is defined else None),
-                            ("冲击上限", world.features.household_shock_max_fraction if world.features is defined else None)
+                                                ("家户冲击启用", world.features.household_shock_enabled if world.features is defined else None) ,
+                        ("能力冲击标准差", world.features.household_shock_ability_std if world.features is defined else None),
+                        ("资产冲击标准差", world.features.household_shock_asset_std if world.features is defined else None),
+                        ("冲击上限", world.features.household_shock_max_fraction if world.features is defined else None)
                         ]) }}
                     </div>
                     <div class="state-block">

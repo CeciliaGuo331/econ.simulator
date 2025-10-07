@@ -140,18 +140,18 @@
                             <div class="state-block">
                                 <h4>世界概览</h4>
                                 {{ render_table([
-                                    ("当前 Tick", world_view.tick if world_view.tick is defined else None, True),
-                                    ("当前日", world_view.day if world_view.day is defined else None, True),
-                                    ("家户数量", world_view.households | length if world_view.households is defined else 0, True)
+                                                                ("当前 Tick", world_view.tick if world_view.tick is defined else None, True) ,
+                                ("当前日", world_view.day if world_view.day is defined else None, True),
+                                ("家户数量", world_view.households | length if world_view.households is defined else 0, True)
                                 ]) }}
                             </div>
                             {% if world_view.macro is defined %}
                                 <div class="state-block">
                                     <h4>宏观指标</h4>
                                     {{ render_table([
-                                        ("GDP", world_view.macro.gdp),
-                                        ("通胀率", world_view.macro.inflation),
-                                        ("失业率", world_view.macro.unemployment_rate)
+                                                                        ("GDP", world_view.macro.gdp) ,
+                                    ("通胀率", world_view.macro.inflation),
+                                    ("失业率", world_view.macro.unemployment_rate)
                                     ]) }}
                                 </div>
                             {% endif %}
