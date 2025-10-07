@@ -297,21 +297,45 @@ async def dashboard(
     household_counts_by_sim: Dict[str, int] = {}
     user_profiles: List[Any] = []
     user_type_index: Dict[str, str] = {}
+    scripts_by_user: Dict[str, List] = {}
+    scripts_by_sim: Dict[str, List] = {}
+    script_counts_by_sim_user: Dict[str, Dict[str, int]] = {}
+    all_scripts: List = []
     if allow_create:
         user_profiles = await user_manager.list_users()
         user_type_index = {
             profile.email.lower(): profile.user_type for profile in user_profiles
         }
+        all_scripts = await script_registry.list_all_scripts()
+        for metadata in all_scripts:
+            scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
+            sim_id = metadata.simulation_id
+            if sim_id:
+                bucket = scripts_by_sim.setdefault(sim_id, [])
+                bucket.append(metadata)
+                counts = script_counts_by_sim_user.setdefault(sim_id, {})
+                user_key = metadata.user_id.lower()
+                if user_type_index.get(user_key, "") == "individual":
+                    counts[user_key] = counts.get(user_key, 0) + 1
         for sid in all_simulations:
             try:
                 participants = await _orchestrator.list_participants(sid)
             except SimulationNotFoundError:
                 participants = []
-            household_counts_by_sim[sid] = sum(
-                1
+            participant_households = {
+                participant.lower()
                 for participant in participants
                 if user_type_index.get(participant.lower(), "") == "individual"
-            )
+            }
+            script_counts = script_counts_by_sim_user.get(sid, {})
+            household_total = 0
+            for household in participant_households:
+                script_total = script_counts.get(household, 0)
+                household_total += script_total if script_total > 0 else 1
+            for household, script_total in script_counts.items():
+                if household not in participant_households:
+                    household_total += script_total
+            household_counts_by_sim[sid] = household_total
 
     if not allow_create:
         user_scripts = await script_registry.list_user_scripts(user["email"])
@@ -389,10 +413,6 @@ async def dashboard(
         )
 
     if allow_create and not simulation_id:
-        all_scripts = await script_registry.list_all_scripts()
-        scripts_by_user: Dict[str, List] = {}
-        for metadata in all_scripts:
-            scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
         script_counts = {email: len(items) for email, items in scripts_by_user.items()}
         all_users = [
             {
@@ -506,15 +526,10 @@ async def dashboard(
     if allow_create and simulation_id:
         features_by_sim[simulation_id] = features_for_view
     all_users: List[Dict[str, Any]] = []
-    all_scripts = []
-    scripts_by_user: Dict[str, List] = {}
 
     if allow_create:
         template_name = "admin_dashboard.html"
         context["world"] = world_state
-        all_scripts = await script_registry.list_all_scripts()
-        for metadata in all_scripts:
-            scripts_by_user.setdefault(metadata.user_id, []).append(metadata)
         script_counts = {email: len(items) for email, items in scripts_by_user.items()}
         all_users = [
             {

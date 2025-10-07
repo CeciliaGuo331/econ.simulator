@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from econ_sim.main import app
 from econ_sim.web import views
 from econ_sim.script_engine import script_registry
+from econ_sim.script_engine.registry import ScriptMetadata
 from econ_sim.core.orchestrator import SimulationNotFoundError
 
 
@@ -456,6 +457,277 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
         assert re.search(r'class="household-count"[^>]*>\s*1\s*户', response.text)
     finally:
         _clear_override()
+
+
+def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
+    admin_user = {"email": "admin@example.com", "user_type": "admin"}
+    _override_user(admin_user)
+
+    base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    script_meta_one = ScriptMetadata(
+        script_id="script-1",
+        simulation_id="sim-main",
+        user_id="household@example.com",
+        description=None,
+        created_at=base_time,
+        code_version="v1",
+    )
+    script_meta_two = ScriptMetadata(
+        script_id="script-2",
+        simulation_id="sim-main",
+        user_id="household@example.com",
+        description=None,
+        created_at=base_time,
+        code_version="v2",
+    )
+
+    class DummyFeatures:
+        def model_dump(self, mode: str = "json"):
+            return {"household_shock_enabled": False}
+
+    class DummyWorldState:
+        def model_dump(self, mode: str = "json"):
+            return {
+                "tick": 0,
+                "day": 0,
+                "world": {},
+                "features": {"household_shock_enabled": False},
+            }
+
+    class DummyOrchestrator:
+        async def list_simulations(self):
+            return ["sim-main"]
+
+        async def get_simulation_features(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return DummyFeatures()
+
+        async def list_participants(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return []
+
+        async def get_state(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return DummyWorldState()
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+
+    async def fake_list_users():
+        return [
+            SimpleNamespace(
+                email="household@example.com",
+                created_at=base_time,
+                user_type="individual",
+            )
+        ]
+
+    async def fake_list_all_scripts():
+        return [script_meta_one, script_meta_two]
+
+    async def fake_list_scripts(simulation_id):
+        assert simulation_id == "sim-main"
+        return [script_meta_one, script_meta_two]
+
+    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
+    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
+    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+
+    try:
+        response = client.get("/web/dashboard?simulation_id=sim-main")
+        assert response.status_code == 200
+        assert re.search(r'class="household-count"[^>]*>\s*2\s*户', response.text)
+    finally:
+        _clear_override()
+
+
+def test_attach_script_registers_participant(client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+
+    async def _setup() -> ScriptMetadata:
+        await views._orchestrator.create_simulation("sim-attach")
+        return await script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+
+    metadata = asyncio.run(_setup())
+
+    try:
+        response = client.post(
+            "/web/scripts/attach",
+            data={
+                "simulation_id": "sim-attach",
+                "script_id": metadata.script_id,
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        meta_after = asyncio.run(
+            script_registry.get_user_script(metadata.script_id, user["email"])
+        )
+        assert meta_after.simulation_id == "sim-attach"
+        participants = asyncio.run(views._orchestrator.list_participants("sim-attach"))
+        assert user["email"] in participants
+    finally:
+        _clear_override()
+
+        async def _cleanup() -> None:
+            await script_registry.clear()
+            try:
+                await views._orchestrator.data_access.delete_simulation("sim-attach")
+            except Exception:
+                pass
+
+        asyncio.run(_cleanup())
+
+
+def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
+    admin_user = {"email": "admin@example.com", "user_type": "admin"}
+    _override_user(admin_user)
+
+    base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    script_meta = ScriptMetadata(
+        script_id="script-visible",
+        simulation_id="sim-main",
+        user_id="household@example.com",
+        description="demo script",
+        created_at=base_time,
+        code_version="v1",
+    )
+
+    class DummyFeatures:
+        def model_dump(self, mode: str = "json"):
+            return {"household_shock_enabled": False}
+
+    class DummyWorldState:
+        def model_dump(self, mode: str = "json"):
+            return {
+                "tick": 0,
+                "day": 0,
+                "world": {},
+                "features": {"household_shock_enabled": False},
+            }
+
+    class DummyOrchestrator:
+        async def list_simulations(self):
+            return ["sim-main"]
+
+        async def get_simulation_features(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return DummyFeatures()
+
+        async def list_participants(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return []
+
+        async def get_state(self, simulation_id):
+            assert simulation_id == "sim-main"
+            return DummyWorldState()
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+
+    async def fake_list_users():
+        return [
+            SimpleNamespace(
+                email="household@example.com",
+                created_at=base_time,
+                user_type="individual",
+            )
+        ]
+
+    async def fake_list_all_scripts():
+        return [script_meta]
+
+    async def fake_list_scripts(simulation_id):
+        assert simulation_id == "sim-main"
+        return [script_meta]
+
+    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
+    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
+    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+
+    try:
+        response = client.get("/web/dashboard?simulation_id=sim-main")
+        assert response.status_code == 200
+        assert "script-visible" in response.text
+        assert "暂时没有上传脚本" not in response.text
+    finally:
+        _clear_override()
+
+
+def test_attach_script_respects_limit(client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    asyncio.run(script_registry.clear())
+
+    async def _setup() -> tuple[ScriptMetadata, ScriptMetadata]:
+        await views._orchestrator.create_simulation("sim-limit-attach")
+        await script_registry.set_simulation_limit("sim-limit-attach", 1)
+        first = await script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+        second = await script_registry.register_script(
+            simulation_id=None,
+            user_id=user["email"],
+            script_code=SCRIPT_SOURCE,
+            description=None,
+        )
+        return first, second
+
+    script_one, script_two = asyncio.run(_setup())
+
+    try:
+        # First attach should succeed
+        response_ok = client.post(
+            "/web/scripts/attach",
+            data={
+                "simulation_id": "sim-limit-attach",
+                "script_id": script_one.script_id,
+            },
+            follow_redirects=False,
+        )
+        assert response_ok.status_code == 303
+
+        # Second attach should hit limit
+        response_fail = client.post(
+            "/web/scripts/attach",
+            data={
+                "simulation_id": "sim-limit-attach",
+                "script_id": script_two.script_id,
+            },
+            follow_redirects=False,
+        )
+        assert response_fail.status_code == 303
+        location = response_fail.headers.get("location", "")
+        assert "error=" in location
+
+        meta_after_second = asyncio.run(
+            script_registry.get_user_script(script_two.script_id, user["email"])
+        )
+        assert meta_after_second.simulation_id is None
+    finally:
+        _clear_override()
+
+        async def _cleanup() -> None:
+            await script_registry.clear()
+            try:
+                await views._orchestrator.data_access.delete_simulation(
+                    "sim-limit-attach"
+                )
+            except Exception:
+                pass
+
+        asyncio.run(_cleanup())
 
 
 def test_download_logs_forbidden(monkeypatch, client):
