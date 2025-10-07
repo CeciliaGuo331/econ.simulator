@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import Iterable
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from econ_sim.api import endpoints as api_endpoints
 from econ_sim.auth import user_manager
 from econ_sim.auth.user_manager import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
 from econ_sim.core.orchestrator import (
@@ -31,11 +33,47 @@ class StubFailureNotifier:
         self.events.append(event)
 
 
+async def _seed_minimal_coverage(
+    orchestrator: SimulationOrchestrator,
+    simulation_id: str,
+    *,
+    households: Iterable[int] | None = None,
+    skip: Iterable[AgentKind] | None = None,
+    clear_registry: bool = True,
+) -> None:
+    if clear_registry:
+        await script_registry.clear()
+    await seed_required_scripts(
+        script_registry,
+        simulation_id,
+        orchestrator=orchestrator,
+        households=households,
+        skip=skip,
+    )
+
+
+async def _ensure_entities_from_scripts(
+    orchestrator: SimulationOrchestrator, simulation_id: str
+) -> None:
+    scripts = await script_registry.list_scripts(simulation_id)
+    for metadata in scripts:
+        await orchestrator.data_access.ensure_entity_state(
+            simulation_id,
+            metadata.agent_kind,
+            metadata.entity_id,
+        )
+
+
 @pytest.mark.asyncio
 async def test_tick_progression_increments() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "test_sim"
-    state = await orchestrator.create_simulation(simulation_id)
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
+    state = await orchestrator.get_state(simulation_id)
     result = await orchestrator.run_tick(simulation_id)
 
     assert result.world_state.tick == state.tick + 1
@@ -47,7 +85,11 @@ async def test_tick_progression_increments() -> None:
 async def test_overrides_affect_decisions() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "override_sim"
-    await orchestrator.create_simulation(simulation_id)
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
 
     overrides = TickDecisionOverrides(
         households={
@@ -67,7 +109,11 @@ async def test_household_shock_toggle_updates_state() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "shock-toggle"
 
-    await orchestrator.create_simulation(simulation_id)
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
     updated = await orchestrator.update_simulation_features(
         simulation_id,
         household_shock_enabled=True,
@@ -88,6 +134,7 @@ async def test_household_shock_toggle_updates_state() -> None:
 
     # 重置仿真实例以回到 tick 0，再关闭外生冲击
     await orchestrator.reset_simulation(simulation_id)
+    await _ensure_entities_from_scripts(orchestrator, simulation_id)
 
     disabled = await orchestrator.update_simulation_features(
         simulation_id,
@@ -108,6 +155,12 @@ async def test_remove_script_from_simulation_requires_tick_zero() -> None:
 
     await script_registry.clear()
     try:
+        await _seed_minimal_coverage(
+            orchestrator,
+            simulation_id,
+            skip=[AgentKind.FIRM],
+            clear_registry=False,
+        )
         metadata = await orchestrator.register_script_for_simulation(
             simulation_id=simulation_id,
             user_id="player@example.com",
@@ -116,6 +169,8 @@ def generate_decisions(context):
     return {}
 """,
             description="delete-test",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_player",
         )
 
         await orchestrator.run_tick(simulation_id)
@@ -137,7 +192,8 @@ async def test_run_until_day_executes_required_ticks() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "run-days"
 
-    initial_state = await orchestrator.create_simulation(simulation_id)
+    await _seed_minimal_coverage(orchestrator, simulation_id)
+    initial_state = await orchestrator.get_state(simulation_id)
     batch = await orchestrator.run_until_day(simulation_id, 2)
 
     ticks_per_day = orchestrator.config.simulation.ticks_per_day
@@ -215,7 +271,13 @@ async def test_reset_simulation_restores_initial_state() -> None:
 
     await script_registry.clear()
     try:
-        await script_registry.register_script(
+        await _seed_minimal_coverage(
+            orchestrator,
+            simulation_id,
+            skip=[AgentKind.FIRM],
+            clear_registry=False,
+        )
+        metadata = await script_registry.register_script(
             simulation_id=simulation_id,
             user_id="player@example.com",
             script_code="""
@@ -223,6 +285,11 @@ def generate_decisions(context):
     return {}
 """,
             description="noop",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_reset",
+        )
+        await orchestrator.data_access.ensure_entity_state(
+            simulation_id, AgentKind.FIRM, "firm_reset"
         )
 
         await orchestrator.run_tick(simulation_id)
@@ -237,9 +304,8 @@ def generate_decisions(context):
         assert participants == ["player@example.com"]
 
         scripts = await script_registry.list_scripts(simulation_id)
-        assert len(scripts) == 1
-        assert scripts[0].description == "noop"
-        assert scripts[0].code_version
+        assert any(script.script_id == metadata.script_id for script in scripts)
+        assert any(script.description == "noop" for script in scripts)
     finally:
         await script_registry.clear()
 
@@ -254,6 +320,12 @@ async def test_delete_simulation_detaches_associations() -> None:
 
     await script_registry.clear()
     try:
+        await _seed_minimal_coverage(
+            orchestrator,
+            simulation_id,
+            skip=[AgentKind.FIRM],
+            clear_registry=False,
+        )
         metadata = await script_registry.register_script(
             simulation_id=simulation_id,
             user_id="player@example.com",
@@ -261,13 +333,18 @@ async def test_delete_simulation_detaches_associations() -> None:
 def generate_decisions(context):
     return {}
 """,
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_delete",
         )
         assert metadata.code_version
+
+        existing_scripts = await script_registry.list_scripts(simulation_id)
+        expected_detached = len(existing_scripts)
 
         result = await orchestrator.delete_simulation(simulation_id)
 
         assert result["participants_removed"] == 1
-        assert result["scripts_detached"] == 1
+        assert result["scripts_detached"] == expected_detached
 
         with pytest.raises(SimulationNotFoundError):
             await orchestrator.get_state(simulation_id)
@@ -292,6 +369,12 @@ async def test_register_script_for_simulation_requires_tick_zero() -> None:
 
     await script_registry.clear()
     try:
+        await _seed_minimal_coverage(
+            orchestrator,
+            simulation_id,
+            skip=[AgentKind.FIRM],
+            clear_registry=False,
+        )
         metadata = await orchestrator.register_script_for_simulation(
             simulation_id=simulation_id,
             user_id="player@example.com",
@@ -300,6 +383,8 @@ def generate_decisions(context):
     return {}
 """,
             description="first",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_first",
         )
         assert metadata.simulation_id == simulation_id
 
@@ -314,6 +399,8 @@ def generate_decisions(context):
     return {"firm": {"price": 1.0}}
 """,
                 description="second",
+                agent_kind=AgentKind.FIRM,
+                entity_id="firm_second",
             )
     finally:
         await script_registry.clear()
@@ -328,6 +415,12 @@ async def test_attach_script_to_simulation_requires_tick_zero() -> None:
 
     await script_registry.clear()
     try:
+        await _seed_minimal_coverage(
+            orchestrator,
+            simulation_id,
+            skip=[AgentKind.FIRM],
+            clear_registry=False,
+        )
         base_script = await script_registry.register_script(
             simulation_id=None,
             user_id="player@example.com",
@@ -336,6 +429,8 @@ def generate_decisions(context):
     return {}
 """,
             description="detached",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_detached",
         )
 
         attached = await orchestrator.attach_script_to_simulation(
@@ -355,6 +450,8 @@ def generate_decisions(context):
     return {"firm": {"price": 2.0}}
 """,
             description="attach-after-run",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_extra",
         )
 
         with pytest.raises(SimulationStateError):
@@ -384,11 +481,19 @@ async def test_household_baseline_script_executes_successfully() -> None:
 
     await script_registry.clear()
     try:
+        await _seed_minimal_coverage(
+            orchestrator,
+            simulation_id,
+            skip=[AgentKind.HOUSEHOLD],
+            clear_registry=False,
+        )
         metadata = await orchestrator.register_script_for_simulation(
             simulation_id=simulation_id,
             user_id="baseline.household@econ.sim",
             script_code=script_code,
             description="baseline household",
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="0",
         )
         assert metadata.simulation_id == simulation_id
 
@@ -492,6 +597,12 @@ async def test_admin_restrictions_for_simulation_control() -> None:
         )
         assert created.status_code == 200
 
+        await _seed_minimal_coverage(
+            api_endpoints._orchestrator,
+            simulation_id,
+            households=[0],
+        )
+
         forbidden_run = await client.post(
             f"/simulations/{simulation_id}/run_tick",
             json={},
@@ -546,7 +657,11 @@ def generate_decisions(context):
 
         missing = await client.post(
             "/simulations/missing-sim/scripts",
-            json={"code": script_code},
+            json={
+                "code": script_code,
+                "agent_kind": "household",
+                "entity_id": "0",
+            },
             headers=headers_user,
         )
         assert missing.status_code == 404
@@ -560,7 +675,12 @@ def generate_decisions(context):
 
         upload = await client.post(
             f"/simulations/{simulation_id}/scripts",
-            json={"code": script_code, "description": "test"},
+            json={
+                "code": script_code,
+                "description": "test",
+                "agent_kind": "firm",
+                "entity_id": "firm_user_seed",
+            },
             headers=headers_user,
         )
         assert upload.status_code == 200
@@ -610,6 +730,12 @@ async def test_script_controls_blocked_after_tick_advances() -> None:
         )
         assert created.status_code == 200
 
+        await _seed_minimal_coverage(
+            api_endpoints._orchestrator,
+            simulation_id,
+            households=[0],
+        )
+
         # 推进一次 Tick，使仿真实例进入运行状态
         run_once = await client.post(
             f"/simulations/{simulation_id}/run_tick",
@@ -625,7 +751,11 @@ def generate_decisions(context):
 
         late_upload = await client.post(
             f"/simulations/{simulation_id}/scripts",
-            json={"code": script_template},
+            json={
+                "code": script_template,
+                "agent_kind": "firm",
+                "entity_id": "firm_late",
+            },
             headers=headers_user,
         )
         assert late_upload.status_code == 409
@@ -633,7 +763,12 @@ def generate_decisions(context):
 
         library_upload = await client.post(
             "/scripts",
-            json={"code": script_template, "description": "library"},
+            json={
+                "code": script_template,
+                "description": "library",
+                "agent_kind": "household",
+                "entity_id": "0",
+            },
             headers=headers_user,
         )
         assert library_upload.status_code == 200
@@ -697,12 +832,20 @@ async def test_admin_delete_script_blocked_after_tick_advances() -> None:
         )
         assert create_resp.status_code == 200
 
+        await _seed_minimal_coverage(
+            api_endpoints._orchestrator,
+            simulation_id,
+            skip=[AgentKind.FIRM],
+        )
+
         script_payload = {
             "code": """
 def generate_decisions(context):
     return {}
 """,
             "description": "attached",
+            "agent_kind": "firm",
+            "entity_id": "firm_attached",
         }
 
         upload = await client.post(
@@ -911,14 +1054,24 @@ def generate_decisions(context):
 
         first = await client.post(
             f"/simulations/{simulation_id}/scripts",
-            json={"code": script_template, "description": "first"},
+            json={
+                "code": script_template,
+                "description": "first",
+                "agent_kind": "household",
+                "entity_id": "0",
+            },
             headers=headers_user,
         )
         assert first.status_code == 200
 
         second = await client.post(
             f"/simulations/{simulation_id}/scripts",
-            json={"code": script_template, "description": "second"},
+            json={
+                "code": script_template,
+                "description": "second",
+                "agent_kind": "household",
+                "entity_id": "1",
+            },
             headers=headers_user,
         )
         assert second.status_code == 400
@@ -980,14 +1133,22 @@ def generate_decisions(context):
 
         first = await client.post(
             f"/simulations/{simulation_id}/scripts",
-            json={"code": script_one},
+            json={
+                "code": script_one,
+                "agent_kind": "household",
+                "entity_id": "0",
+            },
             headers=headers_user,
         )
         assert first.status_code == 200
 
         second = await client.post(
             f"/simulations/{simulation_id}/scripts",
-            json={"code": script_two},
+            json={
+                "code": script_two,
+                "agent_kind": "household",
+                "entity_id": "1",
+            },
             headers=headers_user,
         )
         assert second.status_code == 200
@@ -1029,6 +1190,12 @@ async def test_run_days_endpoint_advances_day() -> None:
         initial_payload = created.json()
         assert initial_payload["current_day"] == 0
 
+        await _seed_minimal_coverage(
+            api_endpoints._orchestrator,
+            simulation_id,
+            households=[0],
+        )
+
         response = await client.post(
             f"/simulations/{simulation_id}/run_days",
             json={"days": 2},
@@ -1047,7 +1214,8 @@ async def test_run_days_endpoint_advances_day() -> None:
 async def test_day_rollover_starting_from_tick_one() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "day-rollover"
-    initial = await orchestrator.create_simulation(simulation_id)
+    await _seed_minimal_coverage(orchestrator, simulation_id)
+    initial = await orchestrator.get_state(simulation_id)
 
     first_tick = await orchestrator.run_tick(simulation_id)
     assert first_tick.world_state.day == initial.day + 1

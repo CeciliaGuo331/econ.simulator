@@ -502,7 +502,27 @@ class SimulationOrchestrator:
             present.add(AgentKind.GOVERNMENT)
         if state.central_bank is not None:
             present.add(AgentKind.CENTRAL_BANK)
-        missing = [agent for agent in self._required_agents if agent not in present]
+
+        scripts = await script_registry.list_scripts(simulation_id)
+        scripted_kinds = {meta.agent_kind for meta in scripts}
+
+        missing: list[AgentKind] = []
+        for agent in self._required_agents:
+            if agent not in present or agent not in scripted_kinds:
+                missing.append(agent)
+
+        if AgentKind.HOUSEHOLD not in missing and state.households:
+            scripted_households = {
+                meta.entity_id
+                for meta in scripts
+                if meta.agent_kind is AgentKind.HOUSEHOLD
+            }
+            expected_households = {
+                str(identifier) for identifier in state.households.keys()
+            }
+            if not expected_households.issubset(scripted_households):
+                missing.append(AgentKind.HOUSEHOLD)
+
         if missing:
             raise MissingAgentScriptsError(simulation_id, missing)
 
