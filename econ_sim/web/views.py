@@ -205,6 +205,27 @@ def _as_dict(payload: Any) -> Dict[str, Any]:
     return {}
 
 
+def _prepare_world_for_template(raw_world: Dict[str, Any]) -> Dict[str, Any]:
+    world = {**raw_world}
+    world.setdefault("households", {})
+    world.setdefault("household_shocks", {})
+    world.setdefault("features", {})
+
+    for agent_key in ("firm", "bank", "government", "central_bank"):
+        agent_raw = world.get(agent_key)
+        agent_dict = _as_dict(agent_raw)
+        if not agent_dict:
+            agent_dict = {}
+        agent_dict.setdefault("balance_sheet", {})
+        if agent_key in {"firm", "government"}:
+            agent_dict.setdefault("employees", [])
+        if agent_key == "bank":
+            agent_dict.setdefault("approved_loans", {})
+        world[agent_key] = agent_dict
+
+    return world
+
+
 def _safe_average(values: Iterable[Any]) -> Optional[float]:
     numeric: List[float] = []
     for item in values:
@@ -781,13 +802,14 @@ async def dashboard(
         world_state.get("features") if isinstance(world_state, dict) else None
     )
     current_tick = world_state.get("tick") if isinstance(world_state, dict) else None
+    prepared_world = _prepare_world_for_template(world_state)
     if allow_create and simulation_id:
         features_by_sim[simulation_id] = features_for_view
     all_users: List[Dict[str, Any]] = []
 
     if allow_create:
         template_name = "admin_dashboard.html"
-        context["world"] = world_state
+        context["world"] = prepared_world
         script_counts = {email: len(items) for email, items in scripts_by_user.items()}
         all_users = [
             {

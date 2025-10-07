@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -11,7 +12,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .api.auth_endpoints import router as auth_router
 from .api.endpoints import router as simulation_router, scripts_router
-from .web.views import router as web_router
+from .web.views import router as web_router, _orchestrator as web_orchestrator
+
+logger = logging.getLogger(__name__)
 
 session_secret = os.getenv("ECON_SIM_SESSION_SECRET", "econ-sim-session-key")
 
@@ -23,6 +26,22 @@ app.include_router(auth_router)
 app.include_router(web_router)
 static_dir = Path(__file__).resolve().parent / "web" / "static"
 app.mount("/web/static", StaticFiles(directory=static_dir), name="web-static")
+
+
+@app.on_event("startup")
+async def _auto_seed_test_world() -> None:
+    skip_flag = os.getenv("ECON_SIM_SKIP_TEST_WORLD_SEED", "").lower()
+    if skip_flag in {"1", "true", "yes", "on"} or os.getenv("PYTEST_CURRENT_TEST"):
+        logger.info("Skipping test_world auto-seed (flag enabled).")
+        return
+
+    try:
+        from .script_engine.test_world_seed import seed_test_world
+
+        await seed_test_world(orchestrator=web_orchestrator)
+        logger.info("test_world simulation seeded (auto-startup).")
+    except Exception:  # pragma: no cover - best effort logging
+        logger.exception("Failed to seed test_world simulation during startup")
 
 
 @app.get("/health", tags=["health"])
