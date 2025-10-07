@@ -303,7 +303,6 @@ async def dashboard(
     user_type_index: Dict[str, str] = {}
     scripts_by_user: Dict[str, List] = {}
     scripts_by_sim: Dict[str, List] = {}
-    script_counts_by_sim_user: Dict[str, Dict[str, int]] = {}
     all_scripts: List = []
     if allow_create:
         user_profiles = await user_manager.list_users()
@@ -317,29 +316,14 @@ async def dashboard(
             if sim_id:
                 bucket = scripts_by_sim.setdefault(sim_id, [])
                 bucket.append(metadata)
-                counts = script_counts_by_sim_user.setdefault(sim_id, {})
-                user_key = metadata.user_id.lower()
-                if user_type_index.get(user_key, "") == "individual":
-                    counts[user_key] = counts.get(user_key, 0) + 1
         for sid in all_simulations:
-            try:
-                participants = await _orchestrator.list_participants(sid)
-            except SimulationNotFoundError:
-                participants = []
-            participant_households = {
-                participant.lower()
-                for participant in participants
-                if user_type_index.get(participant.lower(), "") == "individual"
+            attached_scripts = scripts_by_sim.get(sid, [])
+            individual_owners = {
+                metadata.user_id.lower()
+                for metadata in attached_scripts
+                if user_type_index.get(metadata.user_id.lower(), "") == "individual"
             }
-            script_counts = script_counts_by_sim_user.get(sid, {})
-            household_total = 0
-            for household in participant_households:
-                script_total = script_counts.get(household, 0)
-                household_total += script_total if script_total > 0 else 1
-            for household, script_total in script_counts.items():
-                if household not in participant_households:
-                    household_total += script_total
-            household_counts_by_sim[sid] = household_total
+            household_counts_by_sim[sid] = len(individual_owners)
 
     if not allow_create:
         user_scripts = await script_registry.list_user_scripts(user["email"])

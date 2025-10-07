@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -268,6 +270,37 @@ def generate_decisions(context):
                 script_id=extra_script.script_id,
                 user_id="player@example.com",
             )
+    finally:
+        await script_registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_household_baseline_script_executes_successfully() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "baseline-household"
+
+    await orchestrator.create_simulation(simulation_id)
+
+    script_path = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "baseline_scripts"
+        / "household_baseline.py"
+    )
+    script_code = script_path.read_text(encoding="utf-8")
+
+    await script_registry.clear()
+    try:
+        metadata = await orchestrator.register_script_for_simulation(
+            simulation_id=simulation_id,
+            user_id="baseline.household@econ.sim",
+            script_code=script_code,
+            description="baseline household",
+        )
+        assert metadata.simulation_id == simulation_id
+
+        result = await orchestrator.run_tick(simulation_id)
+        assert result.world_state.tick == 1
     finally:
         await script_registry.clear()
 

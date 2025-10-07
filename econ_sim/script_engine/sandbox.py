@@ -151,10 +151,9 @@ def _worker(
     try:
         _apply_resource_limits()
         safe_builtins = _build_safe_builtins(allowed_modules)
-        global_env = {"__builtins__": safe_builtins}
-        local_env: Dict[str, Any] = {}
-        exec(code, global_env, local_env)
-        func = local_env.get("generate_decisions")
+        sandbox_globals: Dict[str, Any] = {"__builtins__": safe_builtins}
+        exec(code, sandbox_globals, sandbox_globals)
+        func = sandbox_globals.get("generate_decisions")
         if func is None or not callable(func):
             raise ScriptSandboxError(
                 "脚本中必须定义可调用的 generate_decisions(context) 函数"

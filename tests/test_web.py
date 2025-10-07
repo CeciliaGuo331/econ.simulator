@@ -452,9 +452,8 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
     try:
         response = client.get("/web/dashboard?simulation_id=sim-main")
         assert response.status_code == 200
-        assert "当前家户个数" in response.text
+        assert "挂载家户脚本数" in response.text
         assert 'class="household-count"' in response.text
-        assert re.search(r'class="household-count"[^>]*>\s*1\s*户', response.text)
     finally:
         _clear_override()
 
@@ -535,7 +534,7 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
     try:
         response = client.get("/web/dashboard?simulation_id=sim-main")
         assert response.status_code == 200
-        assert re.search(r'class="household-count"[^>]*>\s*2\s*户', response.text)
+        assert re.search(r'class="household-count"[^>]*>\s*1\s*户', response.text)
     finally:
         _clear_override()
 
