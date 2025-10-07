@@ -192,6 +192,111 @@ def _format_tick_progress_message(
     )
 
 
+def _as_dict(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if hasattr(payload, "model_dump"):
+        try:
+            return payload.model_dump(mode="json")  # type: ignore[no-any-return]
+        except Exception:  # pragma: no cover - defensive
+            return dict(payload) if hasattr(payload, "items") else {}
+    if hasattr(payload, "items"):
+        return dict(payload)
+    return {}
+
+
+def _safe_average(values: Iterable[Any]) -> Optional[float]:
+    numeric: List[float] = []
+    for item in values:
+        if isinstance(item, (int, float)) and not isinstance(item, bool):
+            numeric.append(float(item))
+    if not numeric:
+        return None
+    return sum(numeric) / len(numeric)
+
+
+def _summarize_households_data(raw_households: Any) -> Dict[str, Optional[float]]:
+    if not raw_households:
+        return {
+            "count": 0,
+            "avg_cash": None,
+            "avg_deposits": None,
+            "avg_loans": None,
+            "avg_wage_income": None,
+            "avg_last_consumption": None,
+            "employment_rate": None,
+        }
+
+    if isinstance(raw_households, dict):
+        entries = list(raw_households.values())
+    elif isinstance(raw_households, list):
+        entries = raw_households
+    else:
+        entries = []
+
+    if not entries:
+        return {
+            "count": 0,
+            "avg_cash": None,
+            "avg_deposits": None,
+            "avg_loans": None,
+            "avg_wage_income": None,
+            "avg_last_consumption": None,
+            "employment_rate": None,
+        }
+
+    cash_values: List[float] = []
+    deposit_values: List[float] = []
+    loan_values: List[float] = []
+    wage_values: List[float] = []
+    consumption_values: List[float] = []
+    employed = 0
+
+    for entry in entries:
+        data = _as_dict(entry)
+        sheet = _as_dict(data.get("balance_sheet"))
+        cash = sheet.get("cash")
+        deposits = sheet.get("deposits")
+        loans = sheet.get("loans")
+        wage = data.get("wage_income")
+        consumption = data.get("last_consumption")
+        employment_status = str(data.get("employment_status", "")).lower()
+
+        if isinstance(cash, (int, float)):
+            cash_values.append(float(cash))
+        if isinstance(deposits, (int, float)):
+            deposit_values.append(float(deposits))
+        if isinstance(loans, (int, float)):
+            loan_values.append(float(loans))
+        if isinstance(wage, (int, float)):
+            wage_values.append(float(wage))
+        if isinstance(consumption, (int, float)):
+            consumption_values.append(float(consumption))
+        if employment_status.startswith("employed"):
+            employed += 1
+
+    total = len(entries)
+    employment_rate: Optional[float]
+    if total:
+        employment_rate = employed / total
+    else:
+        employment_rate = None
+
+    return {
+        "count": total,
+        "avg_cash": _safe_average(cash_values),
+        "avg_deposits": _safe_average(deposit_values),
+        "avg_loans": _safe_average(loan_values),
+        "avg_wage_income": _safe_average(wage_values),
+        "avg_last_consumption": _safe_average(consumption_values),
+        "employment_rate": employment_rate,
+    }
+
+
+def _table_row(label: str, value: Any, *, is_int: bool = False) -> tuple[Any, ...]:
+    return (label, value, is_int)
+
+
 async def _build_script_tick_map(
     current_simulation_id: str, current_tick: Optional[int], user_scripts: Iterable
 ) -> Dict[str, Optional[int]]:
@@ -270,19 +375,175 @@ async def logout(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/web/login", status_code=303)
 
 
-def _extract_view_data(world_state: Dict[str, Any], user_type: str) -> Dict[str, Any]:
+def _extract_view_data(
+    world_state: Dict[str, Any],
+    user_type: str,
+    user_email: str = "",
+) -> Dict[str, Any]:
+    world = _as_dict(world_state)
+    macro = _as_dict(world.get("macro"))
+    firm = _as_dict(world.get("firm"))
+    bank = _as_dict(world.get("bank"))
+    government = _as_dict(world.get("government"))
+    central_bank = _as_dict(world.get("central_bank"))
+
+    def _macro_rows() -> List[tuple[Any, ...]]:
+        return [
+            _table_row("当前 Tick", world.get("tick"), is_int=True),
+            _table_row("当前仿真日", world.get("day"), is_int=True),
+            _table_row("GDP", macro.get("gdp")),
+            _table_row("通胀率", macro.get("inflation")),
+            _table_row("失业率", macro.get("unemployment_rate")),
+            _table_row("物价指数", macro.get("price_index")),
+            _table_row("工资指数", macro.get("wage_index")),
+        ]
+
     if user_type == "individual":
-        households = list(world_state.get("households", {}).values())[:5]
-        return {"households": households}
+        households_summary = _summarize_households_data(world.get("households"))
+        employment_rate = households_summary.get("employment_rate")
+        employment_display: Optional[str]
+        if isinstance(employment_rate, (int, float)):
+            employment_display = f"{employment_rate * 100:.1f}%"
+        else:
+            employment_display = None
+
+        market_rows = [
+            _table_row("商品价格", firm.get("price")),
+            _table_row("企业工资报价", firm.get("wage_offer")),
+            _table_row("政府岗位工资", government.get("wage_offer")),
+            _table_row("存款利率", bank.get("deposit_rate")),
+            _table_row("贷款利率", bank.get("loan_rate")),
+            _table_row("税率", government.get("tax_rate")),
+        ]
+
+        household_rows = [
+            _table_row("家户数量", households_summary.get("count"), is_int=True),
+            _table_row("平均现金", households_summary.get("avg_cash")),
+            _table_row("平均存款", households_summary.get("avg_deposits")),
+            _table_row("平均贷款", households_summary.get("avg_loans")),
+            _table_row("平均工资收入", households_summary.get("avg_wage_income")),
+            _table_row("平均消费", households_summary.get("avg_last_consumption")),
+            _table_row("就业率", employment_display),
+        ]
+
+        return {
+            "role": "individual",
+            "macro_rows": _macro_rows(),
+            "market_rows": market_rows,
+            "household_rows": household_rows,
+        }
+
     if user_type == "firm":
-        return {"firm": world_state.get("firm")}
+        balance = _as_dict(firm.get("balance_sheet"))
+        firm_rows = [
+            _table_row("产品价格", firm.get("price")),
+            _table_row("计划产出", firm.get("planned_production")),
+            _table_row("工资报价", firm.get("wage_offer")),
+            _table_row("雇员数量", len(firm.get("employees", []) or []), is_int=True),
+            _table_row("最近销售额", firm.get("last_sales")),
+            _table_row("现金", balance.get("cash")),
+            _table_row("存款", balance.get("deposits")),
+            _table_row("贷款", balance.get("loans")),
+            _table_row("库存", balance.get("inventory_goods")),
+        ]
+        labor_rows = [
+            _table_row("劳动力市场失业率", macro.get("unemployment_rate")),
+            _table_row("政府岗位工资", government.get("wage_offer")),
+            _table_row(
+                "家庭平均工资收入",
+                _summarize_households_data(world.get("households")).get(
+                    "avg_wage_income"
+                ),
+            ),
+        ]
+        finance_rows = [
+            _table_row("存款利率", bank.get("deposit_rate")),
+            _table_row("贷款利率", bank.get("loan_rate")),
+            _table_row("政策基准利率", central_bank.get("base_rate")),
+        ]
+        return {
+            "role": "firm",
+            "macro_rows": _macro_rows(),
+            "agent_rows": firm_rows,
+            "labor_rows": labor_rows,
+            "finance_rows": finance_rows,
+        }
+
     if user_type == "government":
-        return {"government": world_state.get("government")}
+        balance = _as_dict(government.get("balance_sheet"))
+        fiscal_rows = [
+            _table_row("税率", government.get("tax_rate")),
+            _table_row("失业补贴", government.get("unemployment_benefit")),
+            _table_row("财政支出", government.get("spending")),
+            _table_row(
+                "公共岗位数量", len(government.get("employees", []) or []), is_int=True
+            ),
+            _table_row("现金", balance.get("cash")),
+            _table_row("存款", balance.get("deposits")),
+            _table_row("贷款", balance.get("loans")),
+        ]
+        labor_rows = [
+            _table_row("失业率", macro.get("unemployment_rate")),
+            _table_row("企业工资报价", firm.get("wage_offer")),
+            _table_row("政府岗位工资", government.get("wage_offer")),
+        ]
+        finance_rows = [
+            _table_row("政策基准利率", central_bank.get("base_rate")),
+            _table_row("准备金率", central_bank.get("reserve_ratio")),
+            _table_row("贷款利率", bank.get("loan_rate")),
+        ]
+        return {
+            "role": "government",
+            "macro_rows": _macro_rows(),
+            "fiscal_rows": fiscal_rows,
+            "labor_rows": labor_rows,
+            "finance_rows": finance_rows,
+        }
+
     if user_type == "commercial_bank":
-        return {"bank": world_state.get("bank")}
+        balance = _as_dict(bank.get("balance_sheet"))
+        bank_rows = [
+            _table_row("存款", balance.get("deposits")),
+            _table_row("现金", balance.get("cash")),
+            _table_row("贷款", balance.get("loans")),
+            _table_row("库存资产", balance.get("inventory_goods")),
+        ]
+        rate_rows = [
+            _table_row("存款利率", bank.get("deposit_rate")),
+            _table_row("贷款利率", bank.get("loan_rate")),
+            _table_row("政策基准利率", central_bank.get("base_rate")),
+            _table_row("法定准备金率", central_bank.get("reserve_ratio")),
+        ]
+        return {
+            "role": "commercial_bank",
+            "macro_rows": _macro_rows(),
+            "bank_rows": bank_rows,
+            "policy_rows": rate_rows,
+        }
+
     if user_type == "central_bank":
-        return {"central_bank": world_state.get("central_bank")}
-    return {"world": world_state}
+        policy_rows = [
+            _table_row("基准利率", central_bank.get("base_rate")),
+            _table_row("准备金率", central_bank.get("reserve_ratio")),
+            _table_row("通胀目标", central_bank.get("inflation_target")),
+            _table_row("失业目标", central_bank.get("unemployment_target")),
+        ]
+        banking_rows = [
+            _table_row("银行存款利率", bank.get("deposit_rate")),
+            _table_row("银行贷款利率", bank.get("loan_rate")),
+            _table_row(
+                "银行贷款规模", _as_dict(bank.get("balance_sheet")).get("loans")
+            ),
+            _table_row("银行现金", _as_dict(bank.get("balance_sheet")).get("cash")),
+        ]
+        return {
+            "role": "central_bank",
+            "macro_rows": _macro_rows(),
+            "policy_rows": policy_rows,
+            "banking_rows": banking_rows,
+        }
+
+    return {"role": user_type, "world": world}
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -505,7 +766,12 @@ async def dashboard(
     scripts: List = []
     if simulation_id:
         scripts = await script_registry.list_scripts(simulation_id)
-    context = _extract_view_data(world_state, user["user_type"])
+    role_state = _extract_view_data(
+        world_state,
+        user["user_type"],
+        user.get("email", ""),
+    )
+    context: Dict[str, Any] = {"role_state": role_state}
     template_name = "dashboard.html"
     features_for_view = (
         world_state.get("features") if isinstance(world_state, dict) else None
@@ -1055,6 +1321,7 @@ async def upload_script(
                 context_payload = _extract_view_data(
                     world_state,
                     user["user_type"],
+                    user.get("email", ""),
                 )
                 features = world_state.get("features")
                 current_tick = world_state.get("tick")

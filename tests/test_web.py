@@ -567,9 +567,11 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
         assert response.status_code == 200
         body = response.text
         assert "角色视角数据" in body
-        assert "家户样本" in body
-        assert "就业状态" in body
-        assert "1,500.00" in body
+        assert "市场价格与利率" in body
+        assert "家户平均指标" in body
+        assert "平均现金" in body
+        assert "1,200.00" in body
+        assert "就业率" in body
     finally:
         _clear_override()
 
