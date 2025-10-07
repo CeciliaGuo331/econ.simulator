@@ -7,21 +7,16 @@
 ```mermaid
 graph TD
     subgraph PlatformLayer[平台层]
-        API[REST API
-(FastAPI Routers)]
-        WEB[Jinja2 Admin UI]
-        AUTH[Auth & Session]
-        SCRIPT[Script Engine
-Registry + Sandbox]
-        BACKGROUND[Background Jobs]
+    API["REST API<br/>(FastAPI Routers)"]
+    WEB["Jinja2 Admin UI"]
+    AUTH["Auth & Session"]
+    SCRIPT["Script Engine<br/>Registry + Sandbox"]
+    BACKGROUND["Background Jobs"]
     end
     subgraph SimulationLayer[仿真世界层]
-        ORCH[SimulationOrchestrator
-Tick Scheduler]
-        LOGIC[logic_modules/
-纯函数经济模型]
-        DATA[DataAccessLayer
-Redis World State]
+    ORCH["SimulationOrchestrator<br/>Tick Scheduler"]
+    LOGIC["logic_modules/<br/>纯函数经济模型"]
+    DATA["DataAccessLayer<br/>Redis World State"]
     end
     subgraph Persistence[持久化]
         REDIS[(Redis)]
