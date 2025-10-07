@@ -99,6 +99,26 @@ sequenceDiagram
 - `scripts/seed_baseline_scripts.py` 会读取该目录并将脚本注册到 `ScriptRegistry`，可选挂载到指定仿真实例。
 - Docker Compose 环境可运行 `docker compose run --rm app python scripts/seed_baseline_scripts.py --simulation demo-sim --attach --overwrite` 完成批量导入。
 
+### 3.5 `test_world` 教学仿真种子 & 覆盖守护
+
+- **自动化脚本**：`scripts/seed_test_world.py` 以协程 `econ_sim.script_engine.test_world_seed.seed_test_world` 为核心，默认播种 `test_world` 仿真；无论传入参数，家户脚本都会确保至少 400 份（与 4 个单体主体合计 404 条记录）。
+- **典型用法**：
+
+  ```bash
+  python scripts/seed_test_world.py --simulation-id test_world --overwrite
+  ```
+
+  参数说明：
+  - `--households <int>`：可调节目标家户数，但会自动向上取到 `max(400, num_households_in_settings)`；
+  - `--overwrite`：清理目标用户名下的旧脚本后再写入，保证幂等；
+  - `--simulation-id`：可播种到自定义仿真实例（教学沙盘/临时练习场景）。
+- **实体命名约定**：家户脚本实体 ID 即数字字符串（`"000"`~`"399"`）；基线家户脚本为 `"900000"`，避免与教学种子冲突。
+- **覆盖守护**：`SimulationOrchestrator._require_agent_coverage` 在每次 `run_tick` 前触发，校验五类主体既在世界状态出现、也挂载了脚本；对家户主体，还会逐个比对实体 ID → 若缺失将立即抛出 `MissingAgentScriptsError`，阻止带病前进。
+- **运维建议**：
+  1. 教学环境或集成测试可复用上述脚本播种；
+  2. 运行 `pytest tests/test_seed.py::test_seed_test_world_can_execute_tick` 验证播种与首 Tick 行为；
+  3. 若需重置仿真（`reset_simulation`）后继续运行，记得再次调用 `seed_test_world(..., overwrite=True)` 或在测试中执行 `_ensure_entities_from_scripts`，确保家户实体重新建档。
+
 ## 4. 世界状态结构细节
 
 下表基于 `WorldState` Pydantic 定义，总结了 Redis 中同名 JSON 文档的主要字段，便于在调试时定位各主体的数据来源。

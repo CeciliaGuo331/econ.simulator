@@ -31,6 +31,7 @@
 | 脚本库重构 | “先上传后挂载” 工作流、个人脚本库 API `/scripts`、仪表盘挂载入口 |
 | 数据持久化加强 | PostgreSQL schema 自愈、脚本解绑保留、Redis 操作统一封装 |
 | 文档体系 | README 扩展、`docs/dev_handbook/` 手册、Mermaid 数据图 |
+| 教学仿真播种与守护 | `seed_test_world.py` 一键播种 404 主体、Tick 前脚本覆盖校验、幂等测试用例 |
 
 ## 3. 待办事项
 

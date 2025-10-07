@@ -116,6 +116,20 @@ gunicorn econ_sim.main:app \
 
 监控建议：跟踪 Redis 命中率、PostgreSQL 写入延迟、脚本执行错误计数，可通过 Prometheus/OpenTelemetry 接入。
 
+### 6.1 观测指标实例
+
+- **主体覆盖率（Coverage Ratio）**：统计已播种脚本数量与期待主体数的比值，可在 `SimulationOrchestrator._require_agent_coverage` 判定通过后写入自定义指标；教学场景可聚焦指标 `coverage.household`（默认需达到 100%）。
+- **脚本失败率**：基于 `record_script_failures` 与 `ScriptFailureEvent` 计数，建议按仿真实例维度统计近 N Tick 的失败率；若 failure > 0 时还应关联 fallback 触发次数。
+- **Baseline Fallback 触发次数**：`BaselineFallbackManager` 在脚本报错时会接管决策，可将触发事件暴露为计数型指标，用于定位策略质量下降。
+
+### 6.2 告警策略与抑制
+
+- 当主体覆盖率低于 100% 或出现缺少脚本异常时，应立即通知管理员；为避免播种过程中频繁告警，可在播种脚本执行窗口（如部署阶段）暂时抑制。
+- 基准策略兜底的告警建议采用分级策略：
+  - **Warning**：单 Tick 出现少量脚本失败但 fallback 能成功接管；
+  - **Critical**：连续超过 3 个 Tick 触发 fallback，或同一脚本在 5 分钟内失败超过 10 次。
+- 为降低噪声，可在告警系统中增加抖动时间（例如 60 秒）或结合脚本版本号、用户信息做聚合，避免相同根因重复报警。
+
 ## 7. 常见问题排查
 
 | 现象 | 排查方向 |

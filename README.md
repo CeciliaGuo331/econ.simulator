@@ -62,6 +62,18 @@
 		pytest
 		```
 
+## 教学 / 演示环境一键播种
+
+- `scripts/seed_test_world.py` 可一次性播种教学仿真 `test_world` 所需的 404 个主体（400 户家户 + 4 个单体主体）。
+- 可通过以下命令覆盖旧脚本并重建所有账号：
+
+	```bash
+	python scripts/seed_test_world.py --simulation-id test_world --overwrite
+	```
+
+- 当传入 `--households` 参数时，会自动向上取到 `max(400, world_settings.yaml 中指定的家户数)`，确保覆盖守护阈值满足。
+- 基线家户脚本的实体 ID 固定为纯数字 `900000`，与教学播种生成的 `000`~`399` 家户互不冲突；若需要复位状态，请保留 `--overwrite` 开关。
+
 ## 本地开发环境说明
 
 - **Docker Compose 全栈启动**：`docker-compose.yml` 已包含 FastAPI 应用、PostgreSQL、Redis 三个服务。
