@@ -89,6 +89,39 @@ async def test_household_shock_toggle_updates_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_remove_script_from_simulation_requires_tick_zero() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "tick-guard-remove"
+
+    await orchestrator.create_simulation(simulation_id)
+
+    await script_registry.clear()
+    try:
+        metadata = await orchestrator.register_script_for_simulation(
+            simulation_id=simulation_id,
+            user_id="player@example.com",
+            script_code="""
+def generate_decisions(context):
+    return {}
+""",
+            description="delete-test",
+        )
+
+        await orchestrator.run_tick(simulation_id)
+
+        with pytest.raises(SimulationStateError):
+            await orchestrator.remove_script_from_simulation(
+                simulation_id=simulation_id,
+                script_id=metadata.script_id,
+            )
+
+        scripts = await script_registry.list_scripts(simulation_id)
+        assert any(script.script_id == metadata.script_id for script in scripts)
+    finally:
+        await script_registry.clear()
+
+
+@pytest.mark.asyncio
 async def test_run_until_day_executes_required_ticks() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "run-days"
@@ -517,6 +550,81 @@ def generate_decisions(context):
         )
         assert limit_attempt.status_code == 409
         assert "tick" in limit_attempt.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_script_blocked_after_tick_advances() -> None:
+    await user_manager.reset()
+    await script_registry.clear()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/auth/register",
+            json={
+                "email": "deleter@test.com",
+                "password": "StrongPass123",
+                "user_type": "individual",
+            },
+        )
+        user_login = await client.post(
+            "/auth/login",
+            json={"email": "deleter@test.com", "password": "StrongPass123"},
+        )
+        user_token = user_login.json()["access_token"]
+
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+
+        headers_user = {"Authorization": f"Bearer {user_token}"}
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "delete-guard"
+        create_resp = await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+        assert create_resp.status_code == 200
+
+        script_payload = {
+            "code": """
+def generate_decisions(context):
+    return {}
+""",
+            "description": "attached",
+        }
+
+        upload = await client.post(
+            f"/simulations/{simulation_id}/scripts",
+            json=script_payload,
+            headers=headers_user,
+        )
+        assert upload.status_code == 200
+        script_id = upload.json()["script_id"]
+
+        run_once = await client.post(
+            f"/simulations/{simulation_id}/run_tick",
+            json={},
+            headers=headers_admin,
+        )
+        assert run_once.status_code == 200
+
+        delete_attempt = await client.delete(
+            f"/simulations/{simulation_id}/scripts/{script_id}",
+            headers=headers_admin,
+        )
+        assert delete_attempt.status_code == 409
+        assert "tick" in delete_attempt.json()["detail"]
+
+        scripts = await script_registry.list_scripts(simulation_id)
+        assert any(script.script_id == script_id for script in scripts)
 
         feature_attempt = await client.put(
             f"/simulations/{simulation_id}/settings/features",

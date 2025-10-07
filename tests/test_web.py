@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import urllib.parse
 
 import pytest
 import asyncio
@@ -11,7 +12,7 @@ from econ_sim.main import app
 from econ_sim.web import views
 from econ_sim.script_engine import script_registry
 from econ_sim.script_engine.registry import ScriptMetadata
-from econ_sim.core.orchestrator import SimulationNotFoundError
+from econ_sim.core.orchestrator import SimulationNotFoundError, SimulationStateError
 
 
 SCRIPT_SOURCE = (
@@ -347,6 +348,41 @@ def test_delete_script_attached_tick_zero(monkeypatch, client):
     finally:
         _clear_override()
         asyncio.run(script_registry.clear())
+
+
+def test_admin_delete_script_blocked_when_simulation_running(monkeypatch, client):
+    admin_user = {"email": "admin@example.com", "user_type": "admin"}
+    _override_user(admin_user)
+
+    class DummyOrchestrator:
+        async def remove_script_from_simulation(self, simulation_id, script_id):
+            raise SimulationStateError(simulation_id, 5)
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+
+    try:
+        response = client.post(
+            "/web/admin/scripts/delete",
+            data={
+                "simulation_id": "sim-live",
+                "script_id": "script-123",
+                "current_simulation_id": "sim-live",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        location = response.headers.get("location", "")
+        assert location
+        parsed = urllib.parse.urlparse(location)
+        assert parsed.path == "/web/dashboard"
+        params = urllib.parse.parse_qs(parsed.query)
+        assert params.get("simulation_id") == ["sim-live"]
+        assert params.get("error") == [
+            "仿真实例 sim-live 已运行到 tick 5，仅在 tick 0 时允许删除挂载的脚本。"
+        ]
+    finally:
+        _clear_override()
 
 
 def test_admin_can_update_script_limit(monkeypatch, client):

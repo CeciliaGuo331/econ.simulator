@@ -636,7 +636,15 @@ async def delete_script(
     """从指定仿真实例中移除脚本。"""
 
     try:
-        await script_registry.remove_script(simulation_id, script_id)
+        await _orchestrator.remove_script_from_simulation(simulation_id, script_id)
+    except SimulationStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"仿真实例 {simulation_id} 已运行到 tick {exc.tick}，"
+                "仅在 tick 0 时允许删除挂载的脚本。"
+            ),
+        )
     except ScriptExecutionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

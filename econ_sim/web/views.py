@@ -951,11 +951,19 @@ async def admin_delete_script(
     redirect_target = current_simulation_id or target or "default-simulation"
     try:
         if target:
-            await script_registry.remove_script(target, script_id)
+            await _orchestrator.remove_script_from_simulation(target, script_id)
             note = f"已删除仿真实例 {target} 下的脚本 {script_id}。"
         else:
             await script_registry.delete_script_by_id(script_id)
             note = f"脚本 {script_id} 已从系统中移除。"
+    except SimulationStateError as exc:
+        return _redirect_to_dashboard(
+            redirect_target,
+            error=(
+                f"仿真实例 {target} 已运行到 tick {exc.tick}，"
+                "仅在 tick 0 时允许删除挂载的脚本。"
+            ),
+        )
     except ScriptExecutionError as exc:
         return _redirect_to_dashboard(redirect_target, error=str(exc))
 

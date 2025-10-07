@@ -159,6 +159,16 @@ class SimulationOrchestrator:
             user_id=user_id,
         )
 
+    async def remove_script_from_simulation(
+        self,
+        simulation_id: str,
+        script_id: str,
+    ) -> None:
+        """仅在 tick 0 时允许移除已挂载的脚本。"""
+
+        await self._require_tick_zero(simulation_id)
+        await script_registry.remove_script(simulation_id, script_id)
+
     async def get_state(self, simulation_id: str) -> WorldState:
         """读取指定仿真实例的当前世界状态。"""
         return await self.data_access.get_world_state(simulation_id)
