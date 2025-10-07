@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import pathlib
+import sys
 from typing import Iterable, Optional
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from econ_sim.script_engine.test_world_seed import seed_test_world
 
@@ -21,7 +27,7 @@ async def _run(argv: Optional[Iterable[str]] = None) -> int:
         "--households",
         type=int,
         default=None,
-        help="Number of household scripts to seed (default 400)",
+        help="Requested number of household scripts to seed (minimum enforced: 400)",
     )
     parser.add_argument(
         "--overwrite",

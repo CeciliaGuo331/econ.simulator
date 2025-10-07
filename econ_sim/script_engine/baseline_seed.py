@@ -13,6 +13,8 @@ from .registry import ScriptExecutionError, ScriptMetadata, ScriptRegistry
 logger = logging.getLogger(__name__)
 
 BASELINE_DIR = Path(__file__).resolve().parents[2] / "deploy" / "baseline_scripts"
+# 使用纯数字 ID 以满足校验要求，同时选取远离常规种子范围的值避免冲突。
+BASELINE_HOUSEHOLD_ENTITY_ID = "900000"
 
 
 @dataclass(frozen=True)
@@ -34,7 +36,7 @@ BASELINE_DEFINITIONS: Sequence[BaselineScriptDefinition] = (
         filename="household_baseline.py",
         description="[baseline] Household reference strategy",
         agent_kind=AgentKind.HOUSEHOLD,
-        entity_id="baseline_household",
+        entity_id=BASELINE_HOUSEHOLD_ENTITY_ID,
     ),
     BaselineScriptDefinition(
         user_id="baseline.firm@econ.sim",

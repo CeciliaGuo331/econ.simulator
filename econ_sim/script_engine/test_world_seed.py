@@ -156,10 +156,9 @@ async def seed_test_world(
 
     # Seed households with deterministic naming.
     config_households = get_world_config().simulation.num_households
+    base_target = max(TEST_WORLD_DEFAULT_HOUSEHOLDS, config_households)
     target_households = (
-        max(household_count, config_households)
-        if household_count is not None
-        else max(TEST_WORLD_DEFAULT_HOUSEHOLDS, config_households)
+        base_target if household_count is None else max(base_target, household_count)
     )
     household_range = range(target_households)
 
