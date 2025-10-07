@@ -8,9 +8,12 @@ DecisionOverrides = dict[str, object]
 
 
 def generate_decisions(context: Context) -> DecisionOverrides:
-    world = context["world_state"]
-    macro = world["macro"]
-    cb = world["central_bank"]
+    world = context.get("world_state", {})
+    macro = world.get("macro", {})
+    cb = context.get("entity_state") or world.get("central_bank")
+
+    if not cb:
+        return {}
 
     builder = OverridesBuilder()
 

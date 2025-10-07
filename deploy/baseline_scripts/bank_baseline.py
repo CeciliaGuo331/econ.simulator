@@ -8,16 +8,20 @@ DecisionOverrides = dict[str, object]
 
 
 def generate_decisions(context: Context) -> DecisionOverrides:
-    world = context["world_state"]
-    bank = world["bank"]
-    central_bank = world["central_bank"]
+    world = context.get("world_state", {})
+    bank = context.get("entity_state") or world.get("bank")
+    central_bank = world.get("central_bank", {})
+
+    if not bank:
+        return {}
 
     builder = OverridesBuilder()
 
     policy_rate = central_bank.get("base_rate", 0.02)
     reserve_ratio = central_bank.get("reserve_ratio", 0.1)
-    deposits = bank["balance_sheet"].get("deposits", 0.0)
-    loans = bank["balance_sheet"].get("loans", 0.0)
+    balance_sheet = bank.get("balance_sheet", {})
+    deposits = balance_sheet.get("deposits", 0.0)
+    loans = balance_sheet.get("loans", 0.0)
 
     spread = clamp(0.025 + policy_rate * 0.5, 0.02, 0.05)
     loan_rate = clamp(policy_rate + spread, 0.02, 0.25)
