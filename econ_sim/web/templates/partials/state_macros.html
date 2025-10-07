@@ -1,0 +1,98 @@
+{% macro fmt_number(value) -%}
+    {%- if value is none -%}
+        <span class="empty">—</span>
+    {%- elif value is boolean -%}
+        {{ "是" if value else "否" }}
+    {%- elif value is number -%}
+        {{ "{:,.2f}".format(value) }}
+    {%- else -%}
+        {{ value }}
+    {%- endif -%}
+{%- endmacro %}
+
+{% macro fmt_integer(value) -%}
+    {%- if value is none -%}
+        <span class="empty">—</span>
+    {%- elif value is number -%}
+        {{ "{:,.0f}".format(value) }}
+    {%- else -%}
+        {{ value }}
+    {%- endif -%}
+{%- endmacro %}
+
+{% macro render_table(rows) -%}
+<table class="state-table">
+    <tbody>
+        {%- for row in rows %}
+            {%- set label = row[0] -%}
+            {%- set value = row[1] if row|length > 1 else None -%}
+            {%- set as_int = row[2] if row|length > 2 else False -%}
+            <tr>
+                <th>{{ label }}</th>
+                <td>
+                    {%- if as_int -%}
+                        {{ fmt_integer(value) }}
+                    {%- else -%}
+                        {{ fmt_number(value) }}
+                    {%- endif -%}
+                </td>
+            </tr>
+        {%- endfor %}
+    </tbody>
+</table>
+{%- endmacro %}
+
+{% macro render_households_table(households, limit=8) -%}
+    {%- set ns = namespace(rows=[]) -%}
+    {%- if households is mapping -%}
+        {%- for hid, info in households | dictsort -%}
+            {%- if limit < 0 or loop.index <= limit -%}
+                {%- set ns.rows = ns.rows + [(hid, info)] -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- elif households is sequence -%}
+        {%- for info in households -%}
+            {%- if limit < 0 or loop.index <= limit -%}
+                {%- set hid = info.id if info.id is defined else (info["id"] if "id" in info else loop.index0) -%}
+                {%- set ns.rows = ns.rows + [(hid, info)] -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    <table class="state-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>现金</th>
+                <th>存款</th>
+                <th>负债</th>
+                <th>库存</th>
+                <th>技能</th>
+                <th>就业状态</th>
+                <th>劳动供给</th>
+                <th>工资收入</th>
+                <th>最新消费</th>
+            </tr>
+        </thead>
+        <tbody>
+            {%- for hid, info in ns.rows -%}
+                {%- set bs = info.balance_sheet if info.balance_sheet is defined else info["balance_sheet"] -%}
+                <tr>
+                    <td>{{ hid }}</td>
+                    <td>{{ fmt_number(bs.cash if bs else None) }}</td>
+                    <td>{{ fmt_number(bs.deposits if bs else None) }}</td>
+                    <td>{{ fmt_number(bs.loans if bs else None) }}</td>
+                    <td>{{ fmt_number(bs.inventory_goods if bs else None) }}</td>
+                    <td>{{ fmt_number(info.skill if info.skill is defined else info["skill"] if "skill" in info else None) }}</td>
+                    <td>{{ info.employment_status if info.employment_status is defined else info["employment_status"] if "employment_status" in info else "—" }}</td>
+                    <td>{{ fmt_number(info.labor_supply if info.labor_supply is defined else info["labor_supply"] if "labor_supply" in info else None) }}</td>
+                    <td>{{ fmt_number(info.wage_income if info.wage_income is defined else info["wage_income"] if "wage_income" in info else None) }}</td>
+                    <td>{{ fmt_number(info.last_consumption if info.last_consumption is defined else info["last_consumption"] if "last_consumption" in info else None) }}</td>
+                </tr>
+            {%- else -%}
+                <tr>
+                    <td colspan="10" class="empty">暂无家户数据。</td>
+                </tr>
+            {%- endfor -%}
+        </tbody>
+    </table>
+{%- endmacro %}

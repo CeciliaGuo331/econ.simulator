@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Dict, Optional
 import urllib.parse
 
 import pytest
@@ -22,6 +23,93 @@ SCRIPT_SOURCE = (
     "    builder = OverridesBuilder()\n"
     "    return builder.build()\n"
 )
+
+
+def _build_world_state_dump(
+    simulation_id: str = "sim-main",
+    *,
+    tick: int = 0,
+    day: int = 0,
+    households: Optional[Dict[int, Dict[str, object]]] = None,
+) -> Dict[str, object]:
+    household_payload = households or {
+        1: {
+            "id": 1,
+            "balance_sheet": {
+                "cash": 1200.0,
+                "deposits": 600.0,
+                "loans": 100.0,
+                "inventory_goods": 0.0,
+            },
+            "skill": 1.1,
+            "employment_status": "employed_firm",
+            "labor_supply": 1.0,
+            "wage_income": 450.0,
+            "last_consumption": 320.0,
+        }
+    }
+
+    return {
+        "simulation_id": simulation_id,
+        "tick": tick,
+        "day": day,
+        "households": household_payload,
+        "firm": {
+            "price": 10.0,
+            "planned_production": 250.0,
+            "wage_offer": 85.0,
+            "employees": [1],
+            "last_sales": 200.0,
+            "balance_sheet": {
+                "cash": 5000.0,
+                "deposits": 2000.0,
+                "loans": 1000.0,
+                "inventory_goods": 80.0,
+            },
+        },
+        "bank": {
+            "deposit_rate": 0.01,
+            "loan_rate": 0.05,
+            "approved_loans": {"1": 500.0},
+            "balance_sheet": {
+                "cash": 20000.0,
+                "deposits": 15000.0,
+                "loans": 12000.0,
+                "inventory_goods": 0.0,
+            },
+        },
+        "government": {
+            "tax_rate": 0.15,
+            "unemployment_benefit": 60.0,
+            "spending": 10000.0,
+            "employees": [1, 2],
+            "balance_sheet": {
+                "cash": 8000.0,
+                "deposits": 4000.0,
+                "loans": 0.0,
+            },
+        },
+        "central_bank": {
+            "base_rate": 0.03,
+            "reserve_ratio": 0.1,
+            "inflation_target": 0.02,
+            "unemployment_target": 0.05,
+        },
+        "macro": {
+            "gdp": 123456.0,
+            "inflation": 0.02,
+            "unemployment_rate": 0.06,
+            "price_index": 102.0,
+            "wage_index": 101.0,
+        },
+        "features": {
+            "household_shock_enabled": False,
+            "household_shock_ability_std": 0.08,
+            "household_shock_asset_std": 0.05,
+            "household_shock_max_fraction": 0.4,
+        },
+        "household_shocks": {},
+    }
 
 
 @pytest.fixture
@@ -385,6 +473,230 @@ def test_admin_delete_script_blocked_when_simulation_running(monkeypatch, client
         _clear_override()
 
 
+def test_user_dashboard_displays_role_tables(monkeypatch, client):
+    user = {"email": "player@example.com", "user_type": "individual"}
+    _override_user(user)
+
+    households = {
+        1: {
+            "id": 1,
+            "balance_sheet": {
+                "cash": 1500.0,
+                "deposits": 500.0,
+                "loans": 120.0,
+                "inventory_goods": 0.0,
+            },
+            "skill": 1.2,
+            "employment_status": "employed_firm",
+            "labor_supply": 1.0,
+            "wage_income": 480.0,
+            "last_consumption": 350.0,
+        },
+        2: {
+            "id": 2,
+            "balance_sheet": {
+                "cash": 900.0,
+                "deposits": 200.0,
+                "loans": 60.0,
+                "inventory_goods": 0.0,
+            },
+            "skill": 0.95,
+            "employment_status": "unemployed",
+            "labor_supply": 1.0,
+            "wage_income": 150.0,
+            "last_consumption": 260.0,
+        },
+    }
+
+    class DummyWorldState:
+        def model_dump(self, mode: str = "json"):
+            return _build_world_state_dump(
+                "sim-main", tick=2, day=1, households=households
+            )
+
+    class DummyOrchestrator:
+        async def list_simulations(self):
+            return ["sim-main"]
+
+        async def get_state(self, simulation_id: str):
+            assert simulation_id == "sim-main"
+            return DummyWorldState()
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+
+    now = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    user_scripts = [
+        ScriptMetadata(
+            script_id="script-001",
+            simulation_id="sim-main",
+            user_id=user["email"],
+            description="主要策略",
+            created_at=now,
+            code_version="1.0",
+        ),
+        ScriptMetadata(
+            script_id="script-002",
+            simulation_id=None,
+            user_id=user["email"],
+            description="备用策略",
+            created_at=now,
+            code_version="1.1",
+        ),
+    ]
+
+    async def fake_list_user_scripts(email: str):
+        assert email == user["email"]
+        return user_scripts
+
+    async def fake_list_scripts(simulation_id: str):
+        assert simulation_id == "sim-main"
+        return [user_scripts[0]]
+
+    async def fake_get_simulation_limit(simulation_id: str):
+        assert simulation_id == "sim-main"
+        return 3
+
+    monkeypatch.setattr(script_registry, "list_user_scripts", fake_list_user_scripts)
+    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+    monkeypatch.setattr(
+        script_registry, "get_simulation_limit", fake_get_simulation_limit
+    )
+
+    try:
+        response = client.get("/web/dashboard?simulation_id=sim-main")
+        assert response.status_code == 200
+        body = response.text
+        assert "角色视角数据" in body
+        assert "家户样本" in body
+        assert "就业状态" in body
+        assert "1,500.00" in body
+    finally:
+        _clear_override()
+
+
+def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
+    admin_user = {"email": "admin@example.com", "user_type": "admin"}
+    _override_user(admin_user)
+
+    households = {
+        1: {
+            "id": 1,
+            "balance_sheet": {
+                "cash": 1800.0,
+                "deposits": 700.0,
+                "loans": 150.0,
+                "inventory_goods": 10.0,
+            },
+            "skill": 1.0,
+            "employment_status": "employed_firm",
+            "labor_supply": 1.0,
+            "wage_income": 500.0,
+            "last_consumption": 330.0,
+        }
+    }
+
+    class DummyFeatures:
+        def __init__(self, enabled: bool) -> None:
+            self.household_shock_enabled = enabled
+
+        def model_dump(self, mode: str = "json"):
+            return {
+                "household_shock_enabled": self.household_shock_enabled,
+                "household_shock_ability_std": 0.08,
+                "household_shock_asset_std": 0.05,
+                "household_shock_max_fraction": 0.4,
+            }
+
+    class DummyWorldState:
+        def __init__(self, simulation_id: str) -> None:
+            self.simulation_id = simulation_id
+
+        def model_dump(self, mode: str = "json"):
+            return _build_world_state_dump(
+                self.simulation_id, tick=4, day=2, households=households
+            )
+
+    class DummyOrchestrator:
+        async def list_simulations(self):
+            return ["sim-alpha", "sim-beta"]
+
+        async def get_simulation_features(self, simulation_id: str):
+            return DummyFeatures(enabled=simulation_id == "sim-beta")
+
+        async def get_state(self, simulation_id: str):
+            return DummyWorldState(simulation_id)
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+
+    now = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    scripts = [
+        ScriptMetadata(
+            script_id="household-script",
+            simulation_id="sim-alpha",
+            user_id="indy@example.com",
+            description="居民策略",
+            created_at=now,
+            code_version="1.0",
+        ),
+        ScriptMetadata(
+            script_id="firm-script",
+            simulation_id="sim-beta",
+            user_id="firm@example.com",
+            description="企业策略",
+            created_at=now,
+            code_version="2.0",
+        ),
+    ]
+
+    async def fake_list_all_scripts():
+        return scripts
+
+    async def fake_get_simulation_limit(simulation_id: str):
+        return {"sim-alpha": 2}.get(simulation_id)
+
+    async def fake_list_users():
+        base_time = datetime(2024, 5, 1, tzinfo=timezone.utc)
+        return [
+            SimpleNamespace(
+                email="admin@example.com",
+                created_at=base_time,
+                user_type="admin",
+            ),
+            SimpleNamespace(
+                email="indy@example.com",
+                created_at=base_time,
+                user_type="individual",
+            ),
+            SimpleNamespace(
+                email="firm@example.com",
+                created_at=base_time,
+                user_type="firm",
+            ),
+        ]
+
+    async def fake_list_scripts(simulation_id: str):
+        return [s for s in scripts if s.simulation_id == simulation_id]
+
+    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
+    monkeypatch.setattr(
+        script_registry, "get_simulation_limit", fake_get_simulation_limit
+    )
+    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
+
+    try:
+        response = client.get("/web/dashboard")
+        assert response.status_code == 200
+        body = response.text
+        assert "世界状态快照" in body
+        assert "仿真进度" in body
+        assert "宏观指标" in body
+        assert "家户样本（前 8 户）" in body
+        assert "脚本功能开关" in body
+    finally:
+        _clear_override()
+
+
 def test_admin_can_update_script_limit(monkeypatch, client):
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
@@ -428,13 +740,12 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
             return {"household_shock_enabled": False}
 
     class DummyWorldState:
+        def __init__(self) -> None:
+            self.tick = 0
+            self.day = 0
+
         def model_dump(self, mode: str = "json"):
-            return {
-                "tick": 0,
-                "day": 0,
-                "world": {},
-                "features": {"household_shock_enabled": False},
-            }
+            return _build_world_state_dump("sim-main", tick=self.tick, day=self.day)
 
     class DummyOrchestrator:
         async def list_simulations(self):
@@ -521,13 +832,11 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
             return {"household_shock_enabled": False}
 
     class DummyWorldState:
+        def __init__(self, simulation_id: str) -> None:
+            self.simulation_id = simulation_id
+
         def model_dump(self, mode: str = "json"):
-            return {
-                "tick": 0,
-                "day": 0,
-                "world": {},
-                "features": {"household_shock_enabled": False},
-            }
+            return _build_world_state_dump(self.simulation_id)
 
     class DummyOrchestrator:
         async def list_simulations(self):
@@ -543,7 +852,7 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
 
         async def get_state(self, simulation_id):
             assert simulation_id == "sim-main"
-            return DummyWorldState()
+            return DummyWorldState(simulation_id)
 
     monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
@@ -641,13 +950,11 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
             return {"household_shock_enabled": False}
 
     class DummyWorldState:
+        def __init__(self, simulation_id: str) -> None:
+            self.simulation_id = simulation_id
+
         def model_dump(self, mode: str = "json"):
-            return {
-                "tick": 0,
-                "day": 0,
-                "world": {},
-                "features": {"household_shock_enabled": False},
-            }
+            return _build_world_state_dump(self.simulation_id)
 
     class DummyOrchestrator:
         async def list_simulations(self):
@@ -663,7 +970,7 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
 
         async def get_state(self, simulation_id):
             assert simulation_id == "sim-main"
-            return DummyWorldState()
+            return DummyWorldState(simulation_id)
 
     monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 

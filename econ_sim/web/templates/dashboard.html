@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/state_macros.html" import fmt_number, render_table, render_households_table %}
 {% block title %}仪表盘 - Econ Simulator{% endblock %}
 {% block content %}
     <section class="panel">
@@ -57,7 +58,92 @@
     <section class="grid">
         <article class="card">
             <h3>角色视角数据</h3>
-            <pre class="json-preview scroll-pane">{{ context | tojson(indent=2) }}</pre>
+            <div class="scroll-pane role-state">
+                {% set ns = namespace(rendered=False) %}
+                {% if user.user_type == "individual" and context.households %}
+                    <h4>家户样本（最多 8 户）</h4>
+                    {{ render_households_table(context.households, 8) }}
+                    {% set ns.rendered = True %}
+                {% elif user.user_type == "firm" and context.firm %}
+                    <h4>企业经营概览</h4>
+                    {{ render_table([
+                        ("产品价格", context.firm.price),
+                        ("计划产出", context.firm.planned_production),
+                        ("工资报价", context.firm.wage_offer),
+                        ("雇员数量", context.firm.employees | length if context.firm.employees is defined else 0, True),
+                        ("最近销售额", context.firm.last_sales if context.firm.last_sales is defined else None)
+                    ]) }}
+                    <h4>资产负债表</h4>
+                    {{ render_table([
+                        ("现金", context.firm.balance_sheet.cash),
+                        ("存款", context.firm.balance_sheet.deposits),
+                        ("贷款", context.firm.balance_sheet.loans),
+                        ("库存（商品）", context.firm.balance_sheet.inventory_goods)
+                    ]) }}
+                    {% set ns.rendered = True %}
+                {% elif user.user_type == "government" and context.government %}
+                    <h4>财政概览</h4>
+                    {{ render_table([
+                        ("税率", context.government.tax_rate),
+                        ("失业救济", context.government.unemployment_benefit),
+                        ("财政支出", context.government.spending),
+                        ("雇员数量", context.government.employees | length if context.government.employees is defined else 0, True)
+                    ]) }}
+                    <h4>资产负债表</h4>
+                    {{ render_table([
+                        ("现金", context.government.balance_sheet.cash),
+                        ("存款", context.government.balance_sheet.deposits),
+                        ("贷款", context.government.balance_sheet.loans)
+                    ]) }}
+                    {% set ns.rendered = True %}
+                {% elif user.user_type == "commercial_bank" and context.bank %}
+                    <h4>银行指标</h4>
+                    {{ render_table([
+                        ("存款利率", context.bank.deposit_rate),
+                        ("贷款利率", context.bank.loan_rate),
+                        ("贷款申请数", context.bank.approved_loans | length if context.bank.approved_loans is defined else 0, True)
+                    ]) }}
+                    <h4>资产负债表</h4>
+                    {{ render_table([
+                        ("现金", context.bank.balance_sheet.cash),
+                        ("存款", context.bank.balance_sheet.deposits),
+                        ("贷款发放", context.bank.balance_sheet.loans),
+                        ("库存商品", context.bank.balance_sheet.inventory_goods)
+                    ]) }}
+                    {% set ns.rendered = True %}
+                {% elif user.user_type == "central_bank" and context.central_bank %}
+                    <h4>央行政策参数</h4>
+                    {{ render_table([
+                        ("基准利率", context.central_bank.base_rate),
+                        ("准备金率", context.central_bank.reserve_ratio),
+                        ("通胀目标", context.central_bank.inflation_target),
+                        ("失业目标", context.central_bank.unemployment_target)
+                    ]) }}
+                    {% set ns.rendered = True %}
+                {% else %}
+                    {% set world_view = context.world if context.world is defined else context %}
+                    {% if world_view %}
+                        <h4>世界概览</h4>
+                        {{ render_table([
+                            ("当前 Tick", world_view.tick if world_view.tick is defined else None, True),
+                            ("当前日", world_view.day if world_view.day is defined else None, True),
+                            ("家户数量", world_view.households | length if world_view.households is defined else 0, True)
+                        ]) }}
+                        {% if world_view.macro is defined %}
+                            <h4>宏观指标</h4>
+                            {{ render_table([
+                                ("GDP", world_view.macro.gdp),
+                                ("通胀率", world_view.macro.inflation),
+                                ("失业率", world_view.macro.unemployment_rate)
+                            ]) }}
+                        {% endif %}
+                        {% set ns.rendered = True %}
+                    {% endif %}
+                {% endif %}
+                {% if not ns.rendered %}
+                    <p class="empty">当前没有可展示的数据。</p>
+                {% endif %}
+            </div>
         </article>
         <article class="card">
             <h3>当前仿真世界脚本</h3>

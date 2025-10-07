@@ -399,6 +399,59 @@ body {
   grid-column: 1 / -1;
 }
 
+.state-snapshot,
+.role-state {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  padding-bottom: 0.5rem;
+}
+
+.state-block h4,
+.role-state h4 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+
+.state-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: rgba(15, 23, 42, 0.55);
+  border-radius: 0.6rem;
+  overflow: hidden;
+}
+
+.state-table thead tr {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.state-table th,
+.state-table td {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  text-align: left;
+  font-size: 0.92rem;
+}
+
+.state-table th {
+  width: 40%;
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.state-table td {
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.state-table tr:last-child td {
+  border-bottom: none;
+}
+
+.state-table .empty {
+  text-align: center;
+  color: rgba(226, 232, 240, 0.6);
+}
+
 .json-preview {
   white-space: pre-wrap;
   font-family: "JetBrains Mono", "Fira Code", monospace;
