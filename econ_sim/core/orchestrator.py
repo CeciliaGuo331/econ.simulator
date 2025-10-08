@@ -136,18 +136,23 @@ class SimulationOrchestrator:
         description: Optional[str] = None,
         *,
         agent_kind: AgentKind,
-        entity_id: str,
+        entity_id: Optional[str] = None,
     ) -> "ScriptMetadata":
         """在确保仿真处于 tick 0 的前提下上传并挂载脚本。"""
 
         await self._require_tick_zero(simulation_id)
+        resolved_entity_id = entity_id
+        if resolved_entity_id is None:
+            resolved_entity_id = await self._allocate_entity_id(
+                simulation_id, agent_kind
+            )
         metadata = await script_registry.register_script(
             simulation_id=simulation_id,
             user_id=user_id,
             script_code=script_code,
             description=description,
             agent_kind=agent_kind,
-            entity_id=entity_id,
+            entity_id=resolved_entity_id,
         )
         await self._ensure_entity_seeded(metadata)
         return metadata
@@ -200,10 +205,17 @@ class SimulationOrchestrator:
         """仅在 tick 0 时允许将脚本挂载至仿真实例。"""
 
         await self._require_tick_zero(simulation_id)
+        metadata_before = await script_registry.get_user_script(script_id, user_id)
+        resolved_entity_id = metadata_before.entity_id
+        if script_registry.is_placeholder_entity_id(resolved_entity_id):
+            resolved_entity_id = await self._allocate_entity_id(
+                simulation_id, metadata_before.agent_kind
+            )
         metadata = await script_registry.attach_script(
             script_id=script_id,
             simulation_id=simulation_id,
             user_id=user_id,
+            entity_id=resolved_entity_id,
         )
         await self._ensure_entity_seeded(metadata)
         return metadata
@@ -533,6 +545,41 @@ class SimulationOrchestrator:
         if state.tick != 0:
             raise SimulationStateError(simulation_id, state.tick)
         return state
+
+    async def _allocate_entity_id(
+        self, simulation_id: str, agent_kind: AgentKind
+    ) -> str:
+        state = await self.data_access.get_world_state(simulation_id)
+        if agent_kind is AgentKind.HOUSEHOLD:
+            used_ids = {int(identifier) for identifier in state.households.keys()}
+            scripts = await script_registry.list_scripts(simulation_id)
+            for metadata in scripts:
+                if (
+                    metadata.agent_kind is AgentKind.HOUSEHOLD
+                    and metadata.entity_id.isdigit()
+                ):
+                    used_ids.add(int(metadata.entity_id))
+            candidate = 1
+            while candidate in used_ids:
+                candidate += 1
+            return str(candidate)
+        if agent_kind is AgentKind.FIRM:
+            if state.firm is not None and state.firm.id:
+                return state.firm.id
+            return "firm_1"
+        if agent_kind is AgentKind.BANK:
+            if state.bank is not None and state.bank.id:
+                return state.bank.id
+            return "bank"
+        if agent_kind is AgentKind.GOVERNMENT:
+            if state.government is not None and state.government.id:
+                return state.government.id
+            return "government"
+        if agent_kind is AgentKind.CENTRAL_BANK:
+            if state.central_bank is not None and state.central_bank.id:
+                return state.central_bank.id
+            return "central_bank"
+        raise ScriptExecutionError(f"无法为主体类型 {agent_kind.value} 自动生成实体 ID")
 
     async def _ensure_entity_seeded(self, metadata: "ScriptMetadata") -> None:
         if metadata.simulation_id is None:

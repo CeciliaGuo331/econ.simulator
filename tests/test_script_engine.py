@@ -124,6 +124,52 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+async def test_register_script_generates_placeholder_id_when_missing() -> None:
+    registry = ScriptRegistry()
+    meta = await registry.register_script(
+        simulation_id=None,
+        user_id="auto-placeholder",
+        script_code="""
+def generate_decisions(context):
+    return {}
+""",
+        agent_kind=AgentKind.HOUSEHOLD,
+    )
+
+    assert registry.is_placeholder_entity_id(meta.entity_id)
+
+
+@pytest.mark.asyncio
+async def test_attach_script_replaces_placeholder_with_allocated_id() -> None:
+    await script_registry.clear()
+
+    user_id = "attach-placeholder"
+    meta = await script_registry.register_script(
+        simulation_id=None,
+        user_id=user_id,
+        script_code="""
+def generate_decisions(context):
+    return {}
+""",
+        agent_kind=AgentKind.HOUSEHOLD,
+    )
+
+    assert script_registry.is_placeholder_entity_id(meta.entity_id)
+
+    orchestrator = SimulationOrchestrator()
+    await orchestrator.create_simulation("auto-attach")
+
+    attached = await orchestrator.attach_script_to_simulation(
+        "auto-attach", meta.script_id, user_id
+    )
+
+    assert not script_registry.is_placeholder_entity_id(attached.entity_id)
+    assert attached.entity_id.isdigit()
+
+    await script_registry.clear()
+
+
+@pytest.mark.asyncio
 async def test_list_user_scripts_includes_unattached() -> None:
     await script_registry.clear()
 

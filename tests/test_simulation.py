@@ -659,8 +659,6 @@ def generate_decisions(context):
             "/simulations/missing-sim/scripts",
             json={
                 "code": script_code,
-                "agent_kind": "household",
-                "entity_id": "0",
             },
             headers=headers_user,
         )
@@ -679,7 +677,6 @@ def generate_decisions(context):
                 "code": script_code,
                 "description": "test",
                 "agent_kind": "firm",
-                "entity_id": "firm_user_seed",
             },
             headers=headers_user,
         )
@@ -753,8 +750,6 @@ def generate_decisions(context):
             f"/simulations/{simulation_id}/scripts",
             json={
                 "code": script_template,
-                "agent_kind": "firm",
-                "entity_id": "firm_late",
             },
             headers=headers_user,
         )
@@ -766,8 +761,6 @@ def generate_decisions(context):
             json={
                 "code": script_template,
                 "description": "library",
-                "agent_kind": "household",
-                "entity_id": "0",
             },
             headers=headers_user,
         )
@@ -803,7 +796,7 @@ async def test_admin_delete_script_blocked_after_tick_advances() -> None:
             json={
                 "email": "deleter@test.com",
                 "password": "StrongPass123",
-                "user_type": "individual",
+                "user_type": "firm",
             },
         )
         user_login = await client.post(
@@ -844,8 +837,6 @@ def generate_decisions(context):
     return {}
 """,
             "description": "attached",
-            "agent_kind": "firm",
-            "entity_id": "firm_attached",
         }
 
         upload = await client.post(
@@ -1058,7 +1049,6 @@ def generate_decisions(context):
                 "code": script_template,
                 "description": "first",
                 "agent_kind": "household",
-                "entity_id": "0",
             },
             headers=headers_user,
         )
@@ -1070,7 +1060,6 @@ def generate_decisions(context):
                 "code": script_template,
                 "description": "second",
                 "agent_kind": "household",
-                "entity_id": "1",
             },
             headers=headers_user,
         )
@@ -1136,7 +1125,6 @@ def generate_decisions(context):
             json={
                 "code": script_one,
                 "agent_kind": "household",
-                "entity_id": "0",
             },
             headers=headers_user,
         )
@@ -1147,7 +1135,6 @@ def generate_decisions(context):
             json={
                 "code": script_two,
                 "agent_kind": "household",
-                "entity_id": "1",
             },
             headers=headers_user,
         )

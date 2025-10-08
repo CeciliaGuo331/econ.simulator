@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from econ_sim.main import app
 from econ_sim.web import views
+from econ_sim.data_access.models import AgentKind
 from econ_sim.script_engine import script_registry
 from econ_sim.script_engine.registry import ScriptMetadata
 from econ_sim.core.orchestrator import SimulationNotFoundError, SimulationStateError
@@ -212,6 +213,8 @@ def test_upload_script_saved_to_library(client):
         scripts = asyncio.run(script_registry.list_user_scripts("player@example.com"))
         assert len(scripts) == 1
         assert scripts[0].simulation_id is None
+        assert script_registry.is_placeholder_entity_id(scripts[0].entity_id)
+        assert scripts[0].agent_kind is AgentKind.HOUSEHOLD
     finally:
         _clear_override()
         asyncio.run(script_registry.clear())
@@ -228,6 +231,8 @@ def test_detach_script_requires_tick_zero(monkeypatch, client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
     )
     asyncio.run(
@@ -278,6 +283,8 @@ def test_detach_script_allows_tick_zero(monkeypatch, client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
     )
     asyncio.run(
@@ -286,12 +293,20 @@ def test_detach_script_allows_tick_zero(monkeypatch, client):
 
     ticks = {"sim-zero": 0}
 
-    async def fake_get_state(simulation_id: str):
-        if simulation_id not in ticks:
-            raise SimulationNotFoundError()
-        return SimpleNamespace(tick=ticks[simulation_id])
+    class DummyOrchestrator:
+        async def get_state(self, simulation_id: str):
+            if simulation_id not in ticks:
+                raise SimulationNotFoundError()
+            return SimpleNamespace(tick=ticks[simulation_id])
 
-    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+        async def detach_script_from_simulation(
+            self, simulation_id: str, script_id: str, user_id: str
+        ) -> None:
+            assert simulation_id == "sim-zero"
+            assert user_id == user["email"]
+            await script_registry.detach_user_script(script_id, user_id)
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.post(
@@ -325,6 +340,8 @@ def test_delete_script_unattached(client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
     )
 
@@ -357,6 +374,8 @@ def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
     )
     asyncio.run(
@@ -405,6 +424,8 @@ def test_delete_script_attached_tick_zero(monkeypatch, client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
     )
     asyncio.run(
@@ -413,12 +434,19 @@ def test_delete_script_attached_tick_zero(monkeypatch, client):
 
     ticks = {"sim-reset": 0}
 
-    async def fake_get_state(simulation_id: str):
-        if simulation_id not in ticks:
-            raise SimulationNotFoundError()
-        return SimpleNamespace(tick=ticks[simulation_id])
+    class DummyOrchestrator:
+        async def get_state(self, simulation_id: str):
+            if simulation_id not in ticks:
+                raise SimulationNotFoundError()
+            return SimpleNamespace(tick=ticks[simulation_id])
 
-    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+        async def remove_script_from_simulation(
+            self, simulation_id: str, script_id: str
+        ) -> None:
+            assert simulation_id == "sim-reset"
+            await script_registry.delete_user_script(script_id, user["email"])
+
+    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.post(
@@ -533,6 +561,8 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
             description="主要策略",
             created_at=now,
             code_version="1.0",
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         ),
         ScriptMetadata(
             script_id="script-002",
@@ -541,6 +571,8 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
             description="备用策略",
             created_at=now,
             code_version="1.1",
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="2",
         ),
     ]
 
@@ -628,6 +660,9 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
         async def get_state(self, simulation_id: str):
             return DummyWorldState(simulation_id)
 
+        async def list_recent_script_failures(self, simulation_id, limit=None):
+            return []
+
     monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
     now = datetime(2024, 6, 1, tzinfo=timezone.utc)
@@ -639,6 +674,8 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
             description="居民策略",
             created_at=now,
             code_version="1.0",
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         ),
         ScriptMetadata(
             script_id="firm-script",
@@ -647,6 +684,8 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
             description="企业策略",
             created_at=now,
             code_version="2.0",
+            agent_kind=AgentKind.FIRM,
+            entity_id="firm_1",
         ),
     ]
 
@@ -765,6 +804,9 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
             assert simulation_id == "sim-main"
             return DummyWorldState()
 
+        async def list_recent_script_failures(self, simulation_id, limit=None):
+            return []
+
     monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
     async def fake_list_users():
@@ -819,6 +861,8 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
         description=None,
         created_at=base_time,
         code_version="v1",
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="1",
     )
     script_meta_two = ScriptMetadata(
         script_id="script-2",
@@ -827,6 +871,8 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
         description=None,
         created_at=base_time,
         code_version="v2",
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="2",
     )
 
     class DummyFeatures:
@@ -855,6 +901,12 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
         async def get_state(self, simulation_id):
             assert simulation_id == "sim-main"
             return DummyWorldState(simulation_id)
+
+        async def list_recent_script_failures(
+            self, simulation_id: str, limit: int = 50
+        ):
+            assert simulation_id == "sim-main"
+            return []
 
     monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
@@ -899,6 +951,8 @@ def test_attach_script_registers_participant(client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
 
     metadata = asyncio.run(_setup())
@@ -945,6 +999,8 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
         description="demo script",
         created_at=base_time,
         code_version="v1",
+        agent_kind=AgentKind.HOUSEHOLD,
+        entity_id="1",
     )
 
     class DummyFeatures:
@@ -973,6 +1029,12 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
         async def get_state(self, simulation_id):
             assert simulation_id == "sim-main"
             return DummyWorldState(simulation_id)
+
+        async def list_recent_script_failures(
+            self, simulation_id: str, limit: int = 50
+        ):
+            assert simulation_id == "sim-main"
+            return []
 
     monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
 
@@ -1019,12 +1081,16 @@ def test_attach_script_respects_limit(client):
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="1",
         )
         second = await script_registry.register_script(
             simulation_id=None,
             user_id=user["email"],
             script_code=SCRIPT_SOURCE,
             description=None,
+            agent_kind=AgentKind.HOUSEHOLD,
+            entity_id="2",
         )
         return first, second
 
