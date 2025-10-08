@@ -8,11 +8,11 @@
 作为经济系统中的基本消费与劳动供给单位。
 
 ### **状态 (State)**
-* **1. 财务状况 (Financial Position):**
-    * `流动资产 (Liquid Assets)`: 现金
-    * `储蓄资产 (Savings Assets)`: 银行存款
+* **1. 资产 (Assets):**
+    * `流动资产 (Cash)`: 现金
+    * `储蓄资产 (Savings)`: 银行存款
 * **2. 内在属性 (Intrinsic Attributes):**
-    * `消费偏好 (Consumption Preferences)`: 由异质性的效用函数决定，是消费选择的基础。
+    * `效用函数 (Utility)`: 消费选择的基础。
     * `人力资本 (Human Capital)`:
         * `基础劳动能力 (Innate Abilities)`
         * `教育水平 (Education Level)`
@@ -28,9 +28,10 @@
 * **2. 消费决策 (Consumption Decisions):**
     * `消费结构决策`: 在满足基本生活需求之上，根据偏好在不同商品间分配消费支出。
 * **3. 劳动决策 (Labor Decisions):**
-    * `劳动力市场参与`: 决定是否寻找工作、接受Offer、跳槽或离职。
+    * `劳动力市场参与`: 决定参加工作。每日tick1可以选择。
 * **4. 人力资本投资 (Human Capital Investment):**
-    * `教育决策`: 选择是否接受教育以提升长期劳动能力。
+    * `教育决策`: 选择是否接受教育以提升长期劳动能力。每日tick1可以选择。
+    - （参与工作和接受教育是互斥的）
 
 ### **限制 (Constraints)**
 * **1. 预算约束:** `资产不可为负 (No-Debt Constraint)`。
@@ -79,7 +80,9 @@
 
 ### **决策 (Monetary Policy Tools)**
 * **1. 价格型工具:** `调整基准利率 (Policy Rate)`。
-* **2. 数量型工具:** `调整法定准备金率 (Reserve Ratio)`、`执行公开市场操作 (Open Market Operations)`。
+* **2. 数量型工具:** 
+    - `调整法定准备金率 (Reserve Ratio)`
+    - `执行公开市场操作 (Open Market Operations)`：国债买卖与回购。
 
 ### **限制 (Core Mandate & Responsibilities)**
 * **1. 政策使命:** 核心职责是**维持物价稳定**和**促进经济增长**。
@@ -93,7 +96,7 @@
 ### **状态 (State)**
 * **1. 自身资产负债表 (Balance Sheet):**
 * **2. 风险与健康指标 (Risk & Health Metrics):**
-    * 用于内部风险管理与外部监管合规的关键比率，如`实际准备金率`、`资本充足率`、`流动性比率`。
+    * `实际准备金率`
 * **3. 外部政策环境 (Policy Environment):**
     * 来自央行的`法定准备金率`和`基准利率`。
     * 市场上的`无风险利率`。
@@ -111,23 +114,17 @@
 ---
 
 ## **五、 政府 (Government Agent)**
-作为公共服务的提供者和财富的再分配者，执行财政政策。
+执行财政政策。
 
 ### **状态 (State)**
-* **1. 财政状况 (Fiscal Position):**
-    * `财政收支`: 税收总额、各项支出、财政赤字/盈余。
-* **2. 债务状况 (Debt Position):**
-    * `国债存量`与`国债利率`。
-* **3. 宏观经济感知 (Macroeconomic Awareness):**
+* **1. 宏观经济感知 (Macroeconomic Awareness):**
     * `关键指标`: GDP、失业率、通胀率、基尼系数等。
-* **4. 政策目标 (Policy Targets):**
+* **2. 政策目标 (Policy Targets):**
     * `经济增长`、`充分就业`与`社会公平`等。
 
 ### **决策 (Fiscal Policy Tools)**
 * **1. 税收政策:** `设定个人、企业、消费等关键税率`。
-* **2. 支出政策:** `决定政府购买、转移支付、公共部门雇佣的规模`。
-* **3. 融资政策:** `在出现赤字时决定国债的发行规模`。
+* **2. 融资政策:** `决定国债的发行规模`。
 
 ### **限制 (Constraints)**
-* **1. 硬约束:** `预算约束 (Budget Constraint)`，支出必须由税收或新增债务覆盖。
-* **2. 软约束:** `债务可持续性`和`政治社会因素`，限制了政策空间。
+* **1. 软约束:** 实现政策目标。
