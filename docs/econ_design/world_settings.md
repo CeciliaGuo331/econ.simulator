@@ -1,85 +1,122 @@
-# **经济仿真引擎 架构设计**
+# 经济仿真世界设定
 
-## **1. 引言与设计目标**
+本文件定义仿真世界的跨代理共享参数、时间结构以及宏观指标的计算方式。所有变量均采用 snake_case 代码风格命名，以便在文档与实现之间建立一一对应关系。
 
-**1.1. 项目定位:**
-本引擎旨在构建一个离散时间下的、多代理人（Multi-Agent）宏观经济仿真平台。其核心应用场景是作为一门宏观经济学相关课程的教学与实验平台，允许学生（玩家）通过编写或配置个体策略（Agent Strategy）来参与、影响并观察虚拟经济的动态演化。
+---
 
-**1.2. 核心设计原则:**
-* **模块化 (Modularity):** 引擎核心逻辑与个体策略逻辑必须严格分离，通过清晰的API进行交互。
-* **可扩展性 (Extensibility):** 架构应支持未来方便地增加新的代理人类型、市场机制或经济冲击。
-* **可观测性 (Observability):** 系统的所有状态和数据都应易于记录、查询和可视化，为教学和分析提供支持。
-* **确定性与可复现性 (Determinism & Reproducibility):** 在给定相同的初始条件和策略下，仿真结果应是可复现的（在不使用外部随机API如LLM的情况下）。
+## 1. 时间刻度与随机性
 
-## **2. 系统架构分层**
+### 1.1 离散时间结构
 
-本引擎建议采用分层架构，以实现关注点分离，提高系统的健壮性和灵活性。
+* `n_ticks_per_day = 100`: 每个自然日包含的离散事件循环数。
+* `tick_index = τ ∈ ℕ`: 全局 tick 序号，从 0 开始。
+* `day_index = ⌊τ / n_ticks_per_day⌋`: 当前 tick 所在的天数，从 0 开始计数。
+* `tick_in_day = (τ mod n_ticks_per_day) + 1`: 当前 tick 在当天内部的位置，取值范围 `[1, n_ticks_per_day]`。
+* `is_daily_decision_tick = (tick_in_day = 1)`: 只有在每日第一个 tick 时，家户可以更新 `is_employed`、`is_studying` 等跨日决策；其他市场交易在所有 tick 上均可发生。
 
-* **第四层：策略/API层 (Strategy/API Layer)**
-    * **描述:** 这是完全暴露给“玩家”的层面。玩家在此编写、配置或接入其代理人的决策逻辑。
-    * **实现:** 可以是Python脚本、JSON配置文件，或封装了LLM API调用的模块。
-    * **交互:** 引擎通过标准化的API从此层获取每个代理人的“决策”输出。
+仿真主循环按照 `τ` 递增执行，完成 `simulation_days` 个自然日后终止。
 
-* **第三层：代理人层 (Agent Layer)**
-    * **描述:** 仿真世界中所有独立个体的集合。每个代理人实例都包含其完整的“状态（State）”数据，并执行从策略层获取的“决策（Decision）”。
-    * **核心:** 管理大量的个人、企业、银行等实例的生命周期和状态数据。
+### 1.2 随机数设定
 
-* **第二层：市场与环境层 (Market & Environment Layer)**
-    * **描述:** 这是代理人之间发生交互的“公共空间”。它不包含任何代理人，而是定义了交互的规则和结算的机制。
-    * **组件:**
-        * `商品市场 (Goods Market)`: 负责商品交易、价格发现。
-        * `劳动力市场 (Labor Market)`: 负责职位发布、求职匹配、工资决定。
-        * `金融市场 (Financial Market)`: 负责存贷款、债券发行与交易。
-        * `宏观数据中心 (Macro Data Center)`: 负责计算和发布所有宏观经济指标。
+* `rng_seed_global`: 全局随机数生成器种子，默认值为 `42`。所有代理在初始化时使用 `rng_seed_global + agent_id` 作为局部种子，以确保可复现性。
+* `TruncNormal(μ, σ, lower, upper)`: 截断正态分布，先从 `N(μ, σ²)` 取样，再将样本裁剪到 `[lower, upper]`。
+* `Uniform(a, b)`: 连续均匀分布。
+* `Bernoulli(p)`: 伯努利分布，概率 `p` 取值 1。
 
-* **第一层：核心引擎层 (Core Engine Layer)**
-    * **描述:** 系统的心脏引擎。
-    * **职责:**
-        * `主事件循环 (Main Event Loop)`: 驱动仿真时间按“Tick”前进。
-        * `时序调度器 (Scheduler)`: 严格规定在一个Tick内，各个层和模块的计算顺序。
-        * `规则执行官 (Rule Enforcer)`: 确保所有代理人的行为都符合其“限制（Constraints）”。
-        * `数据记录器 (Logger)`: 记录所有状态和事件，用于事后分析。
+---
 
-## **3. 时间与事件循环机制**
+## 2. 全局常量与默认参数
 
-根据“**离散时间、每天运行N次独立事件循环**”的核心设定，我们定义如下时间结构：
+| 变量名 | 默认值 | 取值范围 / 类型 | 描述 |
+| --- | --- | --- | --- |
+| `household_count` | 400 | 正整数 (≥1) | 初始家户数量 |
+| `firm_count` | 1 | 正整数 | 初始企业数量 |
+| `bank_count` | 1 | 正整数 | 初始商业银行数量 |
+| `government_exists` | True | 布尔 | 是否启用政府代理 |
+| `central_bank_exists` | True | 布尔 | 是否启用央行代理 |
+| `simulation_days` | 365 | 正整数 | 仿真天数上限 |
+| `price_index_base` | 1.0 | (0, +∞) | 基期价格水平 |
+| `potential_output` | 120.0 | (0, +∞) | 潜在产出 (以商品市场数量计) |
+| `discount_factor` | 0.96 | (0, 1) | 家户贴现因子 `β` |
+| `risk_aversion` | 2.0 | (0, +∞) | 家户 CRRA 效用函数风险厌恶度 `σ` |
+| `phi_inflation` | 1.5 | (0, +∞) | 泰勒规则对通胀偏差的权重 |
+| `phi_output` | 0.5 | (0, +∞) | 泰勒规则对产出缺口的权重 |
+| `reserve_ratio_base` | 0.08 | [0, 1) | 基础法定准备金率 |
+| `policy_rate_base` | 0.02 | [0, 0.5) | 基准年化政策利率 |
+| `loan_rate_spread_base` | 0.03 | [0, 0.5) | 银行贷款利率对政策利率的基本加点 |
+| `deposit_rate_spread_base` | -0.01 | (-0.5, 0.5) | 银行存款利率对政策利率的基本贴点 |
+| `labor_search_base_prob` | 0.35 | [0, 1] | 家户在失业状态下的基线求职概率 |
+| `education_cost_per_day` | 2.0 | [0, +∞) | 家户投入教育的每日现金成本 |
+| `education_gain` | 0.05 | (0, 1] | 每完成一次教育周期的人力资本增量 |
+| `wage_base` | 1.2 | (0, +∞) | 基线名义工资 |
+| `depreciation_rate` | 0.05 | [0, 1) | 企业资本折旧率 (年化) |
+| `inventory_carry_cost` | 0.01 | [0, 0.5) | 企业库存单位持有成本 |
 
-*   **纪元 (Epoch):** 一次完整的仿真运行。
-*   **天 (Day):** 宏观经济数据发布的基本周期。
-*   **时刻 (Tick):** 引擎事件循环的最小单位，**每天分为N个Ticks**（例如，早晨、下午、夜晚）。每个Tick都会执行一次完整且结构相同的事件循环。
+所有利率和产出默认以年化名义值给出。引擎在每个 tick 内通过 `effective_rate_per_tick = (1 + annual_rate)^(1 / (n_ticks_per_day * 365)) - 1` 将其转换为等效的 tick 利率。
 
-**标准事件循环 (Standard Event Loop) - 每日重复N次:**
+---
 
-为了保证因果关系的清晰（例如，生产必须先于交易），一个标准的事件循环（Tick）内部包含以下顺序执行的阶段。这个流程在一天内会重复N次。
+## 3. 标准事件循环
 
-1.  **计划阶段**
-    *   所有代理人（个人、企业、商业银行、央行、政府）观察当前状态和市场数据，制定本Tick的行动计划（如生产量、消费量、招聘需求等）。
+每个 tick 按以下顺序执行，确保世界状态在阶段之间保持一致：
 
-2.  **生产与分配阶段**
-    *   企业根据计划进行生产，**产品进入库存**。
-    *   如果在tick1，企业向雇员支付工资，**更新被雇佣家户和企业的现金**。
+1. **观测阶段 (Observation)**
+    * 所有代理收集当前可见信息：
+        * 私有状态 `agent_state`。
+        * 公开市场数据 `market_data`（见《市场设计》文档）。
+        * 管理端设定的 exogenous shock 控制变量。
 
-3.  **市场交易阶段**
-    *   **劳动力市场:** 如果在tick1，企业发布岗位，个人求职。
-    *   **商品市场:** 个人消费，企业出售商品。集合竞价。
-    *   **金融市场:** 个人储蓄，企业贷款。
-    *   本阶段每个市场交易完成后都要进行一次状态更新，再到下一个市场。
+2. **计划阶段 (Planning)**
+  * 家户在 `is_daily_decision_tick` 时生成 `consumption_plan`, `labor_plan`, `education_plan`，其中 `education_plan` 仅在当日 tick1 可重新选择是否投入教育。
+    * 企业计算 `production_plan`, `labor_demand_plan`, `price_plan`。
+    * 银行和政府设定当期的报价或政策变量。
 
-## **4. 代理人策略API与LLM集成设想**
+3. **执行阶段 (Execution)**
+    * **生产子阶段**：企业根据 `production_plan` 和上一 tick 的 `labor_assignment` 更新 `inventory` 与 `capital_stock`。
+        * 产出函数：$\text{output}_τ = technology_τ \cdot capital_{τ}^{\alpha} \cdot labor_{τ}^{1-\alpha}$，其中 `α = 0.33`。
+    * **收入与支付子阶段**：如果 `is_daily_decision_tick = True`，企业支付工资 `wage_payment = wage_offer * hours_assigned`，政府发放转移，银行计提利息。
+  * **市场交易子阶段**：串行运行劳动力、商品、金融市场撮合与结算（细节见《市场设计》）。
+    * 金融市场部分仅包含家户与企业向商业银行的存款、取款和贷款撮合，企业不发行债券或股票。
+    * 政府债券认购由家户与商业银行提交订单后采用随机顺序撮合，成交结果用于更新家户 `bond_holdings` 与现金流。
 
-* **API设计:** 引擎在需要代理人决策时，会调用一个标准化的函数，例如：
-    `decision_object = player_strategy.get_decision(agent_state, market_data)`
-    * `agent_state`: 该代理人可见的**私有**状态。
-    * `market_data`: 该代理人可见的**公开**市场数据。
+4. **结算阶段 (Settlement)**
+    * 更新所有余额、资产、库存以及债务。
+    * 记录成交日志与价格。
 
-* **玩家的实现方式:**
-    1.  **传统编程:** 玩家使用Python等语言，编写包含经济学逻辑的`if-else`和算法代码。
-    2.  **LLM集成:** 玩家的`get_decision`函数内部调用大语言模型以辅助决策。具体流程例如:
-        a.  将`agent_state`和`market_data`组合并**格式化**成一段给LLM的自然语言提示（Prompt）。
-        b.  通过API**调用**一个大型语言模型（如GPT系列）。
-        c.  **解析**LLM返回的自然语言回答，将其转换成引擎可以理解的、结构化的`decision_object`。
+5. **统计阶段 (Statistics)**
+    * 计算宏观指标 `price_index`, `inflation_rate`, `unemployment_rate` 等。
+    * 将结果写入系统可见的 `macro_snapshot`。
 
-* **需注意的挑战:**
-    * **性能与成本:** 大量代理人频繁调用LLM API会带来显著的时间延迟和费用成本。每日的tick数量需要调试后得出结论。
-    * **稳定性与可复现性:** LLM的回答具有随机性，可能导致仿真结果难以复现。同时，返回格式的不稳定也可能导致解析失败。
-    * **“黑箱”行为:** 难以精确解释为什么LLM会做出某个特定的经济决策。
+---
+
+## 4. 宏观指标计算
+
+以下聚合变量在每个 tick 的统计阶段更新：
+
+* **价格指数**
+  * `price_index_τ = max(ε, λ_cpi * goods_price_τ + (1 - λ_cpi) * price_index_{τ-1})`
+  * `λ_cpi = 0.3`，`ε = 10^{-6}` 防止除零。
+* **通胀率**
+  * `inflation_rate_τ = (price_index_τ - price_index_{τ-1}) / price_index_{τ-1}`，结果裁剪到 `[-0.2, 0.2]`。
+* **总产出与 GDP**
+  * `aggregate_output_τ = firm_output_τ`。
+  * `gdp_τ = goods_price_τ * aggregate_output_τ + government_spending_τ`。
+* **失业率**
+  * `unemployment_rate_τ = 1 - (employed_households_τ / household_count)`。
+* **产出缺口**
+  * `output_gap_τ = (aggregate_output_τ - potential_output) / potential_output`。
+* **平均工资与利率**
+  * `average_wage_τ = wage_bill_τ / max(employed_households_τ, 1)`。
+  * `average_deposit_rate_τ`、`average_loan_rate_τ` 为银行发布利率的简单平均。
+
+所有聚合指标将作为 `market_data` 暴露给代理人策略层，用于生成下一 tick 的决策。
+
+---
+
+## 5. 数据记录与可见性
+
+* `agent_state_history`: 每个代理在 tick 结束后的状态快照，仅对系统可见。
+* `market_order_log`: 包含各市场所有订单与成交记录，暴露给管理员与回放工具。
+* `macro_history`: 记录所有宏观指标时间序列，作为教学可视化与策略评估的基础。
+
+以上设定与《代理人设计》《市场设计》文档构成统一闭环：世界参数限定变量范围，市场机制负责撮合结算，代理人依托这些信息进行决策。实现时应以这些变量名和公式为准，确保文档与代码保持一致。

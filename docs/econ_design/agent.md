@@ -1,130 +1,239 @@
 # 代理人设计
 
-本文档定义了一个多代理人（Multi-Agent）经济仿真系统中的核心个体类型、其内部状态、决策逻辑及行为约束。该设计旨在构建一个能够模拟复杂宏观经济现象的动态微观基础。
+本文件定义所有核心代理人的状态变量、初始化分布、决策函数与约束条件，并与《世界设定》《市场设计》保持一致。除特别说明外，所有时间下标均指全局 tick `τ`，相关记号见《世界设定》。
 
 ---
 
-## **一、 个人/家户 (Household Agent)**
-作为经济系统中的基本消费与劳动供给单位。
+## 0. 通用符号与函数
 
-### **状态 (State)**
-* **1. 资产 (Assets):**
-    * `流动资产 (Cash)`: 现金
-    * `储蓄资产 (Savings)`: 银行存款
-* **2. 内在属性 (Intrinsic Attributes):**
-    * `效用函数 (Utility)`: 消费选择的基础。
-    * `人力资本 (Human Capital)`:
-        * `基础劳动能力 (Innate Abilities)`
-        * `教育水平 (Education Level)`
-* **3. 外生冲击 (Exogenous Shocks):**
-    * `能力冲击`: 影响短期劳动生产率的随机事件。
-    * `资产冲击`: 来源于风险资产的价值波动。
-    * `管理端开关`: 管理员可按仿真实例启用/禁用家户冲击。当启用时，冲击遵循零均值随机过程，并在个体层面保持异质性；若关闭，则家户回到基线的确定性动态。
-
-### **决策 (Decision)**
-* **1. 财务决策 (Financial Decisions):**
-    * `储蓄/消费决策`: 决定收入中用于当期消费和未来储蓄的比例。
-    * `资产配置决策`: 在现金和存款等不同形式的资产间进行分配。
-* **2. 消费决策 (Consumption Decisions):**
-    * `消费结构决策`: 在满足基本生活需求之上，根据偏好在不同商品间分配消费支出。
-* **3. 劳动决策 (Labor Decisions):**
-    * `劳动力市场参与`: 决定参加工作。每日tick1可以选择。
-* **4. 人力资本投资 (Human Capital Investment):**
-    * `教育决策`: 选择是否接受教育以提升长期劳动能力。每日tick1可以选择。
-    - （参与工作和接受教育是互斥的）
-
-### **限制 (Constraints)**
-* **1. 预算约束:** `资产不可为负 (No-Debt Constraint)`。
-* **2. 生存约束:** `必须满足最低消费水平 (Subsistence Consumption)`。
+* `TruncNormal(μ, σ, lower, upper)`：截断正态分布。
+* `effective_rate(r_annual) = (1 + r_annual)^{1 / (365 * n_ticks_per_day)} - 1`：将年化利率转为 tick 利率。
+* `clip(x, a, b)`：将 `x` 裁剪到 `[a, b]`。
 
 ---
 
-## **二、 企业 (Firm Agent)**
-作为经济系统中的基本生产与投资单位。
+## 1. 家户代理 (Household Agent)
 
-### **状态 (State)**
-* **1. 财务与实物资产 (Financial & Physical Assets):**
-    * `流动资产`: 现金、银行存款
-    * `库存 (Inventory)`: 产成品或原材料
-* **2. 生产技术 (Production Technology):**
-    * `生产函数`: 由技术参数决定，描述投入到产出的转换效率。
-* **3. 外生冲击 (Exogenous Shocks):**
-    * `技术冲击`或`需求冲击`等随机事件。
+### 1.1 状态变量
 
-### **决策 (Decision)**
-* **1. 资本决策 (Capital Decisions):**
-    * `投资决策`: 进行本企业的固定资产投资（扩大再生产），或购买其他代理人发行的金融资产（如政府债券）。
-    * `融资决策`: 决定是否以及如何申请银行贷款。
-* **2. 运营决策 (Operational Decisions):**
-    * `生产与雇佣`: 决定生产规模，并据此雇佣或解雇员工。
-    * `定价策略`: 设定其产品的市场销售价格。
-    * `库存管理`: 根据市场信号和预期决定库存水平。
+* `cash_τ`
+    * 初始化：`assets_0 ~ TruncNormal(100, 15, 60, 160)`，`cash_share_0 ~ Uniform(0.3, 0.5)`，`cash_0 = assets_0 * cash_share_0`。
+    * 动态：
+        $$cash_{τ+1} = cash_τ + wage_income_τ + transfer_income_τ + loan_draw_τ + bond_cashflow_τ - consumption_nominal_τ - deposit_flow_τ - loan_repayment_τ - education_cost_τ$$
+    * 约束：`cash_τ ≥ 0`。
 
-### **限制 (Constraints)**
-* **1. 偿付能力约束:** `总资产不可为负 (Solvency Constraint)`，否则将面临破产。
-* **2. 运营约束:** `需支付员工基本工资 (Minimum Wage Obligation)`。
+* `savings_τ`
+    * 初始化：`savings_0 = assets_0 - cash_0`。
+    * 动态：
+        $$savings_{τ+1} = (savings_τ + deposit_flow_τ - withdrawal_flow_τ) \cdot (1 + deposit_rate_τ^{tick})$$
+        其中 `deposit_rate_τ^{tick} = effective_rate(deposit_rate_τ^{annual})`。
+    * 约束：`savings_τ ≥ 0`。
+
+* `bond_holdings_τ`
+    * 初始化：`bond_holdings_0 = 0`。
+    * 动态：
+        $$bond\_holdings_{τ+1} = bond\_holdings_τ + bond\_allocation_τ - bond\_redemption_τ$$
+        其中 `bond_allocation_τ` 来源于国债市场的成交结果，`bond_redemption_τ` 表示到期兑付的面额数量。
+
+* `bond_cashflow_τ`
+    * 定义：`bond_cashflow_τ = coupon_income_τ + redemption_cash_τ - bond_purchase_payment_τ`，由国债市场结算阶段提供。
+
+* `assets_τ = cash_τ + savings_τ + bond_holdings_τ`，`assets_τ ≥ 0`。
+
+* `ability`
+    * 静态异质性：`ability ~ TruncNormal(1.0, 0.08, 0.7, 1.3)`。
+
+* `education_level_τ`
+    * 初始化：`education_level_0 ~ TruncNormal(0.5, 0.1, 0.2, 0.8)`。
+    * 动态：
+        $$education\_level_{τ+1} = clip(education\_level_τ + education\_gain \cdot is\_studying_d,\ 0,\ 1.5)$$
+        仅在 `is_daily_decision_tick` 更新，其中 `is_studying_d ∈ {0, 1}`。
+
+* `productivity_τ`
+    * `shock_productivity_τ ~ TruncNormal(0, 0.05, -0.2, 0.2)`。
+    * 公式：`productivity_τ = ability * (1 + 0.6 * education_level_τ) * (1 + shock_productivity_τ)`。
+
+* `is_employed_d ∈ {0, 1}`
+    * 初始化：`Bernoulli(0.6)`。
+    * 仅在每日第一个 tick 可通过劳动力市场匹配更新。
+
+* `reservation_wage_d`
+    * 公式：`reservation_wage_d = wage_base * (0.6 + 0.4 * ability) * (1 + 0.5 * (education_level_d - 0.5))`。
+
+* `expected_income_d`
+    * 使用自回归预测：`expected_income_d = 0.7 * realized_income_{d-1} + 0.3 * wage_base`。
+
+### 1.2 决策变量
+
+* `consumption_nominal_τ`
+    * 以 CRRA 效用最大化为目标：
+        $$u(c\_{real,τ}) = \frac{c\_{real,τ}^{1 - risk\_aversion} - 1}{1 - risk\_aversion},\quad c\_{real,τ} = \frac{consumption\_nominal_τ}{price\_index_τ}$$
+    * 近似决策规则：
+        $$consumption\_nominal_τ = clip(κ\_c \cdot (cash_τ + savings_τ + expected\_income_d)^{θ_c},\ c\_{min},\ cash_τ + savings_τ)$$
+        默认 `κ_c = 0.25`, `θ_c = 0.9`, `c_min = 0.1`。
+
+* `labor_supply_d`
+    * 求职概率：
+        $$job\_search\_prob_d = clip(labor\_search\_base\_prob + 0.15 \cdot (1 - assets_d / 120),\ 0, 1)$$
+    * 若 `is_studying_d = 0` 且 `Bernoulli(job_search_prob_d) = 1`，则提交劳动订单。
+
+* `is_studying_d`
+    * 决策窗口：仅在 `is_daily_decision_tick = True` (每日 tick1) 时可重新选择。
+    * 选择规则：若 `assets_d > education_cost_per_day * 20` 且 `expected_wage_gain_d > education_cost_per_day`，则设为 1；否则 0。
+
+* `deposit_flow_τ` 与 `withdrawal_flow_τ`
+    * 保持目标流动性比：`target_liquidity_ratio = 0.4`。
+    * 若 `cash_τ / assets_τ > target_liquidity_ratio + 0.1`，则 `deposit_flow_τ = cash_τ - target_liquidity_ratio * assets_τ`。
+    * 若 `cash_τ / assets_τ < target_liquidity_ratio - 0.1`，则提款弥补差额。
+
+* `bond_bid_τ`
+    * 所有家户可在金融市场阶段提交国债购买订单，形式为 `bond_bid_τ = (agent_id, face_value, bid_price)`，默认每个订单对应一日期国债面值单位。
+    * 出价策略示例：`bid_price = clip(1 - 0.5 * (assets_τ / 200 - 0.5), 0.95, 1.05)`，`face_value` 受可用现金与风险偏好约束。
+
+### 1.3 预算与约束
+
+* 预算约束：`assets_{τ+1} = assets_τ + income_τ + bond_cashflow_τ - consumption_nominal_τ - education_cost_τ`。
+* 生存约束：`consumption_nominal_τ ≥ c_min`。
+* 时间约束：`is_employed_d + is_studying_d ≤ 1`。
 
 ---
 
-## **三、 央行 (Central Bank Agent)**
-作为宏观经济的最终调控者，负责维持金融稳定与物价稳定。
+## 2. 企业代理 (Firm Agent)
 
-### **状态 (State)**
-* **1. 宏观经济感知 (Macroeconomic Awareness):**
-    * `关键指标`: 通货膨胀率、失业率、GDP产出缺口、系统信贷总量。
-* **2. 自身资产负债表 (Balance Sheet):**
-    * `资产`: 政府债券、外汇储备、对商行的再贷款。
-    * `负债`: 基础货币（流通货币 + 商业银行准备金）。
-* **3. 政策目标 (Policy Targets):**
-    * `通胀目标`与`就业目标`。
+### 2.1 状态变量
 
-### **决策 (Monetary Policy Tools)**
-* **1. 价格型工具:** `调整基准利率 (Policy Rate)`。
-* **2. 数量型工具:** 
-    - `调整法定准备金率 (Reserve Ratio)`
-    - `执行公开市场操作 (Open Market Operations)`：国债买卖与回购。
+* `cash_τ`：初始化 `TruncNormal(200, 40, 120, 400)`。
+* `debt_τ`：初始化 `TruncNormal(80, 20, 40, 140)`。
+* `inventory_τ`：初始化 `TruncNormal(60, 10, 30, 100)`。
+* `capital_stock_τ`：初始化 `TruncNormal(150, 25, 80, 220)`。
+* `technology_τ`
+    * 初始值 `1.0`，动态：`technology_{τ+1} = technology_τ * (1 + shock_tech_τ)`。
+    * `shock_tech_τ ~ TruncNormal(0, 0.03, -0.1, 0.1)`。
 
-### **限制 (Core Mandate & Responsibilities)**
-* **1. 政策使命:** 核心职责是**维持物价稳定**和**促进经济增长**。
-* **2. 系统稳定:** 必须维护金融系统的稳定，在必要时扮演**最后贷款人**的角色。
+### 2.2 生产与库存
+
+* 生产函数：
+    $$output_τ = technology_τ \cdot capital\_stock_τ^{α} \cdot labor\_input_τ^{1-α}, \quad α = 0.33$$
+* 库存动态：
+    $$inventory_{τ+1} = inventory_τ + output_τ - goods\_sold_τ - spoilage_τ$$
+    其中 `spoilage_τ = 0.01 * inventory_τ`。
+
+### 2.3 定价与订单
+
+* `goods_price_τ`
+    * 决策规则：
+        $$goods\_price_{τ+1} = clip(goods\_price_τ \cdot (1 + κ_p \cdot excess\_demand_τ),\ 0.5, 5.0)$$
+        `κ_p = 0.4`，`excess_demand_τ = (aggregate_demand_τ - inventory_τ)/\max(inventory_τ, 1)`。
+
+* `wage_offer_τ`
+    * 公式：`wage_offer_τ = wage_base * (1 + 0.2 * labor_shortage_ratio_τ)`。
+    * `labor_shortage_ratio_τ = clip((labor_demand_τ - employed_workers_τ)/max(labor_demand_τ, 1), -0.5, 0.5)`。
+
+### 2.4 投资与融资
+
+* 资本更新：
+    $$capital\_stock_{τ+1} = (1 - depreciation\_rate^{tick}) \cdot capital\_stock_τ + investment_τ$$
+* 投资决策：`investment_τ = clip(κ_i * (desired_capital_τ - capital_stock_τ), 0, cash_τ)`，`κ_i = 0.3`。
+* 贷款需求：若 `cash_τ < payroll_requirement_τ + investment_τ`，申请 `loan_request_τ = payroll_requirement_τ + investment_τ - cash_τ`。
+* 资金来源约束：企业仅通过自有现金或商业银行存贷款调节流动性，不发行债券或股票，也不参与政府债券投资。
+
+### 2.5 约束
+
+* 偿付能力 `cash_τ + inventory_τ * goods_price_τ + capital_stock_τ - debt_τ ≥ 0`。
+* 工资义务：在每日第一个 tick 必须支付 `payroll_requirement_d = wage_offer_d * employed_workers_d`。
 
 ---
 
-## **四、 商业银行 (Commercial Bank Agent)**
-作为金融中介，在盈利目标驱动下提供金融服务。
+## 3. 商业银行代理 (Commercial Bank Agent)
 
-### **状态 (State)**
-* **1. 自身资产负债表 (Balance Sheet):**
-* **2. 风险与健康指标 (Risk & Health Metrics):**
-    * `实际准备金率`
-* **3. 外部政策环境 (Policy Environment):**
-    * 来自央行的`法定准备金率`和`基准利率`。
-    * 市场上的`无风险利率`。
+### 3.1 状态变量
 
-### **决策 (Core Business Decisions)**
-* **1. 定价决策:** `设定存款利率和贷款利率`。
-* **2. 信贷决策:** `审批和发放贷款`，这是信用创造的关键。
-* **3. 资产负债管理:** 动态调整资产结构以平衡风险、流动性与盈利性。
+* `reserves_τ`：初始化 `TruncNormal(150, 30, 80, 220)`。
+* `loans_τ`：初始化 `TruncNormal(300, 50, 180, 420)`。
+* `deposits_τ`：初始化 `TruncNormal(360, 60, 220, 520)`。
+* `equity_τ = reserves_τ + loans_τ - deposits_τ`。
+* `non_performing_ratio_τ`：初始化 `Uniform(0.02, 0.05)`。
 
-### **限制 (Regulatory Constraints)**
-* **1. 准备金要求:** `实际准备金率`不得低于法定要求。
-* **2. 资本充足率要求:** 核心的审慎监管指标，限制银行的风险敞口。
-* **3. 流动性要求:** 必须保持足够的流动性以应对潜在的资金流出。
+### 3.2 利率与报价
+
+* 存款利率：
+    $$deposit\_rate_τ^{annual} = clip(policy\_rate_τ + deposit\_rate\_spread\_base - 0.5 \cdot (capital\_adequacy\_target - capital\_adequacy_τ),\ -0.02, 0.1)$$
+
+* 贷款利率：
+    $$loan\_rate_τ^{annual} = clip(policy\_rate_τ + loan\_rate\_spread\_base + 0.5 \cdot \max(0, capital\_adequacy\_target - capital\_adequacy_τ),\ 0, 0.3)$$
+
+其中 `capital_adequacy_τ = equity_τ / max(loans_τ, 1)`，目标比率 `capital_adequacy_target = 0.12`。
+
+### 3.3 信贷供给
+
+* 新贷款审批量：
+    $$loan\_supply_τ = \max\left(0, \frac{reserves_τ - reserve\_requirement_τ}{1 + non\_performing\_ratio_τ}\right)$$
+* 准备金要求：`reserve_requirement_τ = reserve_ratio_τ * deposits_τ`。
+* 股东红利：若 `equity_τ > equity_target`，发放 `dividend_τ = 0.2 * (equity_τ - equity_target)`，其中 `equity_target = 0.08 * loans_τ`。
+
+### 3.4 约束
+
+* `actual_reserve_ratio_τ = reserves_τ / deposits_τ ≥ reserve_ratio_τ`。
+* `capital_adequacy_τ ≥ 0.08`。若不满足，则暂停发放新贷款。
 
 ---
 
-## **五、 政府 (Government Agent)**
-执行财政政策。
+## 4. 央行代理 (Central Bank Agent)
 
-### **状态 (State)**
-* **1. 宏观经济感知 (Macroeconomic Awareness):**
-    * `关键指标`: GDP、失业率、通胀率、基尼系数等。
-* **2. 政策目标 (Policy Targets):**
-    * `经济增长`、`充分就业`与`社会公平`等。
+### 4.1 状态变量
 
-### **决策 (Fiscal Policy Tools)**
-* **1. 税收政策:** `设定个人、企业、消费等关键税率`。
-* **2. 融资政策:** `决定国债的发行规模`。
+* `policy_rate_τ`：初始化 `policy_rate_base`。
+* `reserve_ratio_τ`：初始化 `reserve_ratio_base`。
+* `central_bank_assets_τ`：初始化 `TruncNormal(500, 80, 300, 700)`。
+* `central_bank_liabilities_τ`：初始化 `central_bank_assets_τ`。
 
-### **限制 (Constraints)**
-* **1. 软约束:** 实现政策目标。
+### 4.2 政策反应函数
+
+* 泰勒规则：
+    $$policy\_rate_{τ+1} = clip(policy\_rate\_base + \phi\_inflation \cdot (inflation\_rate_τ - target\_inflation) + \phi\_output \cdot output\_gap_τ,\ 0, 0.4)$$
+    其中 `target_inflation = 0.02`。
+
+* 准备金率调整：
+    $$reserve\_ratio_{τ+1} = clip(reserve\_ratio_τ + 0.1 \cdot (credit\_growth_τ - credit\_target),\ 0.05, 0.2)$$
+    `credit_growth_τ = (loans_τ - loans_{τ-1})/max(loans_{τ-1}, 1)`，`credit_target = 0.03`。
+
+* 公开市场操作：若 `inflation_rate_τ > target_inflation + 0.02`，出售国债 `bond_sales_τ = 0.05 * central_bank_assets_τ`；若低于 `target_inflation - 0.02`，则购入同规模国债。
+
+---
+
+## 5. 政府代理 (Government Agent)
+
+### 5.1 状态变量
+
+* `gov_cash_τ`：初始化 `TruncNormal(150, 30, 80, 220)`。
+* `gov_debt_τ`：初始化 `TruncNormal(200, 40, 100, 320)`。
+* `tax_rate_income_τ`：初始化 `0.15`。
+* `tax_rate_consumption_τ`：初始化 `0.05`。
+* `government_spending_τ`：初始化 `20.0`。
+
+### 5.2 财政规则
+
+* 税率调节：
+    $$tax\_rate\_income_{τ+1} = clip(tax\_rate\_income_τ + 0.1 \cdot (debt\_ratio_τ - debt\_target),\ 0.1, 0.35)$$
+    `debt_ratio_τ = gov_debt_τ / max(gdp_τ, 1)`，`debt_target = 0.6`。
+
+* 支出规则：
+    $$government\_spending_{τ+1} = clip(\bar{G} + 0.4 \cdot unemployment\_gap_τ,\ 10, 40)$$
+    `\bar{G} = 20`，`unemployment_gap_τ = unemployment_rate_τ - 0.05`。
+
+* 转移支付：`transfer_payment_d = 5 * unemployed_households_d`，在每日第一个 tick 发放。
+
+* 国债发行：若 `fiscal_balance_τ = tax_revenue_τ - government_spending_τ < 0`，发行 `bond_issue_τ = -fiscal_balance_τ`，利率 `bond_rate_τ = policy_rate_τ + 0.01`。
+
+### 5.3 约束
+
+* 预算：`gov_cash_{τ+1} = gov_cash_τ + tax_revenue_τ + bond_issue_τ - government_spending_τ - transfer_payment_τ`。
+* 债务可持续性：`gov_debt_τ / gdp_τ ≤ 0.9`，若超过，强制压缩支出 `government_spending_{τ+1} = max(government_spending_τ - 5, 10)`。
+
+---
+
+## 6. 变量映射与对接
+
+* 所有 `*_τ` 变量在 tick 结束后写入 `agent_state_history`。
+* 家户、企业、银行的报价变量会在市场阶段作为订单提交，其他代理通过 `market_data` 获取宏观参数。
+* 若新增变量，请同时在《世界设定》《市场设计》更新对应的初始化、范围与聚合方式。
