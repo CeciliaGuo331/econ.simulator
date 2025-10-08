@@ -9,12 +9,12 @@
 ### 1.1 离散时间结构
 
 * `n_ticks_per_day = 100`: 每个自然日包含的离散事件循环数。
-* `tick_index = τ ∈ ℕ`: 全局 tick 序号，从 0 开始。
-* `day_index = ⌊τ / n_ticks_per_day⌋`: 当前 tick 所在的天数，从 0 开始计数。
-* `tick_in_day = (τ mod n_ticks_per_day) + 1`: 当前 tick 在当天内部的位置，取值范围 `[1, n_ticks_per_day]`。
+* `tick_index = t ∈ ℕ`: 全局 tick 序号，从 0 开始。
+* `day_index = ⌊t / n_ticks_per_day⌋`: 当前 tick 所在的天数，从 0 开始计数。
+* `tick_in_day = (t mod n_ticks_per_day) + 1`: 当前 tick 在当天内部的位置，取值范围 `[1, n_ticks_per_day]`。
 * `is_daily_decision_tick = (tick_in_day = 1)`: 只有在每日第一个 tick 时，家户可以更新 `is_employed`、`is_studying` 等跨日决策；其他市场交易在所有 tick 上均可发生。
 
-仿真主循环按照 `τ` 递增执行，完成 `simulation_days` 个自然日后终止。
+仿真主循环按照 `t` 递增执行，完成 `simulation_days` 个自然日后终止。
 
 ### 1.2 随机数设定
 
@@ -72,12 +72,12 @@
     * 银行和政府设定当期的报价或政策变量。
 
 3. **执行阶段 (Execution)**
-    * **生产子阶段**：企业根据 `production_plan` 和上一 tick 的 `labor_assignment` 更新 `inventory` 与 `capital_stock`。
-        * 产出函数：$\text{output}_τ = technology_τ \cdot capital_{τ}^{\alpha} \cdot labor_{τ}^{1-\alpha}$，其中 `α = 0.33`。
+  * **生产子阶段**：企业根据 `production_plan` 和上一 tick 的 `labor_assignment` 更新 `inventory` 与 `capital_stock`。
+    * 产出函数：`output_t = technology_t * capital_stock_t**alpha * labor_input_t**(1 - alpha)`，其中 `alpha = 0.33`。
     * **收入与支付子阶段**：如果 `is_daily_decision_tick = True`，企业支付工资 `wage_payment = wage_offer * hours_assigned`，政府发放转移，银行计提利息。
   * **市场交易子阶段**：串行运行劳动力、商品、金融市场撮合与结算（细节见《市场设计》）。
     * 金融市场部分仅包含家户与企业向商业银行的存款、取款和贷款撮合，企业不发行债券或股票。
-    * 政府债券认购由家户与商业银行提交订单后采用随机顺序撮合，成交结果用于更新家户 `bond_holdings` 与现金流。
+  * 政府债券认购由家户与商业银行提交订单后采用随机顺序撮合，成交结果用于更新家户 `bond_holdings` 与现金流。购买的国债需持有满一天，到第二天同一 tick 才能提现本金并获得利息。
 
 4. **结算阶段 (Settlement)**
     * 更新所有余额、资产、库存以及债务。
@@ -94,20 +94,20 @@
 以下聚合变量在每个 tick 的统计阶段更新：
 
 * **价格指数**
-  * `price_index_τ = max(ε, λ_cpi * goods_price_τ + (1 - λ_cpi) * price_index_{τ-1})`
+  * `price_index_t = max(ε, λ_cpi * goods_price_t + (1 - λ_cpi) * price_index_{t-1})`
   * `λ_cpi = 0.3`，`ε = 10^{-6}` 防止除零。
 * **通胀率**
-  * `inflation_rate_τ = (price_index_τ - price_index_{τ-1}) / price_index_{τ-1}`，结果裁剪到 `[-0.2, 0.2]`。
+  * `inflation_rate_t = (price_index_t - price_index_{t-1}) / price_index_{t-1}`，结果裁剪到 `[-0.2, 0.2]`。
 * **总产出与 GDP**
-  * `aggregate_output_τ = firm_output_τ`。
-  * `gdp_τ = goods_price_τ * aggregate_output_τ + government_spending_τ`。
+  * `aggregate_output_t = firm_output_t`。
+  * `gdp_t = goods_price_t * aggregate_output_t + government_spending_t`。
 * **失业率**
-  * `unemployment_rate_τ = 1 - (employed_households_τ / household_count)`。
+  * `unemployment_rate_t = 1 - (employed_households_t / household_count)`。
 * **产出缺口**
-  * `output_gap_τ = (aggregate_output_τ - potential_output) / potential_output`。
+  * `output_gap_t = (aggregate_output_t - potential_output) / potential_output`。
 * **平均工资与利率**
-  * `average_wage_τ = wage_bill_τ / max(employed_households_τ, 1)`。
-  * `average_deposit_rate_τ`、`average_loan_rate_τ` 为银行发布利率的简单平均。
+  * `average_wage_t = wage_bill_t / max(employed_households_t, 1)`。
+  * `average_deposit_rate_t`、`average_loan_rate_t` 为银行发布利率的简单平均。
 
 所有聚合指标将作为 `market_data` 暴露给代理人策略层，用于生成下一 tick 的决策。
 
@@ -120,3 +120,41 @@
 * `macro_history`: 记录所有宏观指标时间序列，作为教学可视化与策略评估的基础。
 
 以上设定与《代理人设计》《市场设计》文档构成统一闭环：世界参数限定变量范围，市场机制负责撮合结算，代理人依托这些信息进行决策。实现时应以这些变量名和公式为准，确保文档与代码保持一致。
+
+---
+
+## 6. 外生冲击与随机机制总览
+
+为了保持三份设计文档的一致性，本节汇总所有显式定义的外生冲击、随机初始化以及市场层随机机制，并给出来源。若新增冲击，请同步更新下表。
+
+### 6.1 持续动态类冲击
+
+| 名称 | 分布 / 机制 | 作用范围 | 文档来源 |
+| --- | --- | --- | --- |
+| 家户生产率扰动 `shock_productivity_t` | `TruncNormal(0, 0.05, -0.2, 0.2)`，逐 tick 抽样 | 改变家户 `productivity_t`，影响劳动供给与消费 | 《代理人设计》1.1 |
+| 企业技术冲击 `shock_tech_t` | `TruncNormal(0, 0.03, -0.1, 0.1)`，逐 tick 抽样 | 更新 `technology_t`，直接作用于产出函数 | 《代理人设计》2.1 |
+| 家户求职决策噪声 | `Bernoulli(job_search_prob_d)`，每日 tick1 评估 | 决定是否提交劳动订单 | 《代理人设计》1.2 |
+| 劳动力匹配噪声 | `matching_score_i = 0.8 * human_capital_score_i + 0.2 * epsilon_i`，`epsilon_i ~ Uniform(0, 1)` | 决定家户录用排序，高人力资本仍占优势 | 《市场设计》4.2 |
+| 国债乱序撮合 | 使用 `rng_seed_global + tick_index` 生成随机序列 | 决定 `bond_allocation_t` 分配顺序 | 《市场设计》5.3 |
+
+### 6.2 初始化随机异质性
+
+| 名称 | 分布 | 作用范围 | 文档来源 |
+| --- | --- | --- | --- |
+| 家户初始资产 `assets_0` | `TruncNormal(100, 15, 60, 160)` | 设定现金与储蓄起点 | 《代理人设计》1.1 |
+| 现金占比 `cash_share_0` | `Uniform(0.3, 0.5)` | 切分家户初始现金/储蓄 | 《代理人设计》1.1 |
+| 家户能力 `ability` | `TruncNormal(1.0, 0.08, 0.7, 1.3)` | 决定长期人力资本 | 《代理人设计》1.1 |
+| 初始教育水平 `education_level_0` | `TruncNormal(0.5, 0.1, 0.2, 0.8)` | 影响生产率与工资预期 | 《代理人设计》1.1 |
+| 初始就业状态 `is_employed_0` | `Bernoulli(0.6)` | 控制劳动力市场起点 | 《代理人设计》1.1 |
+| 企业资产负债项初值 | 多个 `TruncNormal(...)` 参数 | 塑造企业现金、债务、库存、资本 | 《代理人设计》2.1 |
+| 银行资产负债项初值 | `TruncNormal(...)` | 决定 `reserves_t`、`loans_t`、`deposits_t` | 《代理人设计》3.1 |
+| 银行不良率 `non_performing_ratio_t` | `Uniform(0.02, 0.05)` | 影响信贷供给与利率定价 | 《代理人设计》3.1 |
+| 央行与政府资产项 | `TruncNormal(...)` | 设定宏观部门初始状态 | 《代理人设计》4.1、5.1 |
+
+### 6.3 市场层随机机制与管理端控制
+
+* **商品市场需求加成**：`demand_markup_i ~ TruncNormal(0, 0.05, -0.1, 0.2)`，决定限价单偏离基准价格的幅度（《市场设计》3.1）。
+* **商品市场平局打破**：当限价相同时，按 `rng_seed_global + tick_index` 注入噪声排序（《市场设计》3.2），确保成交顺序随机化。
+* **管理端外生冲击接口**：在事件循环的观测阶段，保留 `exogenous shock` 控制变量入口，供管理员或脚本注入额外情景（本文件 3）。
+
+> 以上冲击均依赖 `rng_seed_global` 及其派生种子，保持固定种子即可获得可重复的仿真轨迹。
