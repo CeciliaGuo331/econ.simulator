@@ -288,11 +288,11 @@
         {% set script_defaults = script_form_defaults if script_form_defaults is defined else {} %}
         {% set resolved_kind = script_defaults.get('resolved_agent_kind') %}
         {% set agent_kind_labels = {
-            'household': '家户（Household）',
-            'firm': '企业（Firm）',
-            'bank': '商业银行（Bank）',
-            'government': '政府（Government）',
-            'central_bank': '中央银行（Central Bank）'
+            "household": "家户（Household）",
+            "firm": "企业（Firm）",
+            "bank": "商业银行（Bank）",
+            "government": "政府（Government）",
+            "central_bank": "中央银行（Central Bank）"
         } %}
         <form method="post"
               action="/web/scripts"
