@@ -12,6 +12,18 @@
 * **层级 1 — `market_data`**：对所有代理公开的聚合指标与当前报价，如 `goods_price`, `wage_offer`, `deposit_rate` 等。
 * **层级 2 — 系统数据**：用于回放与监控的完整订单簿、成交日志，不向策略层暴露。
 
+| 层级 | 数据类型 / 接口 | 典型字段 | 来源与更新时间 | 可见主体 |
+| --- | --- | --- | --- | --- |
+| 0 (`agent_state`) | 家户状态快照（见《代理人设计》1.1～1.3） | `cash_τ`, `savings_τ`, `bond_holdings_τ`, `ability`, `is_employed_d`, `reservation_wage_d` | 由家户策略在观测/执行阶段写入；每个 tick 更新一次 | 对应家户代理自身 |
+| 0 (`agent_state`) | 企业/银行/政府/央行内部状态（见《代理人设计》2～5） | 企业：`inventory_τ`, `goods_price_τ`, `wage_offer_τ`；银行：`reserves_τ`, `loan_rate_τ`；政府：`gov_cash_τ`, `tax_rate_income_τ`；央行：`policy_rate_τ`, `reserve_ratio_τ` | 各主体在计划与执行阶段维护；tick 级更新 | 各主体自身；其他代理不可见 |
+| 1 (`market_data`) | 市场撮合后的价格与聚合指标（见本文件 3、4 及《世界设定》4） | `goods_price_τ`, `aggregate_demand_τ`, `excess_demand_τ`, `wage_offer_d`, `deposit_rate_τ`, `loan_rate_τ`, `inflation_rate_τ`, `unemployment_rate_τ` | 市场撮合器与统计阶段汇总；每个 tick 广播 | 所有策略代理共享 |
+| 1 (`market_data`) | 运行参数与世界常量（《世界设定》1～3） | `n_ticks_per_day`, `tick_in_day`, `simulation_days`, `potential_output`, `policy_rate_base` | 仿真初始化写入，必要时由央行/政府政策函数在执行阶段调整 | 所有策略代理共享 |
+| 2 (`market_order_log`) | 各市场订单与成交日志（见本文件 2～5） | `goods_order`, `labor_offer`, `labor_demand`, `deposit_order`, `loan_request`, `bond_bid`, `clearing_price`, `fill` | 市场撮合完成后追加；tick 级持久化 | 仅系统监控、管理员与回放工具可见 |
+| 2 (`agent_state_history`) | 全量状态时间序列（《世界设定》5） | 与层级 0 相同的完整状态，按 tick 存档 | 结算阶段批量写入 | 系统内控与调试工具 |
+| 2 (`macro_history`) | 宏观统计历史（《世界设定》4～5） | `price_index_τ`, `gdp_τ`, `credit_growth_τ`, `average_wage_τ`, `average_deposit_rate_τ` | 统计阶段计算后写入；每日及 tick 级采样 | 系统监控、教学可视化、回测框架 |
+
+> 参考文档：`docs/econ_design/agent.md`、`docs/econ_design/world_settings.md` 与本文件其他章节，保证数据接口与实现保持一致。
+
 ### 1.2 订单数据结构
 
 | 市场 | 订单类型 | 字段 | 约束 |
