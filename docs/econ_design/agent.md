@@ -19,20 +19,20 @@
 * `cash_τ`
     * 初始化：`assets_0 ~ TruncNormal(100, 15, 60, 160)`，`cash_share_0 ~ Uniform(0.3, 0.5)`，`cash_0 = assets_0 * cash_share_0`。
     * 动态：
-        $$cash_{τ+1} = cash_τ + wage\_income_τ + transfer\_income_τ + loan\_draw_τ + bond\_cashflow_τ - consumption\_nominal_τ - deposit\_flow_τ - loan\_repayment_τ - education\_cost_τ$$
+        `cash_{τ+1} = cash_τ + wage_income_τ + transfer_income_τ + loan_draw_τ + bond_cashflow_τ - consumption_nominal_τ - deposit_flow_τ - loan_repayment_τ - education_cost_τ`
     * 约束：`cash_τ ≥ 0`。
 
 * `savings_τ`
     * 初始化：`savings_0 = assets_0 - cash_0`。
     * 动态：
-        $$savings_{τ+1} = (savings_τ + deposit\_flow_τ - withdrawal\_flow_τ) \cdot (1 + deposit\_rate_τ^{tick})$$
+        `savings_{τ+1} = (savings_τ + deposit_flow_τ - withdrawal_flow_τ) * (1 + deposit_rate_τ^{tick})`
         其中 `deposit_rate_τ^{tick} = effective_rate(deposit_rate_τ^{annual})`。
     * 约束：`savings_τ ≥ 0`。
 
 * `bond_holdings_τ`
     * 初始化：`bond_holdings_0 = 0`。
     * 动态：
-        $$bond\_holdings_{τ+1} = bond\_holdings_τ + bond\_allocation_τ - bond\_redemption_τ$$
+        `bond_holdings_{τ+1} = bond_holdings_τ + bond_allocation_τ - bond_redemption_τ`
         其中 `bond_allocation_τ` 来源于国债市场的成交结果，`bond_redemption_τ` 表示到期兑付的面额数量。
 
 * `bond_cashflow_τ`
@@ -46,7 +46,7 @@
 * `education_level_τ`
     * 初始化：`education_level_0 ~ TruncNormal(0.5, 0.1, 0.2, 0.8)`。
     * 动态：
-        $$education\_level_{τ+1} = clip(education\_level_τ + education\_gain \cdot is\_studying_d,\ 0,\ 1.5)$$
+        `education_level_{τ+1} = clip(education_level_τ + education_gain * is_studying_d, 0, 1.5)`
         仅在 `is_daily_decision_tick` 更新，其中 `is_studying_d ∈ {0, 1}`。
 
 * `productivity_τ`
@@ -67,14 +67,14 @@
 
 * `consumption_nominal_τ`
     * 以 CRRA 效用最大化为目标：
-        $$u(c\_{real,τ}) = \frac{c\_{real,τ}^{1 - risk\_aversion} - 1}{1 - risk\_aversion},\quad c\_{real,τ} = \frac{consumption\_nominal_τ}{price\_index_τ}$$
+        `u(c_real_τ) = (c_real_τ^(1 - risk_aversion) - 1) / (1 - risk_aversion), c_real_τ = consumption_nominal_τ / price_index_τ`
     * 近似决策规则：
-        $$consumption\_nominal_τ = clip(κ\_c \cdot (cash_τ + savings_τ + expected\_income_d)^{θ_c},\ c_{min},\ cash_τ + savings_τ)$$
-        默认 $κ_c = 0.25, θ_c = 0.9, c_{min} = 0.1$。
+        `consumption_nominal_τ = clip(κ_c * (cash_τ + savings_τ + expected_income_d)^{θ_c}, c_min, cash_τ + savings_τ)`
+        默认 `κ_c = 0.25, θ_c = 0.9, c_min = 0.1`。
 
 * `labor_supply_d`
     * 求职概率：
-        $$job\_search\_prob_d = clip(labor\_search\_base\_prob + 0.15 \cdot (1 - assets_d / 120),\ 0, 1)$$
+        `job_search_prob_d = clip(labor_search_base_prob + 0.15 * (1 - assets_d / 120), 0, 1)`
     * 若 `is_studying_d = 0` 且 `Bernoulli(job_search_prob_d) = 1`，则提交劳动订单。
 
 * `is_studying_d`
@@ -113,17 +113,17 @@
 ### 2.2 生产与库存
 
 * 生产函数：
-    $$output_τ = technology_τ \cdot capital\_stock_τ^{α} \cdot labor\_input_τ^{1-α}, \quad α = 0.33$$
+    `output_τ = technology_τ * capital_stock_τ^{α} * labor_input_τ^{1-α}, α = 0.33`
 * 库存动态：
-    $$inventory_{τ+1} = inventory_τ + output_τ - goods\_sold_τ - spoilage_τ$$
+    `inventory_{τ+1} = inventory_τ + output_τ - goods_sold_τ - spoilage_τ`
     其中 `spoilage_τ = 0.01 * inventory_τ`。
 
 ### 2.3 定价与订单
 
 * `goods_price_τ`
     * 决策规则：
-        $$goods\_price_{τ+1} = clip(goods\_price_τ \cdot (1 + κ_p \cdot excess\_demand_τ),\ 0.5, 5.0)$$
-        `κ_p = 0.4`，`excess_demand_τ = (aggregate_demand_τ - inventory_τ)/\max(inventory_τ, 1)`。
+    `goods_price_{τ+1} = clip(goods_price_τ * (1 + κ_p * excess_demand_τ), 0.5, 5.0)`
+    `κ_p = 0.4`，`excess_demand_τ = (aggregate_demand_τ - inventory_τ)/max(inventory_τ, 1)`。
 
 * `wage_offer_τ`
     * 公式：`wage_offer_τ = wage_base * (1 + 0.2 * labor_shortage_ratio_τ)`。
@@ -132,7 +132,7 @@
 ### 2.4 投资与融资
 
 * 资本更新：
-    $$capital\_stock_{τ+1} = (1 - depreciation\_rate^{tick}) \cdot capital\_stock_τ + investment_τ$$
+    `capital_stock_{τ+1} = (1 - depreciation_rate^{tick}) * capital_stock_τ + investment_τ`
 * 投资决策：`investment_τ = clip(κ_i * (desired_capital_τ - capital_stock_τ), 0, cash_τ)`，`κ_i = 0.3`。
 * 贷款需求：若 `cash_τ < payroll_requirement_τ + investment_τ`，申请 `loan_request_τ = payroll_requirement_τ + investment_τ - cash_τ`。
 * 资金来源约束：企业仅通过自有现金或商业银行存贷款调节流动性，不发行债券或股票，也不参与政府债券投资。
@@ -157,17 +157,17 @@
 ### 3.2 利率与报价
 
 * 存款利率：
-    $$deposit\_rate_τ^{annual} = clip(policy\_rate_τ + deposit\_rate\_spread\_base - 0.5 \cdot (capital\_adequacy\_target - capital\_adequacy_τ),\ -0.02, 0.1)$$
+    `deposit_rate_τ^{annual} = clip(policy_rate_τ + deposit_rate_spread_base - 0.5 * (capital_adequacy_target - capital_adequacy_τ), -0.02, 0.1)`
 
 * 贷款利率：
-    $$loan\_rate_τ^{annual} = clip(policy\_rate_τ + loan\_rate\_spread\_base + 0.5 \cdot \max(0, capital\_adequacy\_target - capital\_adequacy_τ),\ 0, 0.3)$$
+    `loan_rate_τ^{annual} = clip(policy_rate_τ + loan_rate_spread_base + 0.5 * max(0, capital_adequacy_target - capital_adequacy_τ), 0, 0.3)`
 
 其中 `capital_adequacy_τ = equity_τ / max(loans_τ, 1)`，目标比率 `capital_adequacy_target = 0.12`。
 
 ### 3.3 信贷供给
 
 * 新贷款审批量：
-    $$loan\_supply_τ = \max\left(0, \frac{reserves_τ - reserve\_requirement_τ}{1 + non\_performing\_ratio_τ}\right)$$
+    `loan_supply_τ = max(0, (reserves_τ - reserve_requirement_τ) / (1 + non_performing_ratio_τ))`
 * 准备金要求：`reserve_requirement_τ = reserve_ratio_τ * deposits_τ`。
 * 股东红利：若 `equity_τ > equity_target`，发放 `dividend_τ = 0.2 * (equity_τ - equity_target)`，其中 `equity_target = 0.08 * loans_τ`。
 
@@ -190,11 +190,11 @@
 ### 4.2 政策反应函数
 
 * 泰勒规则：
-    $$policy\_rate_{τ+1} = clip(policy\_rate\_base + \phi\_inflation \cdot (inflation\_rate_τ - target\_inflation) + \phi\_output \cdot output\_gap_τ,\ 0, 0.4)$$
+    `policy_rate_{τ+1} = clip(policy_rate_base + φ_inflation * (inflation_rate_τ - target_inflation) + φ_output * output_gap_τ, 0, 0.4)`
     其中 `target_inflation = 0.02`。
 
 * 准备金率调整：
-    $$reserve\_ratio_{τ+1} = clip(reserve\_ratio_τ + 0.1 \cdot (credit\_growth_τ - credit\_target),\ 0.05, 0.2)$$
+    `reserve_ratio_{τ+1} = clip(reserve_ratio_τ + 0.1 * (credit_growth_τ - credit_target), 0.05, 0.2)`
     `credit_growth_τ = (loans_τ - loans_{τ-1})/max(loans_{τ-1}, 1)`，`credit_target = 0.03`。
 
 * 公开市场操作：若 `inflation_rate_τ > target_inflation + 0.02`，出售国债 `bond_sales_τ = 0.05 * central_bank_assets_τ`；若低于 `target_inflation - 0.02`，则购入同规模国债。
@@ -214,12 +214,12 @@
 ### 5.2 财政规则
 
 * 税率调节：
-    $$tax\_rate\_income_{τ+1} = clip(tax\_rate\_income_τ + 0.1 \cdot (debt\_ratio_τ - debt\_target),\ 0.1, 0.35)$$
+    `tax_rate_income_{τ+1} = clip(tax_rate_income_τ + 0.1 * (debt_ratio_τ - debt_target), 0.1, 0.35)`
     `debt_ratio_τ = gov_debt_τ / max(gdp_τ, 1)`，`debt_target = 0.6`。
 
 * 支出规则：
-    $$government\_spending_{τ+1} = clip(\bar{G} + 0.4 \cdot unemployment\_gap_τ,\ 10, 40)$$
-    `\bar{G} = 20`，`unemployment_gap_τ = unemployment_rate_τ - 0.05`。
+    `government_spending_{τ+1} = clip(G_bar + 0.4 * unemployment_gap_τ, 10, 40)`
+    `G_bar = 20`，`unemployment_gap_τ = unemployment_rate_τ - 0.05`。
 
 * 转移支付：`transfer_payment_d = 5 * unemployed_households_d`，在每日第一个 tick 发放。
 

@@ -9,17 +9,17 @@
 ### 1.1 离散时间结构
 
 * `n_ticks_per_day = 100`: 每个自然日包含的离散事件循环数。
-* `tick_index = τ ∈ ℕ`: 全局 tick 序号，从 0 开始。
-* `day_index = ⌊τ / n_ticks_per_day⌋`: 当前 tick 所在的天数，从 0 开始计数。
-* `tick_in_day = (τ mod n_ticks_per_day) + 1`: 当前 tick 在当天内部的位置，取值范围 `[1, n_ticks_per_day]`。
-* `is_daily_decision_tick = (tick_in_day = 1)`: 只有在每日第一个 tick 时，家户可以更新 `is_employed`、`is_studying` 等跨日决策；其他市场交易在所有 tick 上均可发生。
+* `tick_index = tau`: 全局 tick 序号，从 0 开始，`tau` 为非负整数。
+* `day_index = floor(tau / n_ticks_per_day)`: 当前 tick 所在的天数，从 0 开始计数。
+* `tick_in_day = (tau % n_ticks_per_day) + 1`: 当前 tick 在当天内部的位置，取值范围 `[1, n_ticks_per_day]`。
+* `is_daily_decision_tick = (tick_in_day == 1)`: 只有在每日第一个 tick 时，家户可以更新 `is_employed`、`is_studying` 等跨日决策；其他市场交易在所有 tick 上均可发生。
 
-仿真主循环按照 `τ` 递增执行，完成 `simulation_days` 个自然日后终止。
+仿真主循环按照 `tau` 递增执行，完成 `simulation_days` 个自然日后终止。
 
 ### 1.2 随机数设定
 
 * `rng_seed_global`: 全局随机数生成器种子，默认值为 `42`。所有代理在初始化时使用 `rng_seed_global + agent_id` 作为局部种子，以确保可复现性。
-* `TruncNormal(μ, σ, lower, upper)`: 截断正态分布，先从 `N(μ, σ²)` 取样，再将样本裁剪到 `[lower, upper]`。
+* `TruncNormal(mu, sigma, lower, upper)`: 截断正态分布，先从 `Normal(mu, sigma**2)` 取样，再将样本裁剪到 `[lower, upper]`。
 * `Uniform(a, b)`: 连续均匀分布。
 * `Bernoulli(p)`: 伯努利分布，概率 `p` 取值 1。
 
@@ -37,8 +37,8 @@
 | `simulation_days` | 365 | 正整数 | 仿真天数上限 |
 | `price_index_base` | 1.0 | (0, +∞) | 基期价格水平 |
 | `potential_output` | 120.0 | (0, +∞) | 潜在产出 (以商品市场数量计) |
-| `discount_factor` | 0.96 | (0, 1) | 家户贴现因子 `β` |
-| `risk_aversion` | 2.0 | (0, +∞) | 家户 CRRA 效用函数风险厌恶度 `σ` |
+| `discount_factor` | 0.96 | (0, 1) | 家户贴现因子 `beta` |
+| `risk_aversion` | 2.0 | (0, +∞) | 家户 CRRA 效用函数风险厌恶度 `sigma` |
 | `phi_inflation` | 1.5 | (0, +∞) | 泰勒规则对通胀偏差的权重 |
 | `phi_output` | 0.5 | (0, +∞) | 泰勒规则对产出缺口的权重 |
 | `reserve_ratio_base` | 0.08 | [0, 1) | 基础法定准备金率 |
@@ -52,7 +52,7 @@
 | `depreciation_rate` | 0.05 | [0, 1) | 企业资本折旧率 (年化) |
 | `inventory_carry_cost` | 0.01 | [0, 0.5) | 企业库存单位持有成本 |
 
-所有利率和产出默认以年化名义值给出。引擎在每个 tick 内通过 `effective_rate_per_tick = (1 + annual_rate)^(1 / (n_ticks_per_day * 365)) - 1` 将其转换为等效的 tick 利率。
+所有利率和产出默认以年化名义值给出。引擎在每个 tick 内通过 `effective_rate_per_tick = (1 + annual_rate)**(1 / (n_ticks_per_day * 365)) - 1` 将其转换为等效的 tick 利率。
 
 ---
 
@@ -73,7 +73,7 @@
 
 3. **执行阶段 (Execution)**
     * **生产子阶段**：企业根据 `production_plan` 和上一 tick 的 `labor_assignment` 更新 `inventory` 与 `capital_stock`。
-        * 产出函数：$\text{output}_τ = technology_τ \cdot capital_{τ}^{\alpha} \cdot labor_{τ}^{1-\alpha}$，其中 `α = 0.33`。
+  * 产出函数：`output_tau = technology_tau * capital_tau**alpha * labor_tau**(1 - alpha)`，其中 `alpha = 0.33`。
     * **收入与支付子阶段**：如果 `is_daily_decision_tick = True`，企业支付工资 `wage_payment = wage_offer * hours_assigned`，政府发放转移，银行计提利息。
   * **市场交易子阶段**：串行运行劳动力、商品、金融市场撮合与结算（细节见《市场设计》）。
     * 金融市场部分仅包含家户与企业向商业银行的存款、取款和贷款撮合，企业不发行债券或股票。
@@ -94,20 +94,20 @@
 以下聚合变量在每个 tick 的统计阶段更新：
 
 * **价格指数**
-  * `price_index_τ = max(ε, λ_cpi * goods_price_τ + (1 - λ_cpi) * price_index_{τ-1})`
-  * `λ_cpi = 0.3`，`ε = 10^{-6}` 防止除零。
+  * `price_index_tau = max(epsilon, lambda_cpi * goods_price_tau + (1 - lambda_cpi) * price_index_tau_prev)`
+  * `lambda_cpi = 0.3`，`epsilon = 1e-6` 防止除零。
 * **通胀率**
-  * `inflation_rate_τ = (price_index_τ - price_index_{τ-1}) / price_index_{τ-1}`，结果裁剪到 `[-0.2, 0.2]`。
+  * `inflation_rate_tau = (price_index_tau - price_index_tau_prev) / price_index_tau_prev`，结果裁剪到 `[-0.2, 0.2]`。
 * **总产出与 GDP**
-  * `aggregate_output_τ = firm_output_τ`。
-  * `gdp_τ = goods_price_τ * aggregate_output_τ + government_spending_τ`。
+  * `aggregate_output_tau = firm_output_tau`。
+  * `gdp_tau = goods_price_tau * aggregate_output_tau + government_spending_tau`。
 * **失业率**
-  * `unemployment_rate_τ = 1 - (employed_households_τ / household_count)`。
+  * `unemployment_rate_tau = 1 - (employed_households_tau / household_count)`。
 * **产出缺口**
-  * `output_gap_τ = (aggregate_output_τ - potential_output) / potential_output`。
+  * `output_gap_tau = (aggregate_output_tau - potential_output) / potential_output`。
 * **平均工资与利率**
-  * `average_wage_τ = wage_bill_τ / max(employed_households_τ, 1)`。
-  * `average_deposit_rate_τ`、`average_loan_rate_τ` 为银行发布利率的简单平均。
+  * `average_wage_tau = wage_bill_tau / max(employed_households_tau, 1)`。
+  * `average_deposit_rate_tau`、`average_loan_rate_tau` 为银行发布利率的简单平均。
 
 所有聚合指标将作为 `market_data` 暴露给代理人策略层，用于生成下一 tick 的决策。
 
