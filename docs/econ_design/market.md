@@ -81,7 +81,7 @@
 
 1. 构建候选集合，过滤掉 `reservation_wage_i > wage_offer_d * 1.1` 的订单。
 2. 为每个岗位计算评分：
-     $$score_i = 0.7 \cdot productivity_i + 0.3 \cdot \frac{wage_offer_d}{\max(reservation_wage_i, 0.1)}$$
+     $$score_i = 0.7 \cdot productivity_i + 0.3 \cdot \frac{wage\_offer_d}{\max(reservation\_wage_i, 0.1)}$$
 3. 按 `score_i` 从高到低分配岗位，若分配数量超过 `slots` 则截断。
 4. 成功匹配者更新状态：`is_employed_d = 1`，失败者设置为 0。
 

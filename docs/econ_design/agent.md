@@ -19,13 +19,13 @@
 * `cash_τ`
     * 初始化：`assets_0 ~ TruncNormal(100, 15, 60, 160)`，`cash_share_0 ~ Uniform(0.3, 0.5)`，`cash_0 = assets_0 * cash_share_0`。
     * 动态：
-        $$cash_{τ+1} = cash_τ + wage_income_τ + transfer_income_τ + loan_draw_τ + bond_cashflow_τ - consumption_nominal_τ - deposit_flow_τ - loan_repayment_τ - education_cost_τ$$
+        $$cash_{τ+1} = cash_τ + wage\_income_τ + transfer\_income_τ + loan\_draw_τ + bond\_cashflow_τ - consumption\_nominal_τ - deposit\_flow_τ - loan\_repayment_τ - education\_cost_τ$$
     * 约束：`cash_τ ≥ 0`。
 
 * `savings_τ`
     * 初始化：`savings_0 = assets_0 - cash_0`。
     * 动态：
-        $$savings_{τ+1} = (savings_τ + deposit_flow_τ - withdrawal_flow_τ) \cdot (1 + deposit_rate_τ^{tick})$$
+        $$savings_{τ+1} = (savings_τ + deposit\_flow_τ - withdrawal\_flow_τ) \cdot (1 + deposit\_rate_τ^{tick})$$
         其中 `deposit_rate_τ^{tick} = effective_rate(deposit_rate_τ^{annual})`。
     * 约束：`savings_τ ≥ 0`。
 
@@ -69,8 +69,8 @@
     * 以 CRRA 效用最大化为目标：
         $$u(c\_{real,τ}) = \frac{c\_{real,τ}^{1 - risk\_aversion} - 1}{1 - risk\_aversion},\quad c\_{real,τ} = \frac{consumption\_nominal_τ}{price\_index_τ}$$
     * 近似决策规则：
-        $$consumption\_nominal_τ = clip(κ\_c \cdot (cash_τ + savings_τ + expected\_income_d)^{θ_c},\ c\_{min},\ cash_τ + savings_τ)$$
-        默认 `κ_c = 0.25`, `θ_c = 0.9`, `c_min = 0.1`。
+        $$consumption\_nominal_τ = clip(κ\_c \cdot (cash_τ + savings_τ + expected\_income_d)^{θ_c},\ c_{min},\ cash_τ + savings_τ)$$
+        默认 $κ_c = 0.25, θ_c = 0.9, c_{min} = 0.1$。
 
 * `labor_supply_d`
     * 求职概率：
