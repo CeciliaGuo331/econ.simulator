@@ -33,8 +33,10 @@ from ..core.orchestrator import (
     SimulationOrchestrator,
     SimulationStateError,
 )
+from ..data_access.models import AgentKind
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
+from ..utils.agents import get_default_agent_kind, resolve_agent_kind
 from .background import BackgroundJobManager, JobConflictError
 
 router = APIRouter(prefix="/web", tags=["web"])
@@ -318,6 +320,40 @@ def _table_row(label: str, value: Any, *, is_int: bool = False) -> tuple[Any, ..
     return (label, value, is_int)
 
 
+_PENDING_ENTITY_LABEL = "待自动分配"
+
+
+def _default_script_form_defaults(
+    user_type: str,
+    *,
+    description: str = "",
+    resolved_kind: Optional[AgentKind] = None,
+) -> Dict[str, str]:
+    defaults: Dict[str, str] = {}
+    defaults["description"] = description
+    effective_kind = resolved_kind or get_default_agent_kind(user_type)
+    if effective_kind is not None:
+        defaults["resolved_agent_kind"] = effective_kind.value
+    return defaults
+
+
+def _build_entity_display_map(*script_groups: Iterable) -> Dict[str, str]:
+    display: Dict[str, str] = {}
+    for scripts in script_groups:
+        if not scripts:
+            continue
+        for script in scripts:
+            script_id = getattr(script, "script_id", None)
+            if not script_id:
+                continue
+            entity_id = getattr(script, "entity_id", "")
+            if script_registry.is_placeholder_entity_id(entity_id):
+                display[script_id] = _PENDING_ENTITY_LABEL
+            else:
+                display[script_id] = str(entity_id)
+    return display
+
+
 async def _build_script_tick_map(
     current_simulation_id: str, current_tick: Optional[int], user_scripts: Iterable
 ) -> Dict[str, Optional[int]]:
@@ -587,6 +623,7 @@ async def dashboard(
     scripts_by_sim: Dict[str, List] = {}
     all_scripts: List = []
     script_failures: List = []
+    base_form_defaults = _default_script_form_defaults(user["user_type"])
     if allow_create:
         user_profiles = await user_manager.list_users()
         user_type_index = {
@@ -680,6 +717,8 @@ async def dashboard(
                 "script_tick_map": script_tick_map,
                 "household_counts_by_sim": household_counts_by_sim,
                 "script_failures": script_failures,
+                "entity_display_map": _build_entity_display_map(user_scripts),
+                "script_form_defaults": base_form_defaults,
             },
             status_code=200,
         )
@@ -784,6 +823,10 @@ async def dashboard(
                 "script_tick_map": script_tick_map,
                 "household_counts_by_sim": household_counts_by_sim,
                 "script_failures": script_failures,
+                "entity_display_map": _build_entity_display_map(
+                    scripts_for_view, user_scripts, attachable_scripts
+                ),
+                "script_form_defaults": base_form_defaults,
             },
             status_code=404,
         )
@@ -858,6 +901,10 @@ async def dashboard(
             "script_tick_map": script_tick_map,
             "household_counts_by_sim": household_counts_by_sim,
             "script_failures": script_failures,
+            "entity_display_map": _build_entity_display_map(
+                scripts, user_scripts, attachable_scripts
+            ),
+            "script_form_defaults": base_form_defaults,
         },
     )
 
@@ -1298,9 +1345,16 @@ async def upload_script(
     user: Dict[str, Any] = Depends(_require_session_user),
     current_simulation_id: str = Form(""),
     description: str = Form(""),
+    agent_kind: Optional[str] = Form(None),
+    entity_id: Optional[str] = Form(None),
     script_file: UploadFile = File(...),
 ) -> HTMLResponse:
     normalized_sim_id = (current_simulation_id or "").strip()
+    description_text = (description or "").strip()
+    agent_kind_value = (agent_kind or "").strip().lower()
+    form_defaults: Dict[str, str] = _default_script_form_defaults(
+        user["user_type"], description=description_text
+    )
 
     if user["user_type"] == "admin":
         scripts_for_view: List = []
@@ -1316,6 +1370,8 @@ async def upload_script(
                 "scripts": scripts_for_view,
                 "context": {},
                 "error": "管理员账号不能上传脚本。",
+                "script_form_defaults": dict(form_defaults),
+                "entity_display_map": _build_entity_display_map(scripts_for_view),
             },
             status_code=403,
         )
@@ -1388,6 +1444,10 @@ async def upload_script(
                 "features_by_sim": features_by_sim,
                 "current_simulation_tick": current_tick,
                 "script_tick_map": script_tick_map,
+                "script_form_defaults": dict(form_defaults),
+                "entity_display_map": _build_entity_display_map(
+                    scripts_list, user_scripts, attachable_scripts
+                ),
             },
             status_code=status_code,
         )
@@ -1424,8 +1484,34 @@ async def upload_script(
             "脚本文件内容为空，请填写有效的 generate_decisions 实现。"
         )
 
-    description_text = (description or "").strip()
     target_simulation = normalized_sim_id
+
+    requested_agent_kind: Optional[AgentKind] = None
+    if agent_kind_value:
+        try:
+            requested_agent_kind = AgentKind(agent_kind_value)
+        except ValueError:
+            return await render_dashboard_error("请选择有效的目标主体类型。")
+
+    try:
+        agent_kind_enum = resolve_agent_kind(
+            user["user_type"],
+            requested_agent_kind,
+            allow_override=False,
+        )
+    except ValueError:
+        return await render_dashboard_error(
+            "当前账号类型暂不支持上传脚本。", status_code=403
+        )
+
+    if agent_kind_enum in {AgentKind.WORLD, AgentKind.MACRO}:
+        return await render_dashboard_error("该主体类型暂不支持自定义脚本。")
+
+    form_defaults = _default_script_form_defaults(
+        user["user_type"],
+        description=description_text,
+        resolved_kind=agent_kind_enum,
+    )
 
     try:
         await script_registry.register_script(
@@ -1433,6 +1519,7 @@ async def upload_script(
             user_id=user["email"],
             script_code=code,
             description=description_text or None,
+            agent_kind=agent_kind_enum,
         )
     except ScriptExecutionError as exc:
         return await render_dashboard_error(str(exc), status_code=400)

@@ -126,6 +126,8 @@ class SimulationLimitStore(Protocol):
 class ScriptRegistry:
     """维护脚本与仿真实例之间关联关系的容器。"""
 
+    PENDING_ENTITY_PREFIX = "pending:"
+
     def __init__(
         self,
         store: Optional[ScriptStore] = None,
@@ -387,6 +389,23 @@ class ScriptRegistry:
             raise ScriptExecutionError("entity_id must not be empty")
         return normalized
 
+    @classmethod
+    def _generate_placeholder_entity_id(cls, agent_kind: AgentKind) -> str:
+        return f"{cls.PENDING_ENTITY_PREFIX}{agent_kind.value}:{uuid.uuid4().hex}"
+
+    @classmethod
+    def is_placeholder_entity_id(cls, entity_id: Optional[str]) -> bool:
+        return isinstance(entity_id, str) and entity_id.startswith(
+            cls.PENDING_ENTITY_PREFIX
+        )
+
+    @classmethod
+    def _validate_entity_binding(cls, agent_kind: AgentKind, entity_id: str) -> None:
+        if cls.is_placeholder_entity_id(entity_id):
+            raise ScriptExecutionError("entity_id must be finalized before binding")
+        if agent_kind is AgentKind.HOUSEHOLD and not str(entity_id).isdigit():
+            raise ScriptExecutionError("Household 脚本必须使用纯数字的 entity_id")
+
     def _ensure_entity_available_unlocked(
         self,
         simulation_id: str,
@@ -423,16 +442,18 @@ class ScriptRegistry:
         description: Optional[str] = None,
         *,
         agent_kind: AgentKind,
-        entity_id: str,
+        entity_id: Optional[str] = None,
     ) -> ScriptMetadata:
         """编译并注册脚本，使其在后续 Tick 中参与决策。"""
 
+        if entity_id is None:
+            entity_id = self._generate_placeholder_entity_id(agent_kind)
+
         entity_id = self._normalize_entity_id(entity_id)
-        if agent_kind is AgentKind.HOUSEHOLD and not entity_id.isdigit():
-            raise ScriptExecutionError("Household 脚本必须使用纯数字的 entity_id")
         self._validate_script(script_code)
 
         if simulation_id is not None:
+            self._validate_entity_binding(agent_kind, entity_id)
             await self._enforce_script_limit(simulation_id, user_id)
 
         metadata = ScriptMetadata(
@@ -543,7 +564,12 @@ class ScriptRegistry:
         return scripts
 
     async def attach_script(
-        self, script_id: str, simulation_id: str, user_id: str
+        self,
+        script_id: str,
+        simulation_id: str,
+        user_id: str,
+        *,
+        entity_id: Optional[str] = None,
     ) -> ScriptMetadata:
         """挂载已上传的脚本到指定仿真实例。"""
 
@@ -566,31 +592,47 @@ class ScriptRegistry:
                     self._format_limit_message(simulation_id, user_id, limit)
                 )
 
-            self._ensure_entity_available_unlocked(
-                simulation_id,
-                record.metadata.agent_kind,
-                record.metadata.entity_id,
-                ignore_script_id=script_id,
-            )
+        candidate_entity_id = entity_id or record.metadata.entity_id
+        candidate_entity_id = self._normalize_entity_id(candidate_entity_id)
+        self._validate_entity_binding(record.metadata.agent_kind, candidate_entity_id)
 
-            if self._store is not None:
-                try:
-                    updated = await self._store.update_simulation_binding(
-                        script_id, simulation_id
-                    )
-                except Exception as exc:  # pragma: no cover - defensive log
-                    raise ScriptExecutionError(f"无法挂载脚本: {exc}") from exc
-                if not updated:
-                    raise ScriptExecutionError("脚本不存在或已被移除。")
+        self._ensure_entity_available_unlocked(
+            simulation_id,
+            record.metadata.agent_kind,
+            candidate_entity_id,
+            ignore_script_id=script_id,
+        )
 
+        if self._store is not None:
+            try:
+                updated = await self._store.update_simulation_binding(
+                    script_id, simulation_id
+                )
+            except Exception as exc:  # pragma: no cover - defensive log
+                raise ScriptExecutionError(f"无法挂载脚本: {exc}") from exc
+            if not updated:
+                raise ScriptExecutionError("脚本不存在或已被移除。")
+
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None or record.metadata.user_id != user_id:
+                raise ScriptExecutionError("脚本不存在或无权限操作。")
             old_metadata = record.metadata
             new_metadata = record.metadata.model_copy(
-                update={"simulation_id": simulation_id}
+                update={
+                    "simulation_id": simulation_id,
+                    "entity_id": candidate_entity_id,
+                }
             )
             record.metadata = new_metadata
             self._update_indexes(script_id, old_metadata, new_metadata)
             self._loaded_simulations.add(simulation_id)
-            return new_metadata
+            code_snapshot = record.code
+
+        if self._store is not None:
+            await self._store.save_script(new_metadata, code_snapshot)
+
+        return new_metadata
 
     async def get_user_script(self, script_id: str, user_id: str) -> ScriptMetadata:
         """返回指定用户拥有的脚本元数据，若无权限则抛出异常。"""
@@ -606,12 +648,30 @@ class ScriptRegistry:
         """将用户脚本从当前仿真实例中取消挂载。"""
 
         await self._ensure_user_loaded(user_id)
+        placeholder_update = False
+        code_snapshot: Optional[str] = None
+        new_metadata: Optional[ScriptMetadata] = None
         async with self._registry_lock:
             record = self._records.get(script_id)
             if record is None or record.metadata.user_id != user_id:
                 raise ScriptExecutionError("脚本不存在或无权限操作。")
             if record.metadata.simulation_id is None:
-                return record.metadata
+                if self.is_placeholder_entity_id(record.metadata.entity_id):
+                    return record.metadata
+                placeholder = self._generate_placeholder_entity_id(
+                    record.metadata.agent_kind
+                )
+                new_metadata = record.metadata.model_copy(
+                    update={"entity_id": placeholder}
+                )
+                record.metadata = new_metadata
+                code_snapshot = record.code
+                placeholder_update = True
+
+        if placeholder_update and new_metadata is not None:
+            if self._store is not None and code_snapshot is not None:
+                await self._store.save_script(new_metadata, code_snapshot)
+            return new_metadata
 
         if self._store is not None:
             try:
@@ -626,10 +686,19 @@ class ScriptRegistry:
             if record is None:
                 raise ScriptExecutionError("脚本不存在或已被移除。")
             old_metadata = record.metadata
-            new_metadata = record.metadata.model_copy(update={"simulation_id": None})
+            placeholder = self._generate_placeholder_entity_id(
+                record.metadata.agent_kind
+            )
+            new_metadata = record.metadata.model_copy(
+                update={"simulation_id": None, "entity_id": placeholder}
+            )
             record.metadata = new_metadata
             self._update_indexes(script_id, old_metadata, new_metadata)
-            return new_metadata
+            code_snapshot = record.code
+
+        if self._store is not None:
+            await self._store.save_script(new_metadata, code_snapshot)
+        return new_metadata
 
     async def remove_script(self, simulation_id: str, script_id: str) -> None:
         """根据脚本 ID 删除已注册脚本。"""

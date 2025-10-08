@@ -2,6 +2,7 @@
 {% from "partials/state_macros.html" import fmt_number, render_table, render_households_table %}
 {% block title %}仪表盘 - Econ Simulator{% endblock %}
 {% block content %}
+    {% set entity_map = entity_display_map if entity_display_map is defined else {} %}
     <section class="panel">
         <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
         <p>
@@ -177,6 +178,10 @@
                                         <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
                                         <span class="label">脚本 ID</span>
                                         <span class="value">{{ script.script_id }}</span>
+                                        <span class="label">主体类型</span>
+                                        <span class="value">{{ script.agent_kind.value }}</span>
+                                        <span class="label">实体 ID</span>
+                                        <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
                                         <span class="label">版本</span>
                                         <span class="value">{{ script.code_version }}</span>
                                     </div>
@@ -230,6 +235,10 @@
                                         <span class="value">{{ script.user_id }}</span>
                                         <span class="label">脚本 ID</span>
                                         <span class="value">{{ script.script_id }}</span>
+                                        <span class="label">主体类型</span>
+                                        <span class="value">{{ script.agent_kind.value }}</span>
+                                        <span class="label">实体 ID</span>
+                                        <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
                                         <span class="label">版本</span>
                                         <span class="value">{{ script.code_version }}</span>
                                         <span class="label">状态</span>
@@ -276,6 +285,15 @@
     </section>
     <section class="panel">
         <h3>上传脚本</h3>
+        {% set script_defaults = script_form_defaults if script_form_defaults is defined else {} %}
+        {% set resolved_kind = script_defaults.get('resolved_agent_kind') %}
+        {% set agent_kind_labels = {
+            'household': '家户（Household）',
+            'firm': '企业（Firm）',
+            'bank': '商业银行（Bank）',
+            'government': '政府（Government）',
+            'central_bank': '中央银行（Central Bank）'
+        } %}
         <form method="post"
               action="/web/scripts"
               class="script-form"
@@ -283,9 +301,20 @@
             <input type="hidden"
                    name="current_simulation_id"
                    value="{{ simulation_id }}">
+            {% if resolved_kind %}
+                <p class="form-hint">
+                    目标主体类型：<strong>{{ agent_kind_labels.get(resolved_kind, resolved_kind) }}</strong>（系统已自动识别）
+                </p>
+            {% else %}
+                <p class="error">当前账号未配置可上传的主体类型，请联系管理员。</p>
+            {% endif %}
+            <p class="form-hint">目标实体 ID 将在挂载脚本时自动生成，无需填写。</p>
             <label>
                 脚本说明（可选）
-                <input type="text" name="description" placeholder="简单描述脚本用途">
+                <input type="text"
+                       name="description"
+                       placeholder="简单描述脚本用途"
+                       value="{{ script_defaults.get('description', '') }}">
             </label>
             <label>
                 脚本文件（仅支持 .py 扩展名）
@@ -294,6 +323,7 @@
             <p class="form-hint">
                 脚本必须定义 <code>generate_decisions(context)</code> 函数。
             </p>
+            <p class="form-hint">挂载脚本时系统会自动为主体分配唯一实体 ID。</p>
             <p class="form-hint">若当前尚未加入仿真世界，脚本会先保存到个人脚本库，稍后可在下方挂载。</p>
             {% if simulation_id %}
                 <p class="form-hint">
@@ -314,7 +344,7 @@
                         <select name="script_id">
                             {% for script in attachable_scripts %}
                                 <option value="{{ script.script_id }}">
-                                    {{ script.script_id }}
+                                    {{ script.script_id }} · {{ script.agent_kind.value }} · ID={{ entity_map.get(script.script_id, script.entity_id) }}
                                     {% if script.description %}· {{ script.description }}{% endif %}
                                 </option>
                             {% endfor %}

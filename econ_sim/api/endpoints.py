@@ -25,6 +25,7 @@ from ..data_access.models import (
 )
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError, ScriptMetadata
+from ..utils.agents import resolve_agent_kind
 
 router = APIRouter(prefix="/simulations", tags=["simulations"])
 scripts_router = APIRouter(prefix="/scripts", tags=["scripts"])
@@ -126,8 +127,7 @@ class ScriptUploadRequest(BaseModel):
     user_id: Optional[str] = None
     code: str
     description: Optional[str] = None
-    agent_kind: AgentKind
-    entity_id: str
+    agent_kind: Optional[AgentKind] = None
 
 
 class ScriptUploadResponse(BaseModel):
@@ -527,13 +527,21 @@ async def upload_user_script(
         )
 
     try:
+        resolved_kind = resolve_agent_kind(
+            user.user_type,
+            payload.agent_kind,
+            allow_override=user.user_type == "admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
         metadata = await script_registry.register_script(
             simulation_id=None,
             user_id=user.email,
             script_code=payload.code,
             description=payload.description,
-            agent_kind=payload.agent_kind,
-            entity_id=payload.entity_id,
+            agent_kind=resolved_kind,
         )
     except ScriptExecutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -573,13 +581,21 @@ async def upload_script(
         )
 
     try:
+        resolved_kind = resolve_agent_kind(
+            user.user_type,
+            payload.agent_kind,
+            allow_override=user.user_type == "admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
         metadata = await _orchestrator.register_script_for_simulation(
             simulation_id=simulation_id,
             user_id=user.email,
             script_code=payload.code,
             description=payload.description,
-            agent_kind=payload.agent_kind,
-            entity_id=payload.entity_id,
+            agent_kind=resolved_kind,
         )
         await _orchestrator.register_participant(simulation_id, user.email)
     except SimulationStateError as exc:
