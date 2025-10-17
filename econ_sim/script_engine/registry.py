@@ -968,6 +968,14 @@ class ScriptRegistry:
         except Exception:
             config_json = None
 
+        # warm the process pool to reduce first-task latency (avoid false timeouts)
+        try:
+            from .sandbox import warm_process_pool
+
+            warm_process_pool()
+        except Exception:
+            pass
+
         async def _run_record(rec: _ScriptRecord):
             async with semaphore:
                 try:
@@ -988,13 +996,13 @@ class ScriptRegistry:
         failure_events: List[ScriptFailureEvent] = []
         status_updates: List[tuple[str, Optional[datetime], Optional[str]]] = []
 
-        # schedule all tasks concurrently but bounded by semaphore
-        tasks = [asyncio.create_task(_run_record(rec)) for rec in records]
-
-        # iterate results in creation order to preserve deterministic merge order
-        for rec, task in zip(records, tasks):
+        # execute records in deterministic order; running sequentially avoids
+        # flooding the ProcessPoolExecutor queue when very small timeouts are
+        # used (which can cause unrelated queued tasks to time out while
+        # waiting for a worker). This preserves deterministic merge order.
+        for rec in records:
             try:
-                overrides = await task
+                overrides = await _run_record(rec)
             except ScriptExecutionError as exc:
                 logger.error(
                     "Script %s failed during tick %s: %s",

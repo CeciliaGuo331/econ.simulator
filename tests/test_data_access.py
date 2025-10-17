@@ -1,4 +1,5 @@
 import json
+import copy
 from typing import Dict
 
 import pytest
@@ -13,15 +14,15 @@ from econ_sim.utils.settings import get_world_config
 
 class FakePersistentStore:
     def __init__(self, data: Dict[str, Dict]):
-        self._data = {key: json.loads(json.dumps(value)) for key, value in data.items()}
+        self._data = {key: copy.deepcopy(value) for key, value in data.items()}
         self.list_calls = 0
 
     async def load(self, simulation_id: str):  # pragma: no cover - not used in test
         stored = self._data.get(simulation_id)
-        return json.loads(json.dumps(stored)) if stored is not None else None
+        return copy.deepcopy(stored) if stored is not None else None
 
     async def store(self, simulation_id: str, payload: Dict):  # pragma: no cover
-        self._data[simulation_id] = json.loads(json.dumps(payload))
+        self._data[simulation_id] = copy.deepcopy(payload)
 
     async def delete(self, simulation_id: str):  # pragma: no cover
         self._data.pop(simulation_id, None)

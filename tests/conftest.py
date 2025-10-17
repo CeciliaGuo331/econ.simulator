@@ -41,6 +41,8 @@ from fastapi.testclient import TestClient
 
 from econ_sim.main import app
 from econ_sim.web import views
+from econ_sim.script_engine import sandbox
+from econ_sim.script_engine import reset_script_registry
 
 
 @pytest.fixture(scope="session")
@@ -139,3 +141,24 @@ def patch_views_orchestrator(monkeypatch):
     说明：与 `patch_orchestrator` 类似，但名称更强调目标模块（views），便于阅读测试并快速知道替换的范围。
     """
     return monkeypatch
+
+
+@pytest.fixture(scope="module", autouse=True)
+def ensure_clean_pool_between_modules():
+    """Module-scoped fixture that ensures the process pool is shutdown after
+    each test module. This reduces cross-module interference from lingering
+    worker processes created by the script sandbox.
+
+    The fixture is best-effort: shutdown errors are ignored.
+    """
+    # no-op setup
+    yield
+    try:
+        sandbox.shutdown_process_pool(wait=False)
+    except Exception:
+        # best-effort cleanup; swallow exceptions during teardown
+        pass
+    try:
+        reset_script_registry()
+    except Exception:
+        pass

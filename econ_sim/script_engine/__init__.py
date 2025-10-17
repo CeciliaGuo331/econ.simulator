@@ -67,4 +67,15 @@ def _build_registry() -> ScriptRegistry:
 # 全局单例，供 API 与调度器共享。
 script_registry = _build_registry()
 
+
+def reset_script_registry() -> None:
+    """Recreate the module-level script_registry instance.
+
+    Intended for test teardown to ensure each test module can start with a
+    fresh registry without relying on import-time singletons.
+    """
+    global script_registry
+    script_registry = _build_registry()
+
+
 __all__ = ["script_registry", "ScriptRegistry"]

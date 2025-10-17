@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import copy
 import logging
 import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Set, TYPE_CHECKING
+from collections import deque
+import time
 
 try:  # pragma: no cover - optional dependency at runtime
     from redis.asyncio import Redis
@@ -135,12 +138,51 @@ class InMemoryStateStore:
         """从内存字典中读取仿真状态并返回深拷贝。"""
         async with self._lock:
             snapshot = self._storage.get(simulation_id)
-            return json.loads(json.dumps(snapshot)) if snapshot is not None else None
+            # Use deepcopy to avoid the overhead of JSON round-trip while
+            # still returning an independent copy.
+            return copy.deepcopy(snapshot) if snapshot is not None else None
+
+    async def store_entity(
+        self, simulation_id: str, scope: str, entity_id: Optional[str], payload: Dict
+    ) -> None:
+        """Store a single-entity fragment into the in-memory store.
+
+        This enables per-entity incremental writes for long-running simulations.
+        """
+        async with self._lock:
+            bucket = self._storage.setdefault(simulation_id, {})
+            if scope == "household":
+                houses = bucket.setdefault("households", {})
+                # normalize household id as string
+                houses[str(entity_id)] = copy.deepcopy(payload)
+            elif scope in {"firm", "bank", "government", "central_bank"}:
+                bucket[scope] = copy.deepcopy(payload)
+            else:
+                # world-level or meta
+                meta = bucket.setdefault("_meta", {})
+                meta.update(copy.deepcopy(payload))
+
+    async def delete_entity(
+        self, simulation_id: str, scope: str, entity_id: Optional[str]
+    ) -> None:
+        async with self._lock:
+            bucket = self._storage.get(simulation_id)
+            if not bucket:
+                return
+            if scope == "household":
+                houses = bucket.get("households")
+                if houses:
+                    houses.pop(str(entity_id), None)
+            elif scope in {"firm", "bank", "government", "central_bank"}:
+                bucket.pop(scope, None)
+            else:
+                bucket.pop("_meta", None)
 
     async def store(self, simulation_id: str, payload: Dict) -> None:
         """将仿真状态深拷贝后写入内存字典。"""
         async with self._lock:
-            self._storage[simulation_id] = json.loads(json.dumps(payload))
+            # Use deepcopy instead of JSON round-trip to improve perf.
+            self._storage[simulation_id] = copy.deepcopy(payload)
 
     async def delete(self, simulation_id: str) -> None:
         """从内存存储中移除指定仿真实例的状态。"""
@@ -163,6 +205,12 @@ class RedisStateStore:
     def _key(self, simulation_id: str) -> str:
         """按照统一前缀拼接 Redis 键名称。"""
         return f"{self._prefix}:sim:{simulation_id}:world_state"
+
+    def _household_key(self, simulation_id: str, household_id: str) -> str:
+        return f"{self._prefix}:sim:{simulation_id}:household:{household_id}"
+
+    def _entity_key(self, simulation_id: str, scope: str) -> str:
+        return f"{self._prefix}:sim:{simulation_id}:entity:{scope}"
 
     async def load(self, simulation_id: str) -> Optional[Dict]:
         """从 Redis 获取指定仿真状态的 JSON 快照。"""
@@ -359,7 +407,29 @@ class CompositeStateStore(StateStore):
         cache_error: Optional[Exception] = None
         if self._cache is not None:
             try:
-                await self._cache.store(simulation_id, payload)
+                # If cache supports per-entity writes, prefer those to avoid
+                # repeatedly writing the full snapshot into Redis (large payloads).
+                if hasattr(self._cache, "store_entity"):
+                    houses = payload.get("households", {})
+                    for hid, hpayload in houses.items():
+                        await self._cache.store_entity(
+                            simulation_id, "household", str(hid), hpayload
+                        )
+                    for scope in (
+                        "firm",
+                        "bank",
+                        "government",
+                        "central_bank",
+                        "macro",
+                        "features",
+                        "household_shocks",
+                    ):
+                        if scope in payload:
+                            await self._cache.store_entity(
+                                simulation_id, scope, None, payload[scope]
+                            )
+                else:
+                    await self._cache.store(simulation_id, payload)
             except (
                 Exception
             ) as exc:  # pragma: no cover - cache update failure is non-fatal
@@ -371,12 +441,38 @@ class CompositeStateStore(StateStore):
                 )
 
         if self._persistent is not None:
-            try:
-                await self._persistent.store(simulation_id, payload)
-            except Exception as exc:
-                raise PersistenceError(
-                    "Failed to persist world state to primary store"
-                ) from exc
+            # persistent store may support per-entity writes as well
+            if hasattr(self._persistent, "store_entity"):
+                try:
+                    houses = payload.get("households", {})
+                    for hid, hpayload in houses.items():
+                        await self._persistent.store_entity(
+                            simulation_id, "household", str(hid), hpayload
+                        )
+                    for scope in (
+                        "firm",
+                        "bank",
+                        "government",
+                        "central_bank",
+                        "macro",
+                        "features",
+                        "household_shocks",
+                    ):
+                        if scope in payload:
+                            await self._persistent.store_entity(
+                                simulation_id, scope, None, payload[scope]
+                            )
+                except Exception as exc:
+                    raise PersistenceError(
+                        "Failed to persist world state to primary store"
+                    ) from exc
+            else:
+                try:
+                    await self._persistent.store(simulation_id, payload)
+                except Exception as exc:
+                    raise PersistenceError(
+                        "Failed to persist world state to primary store"
+                    ) from exc
         elif self._fallback is not None:
             await self._fallback.store(simulation_id, payload)
         elif self._cache is None:
@@ -467,6 +563,9 @@ class PostgresStateStore(StateStore):
         self._pool: Optional[AsyncpgPool] = None
         self._qualified_table: Optional[str] = None
         self._pool_lock = asyncio.Lock()
+        self._qualified_entities_table = None
+        # configurable batch size for bulk upserts (number of entities per INSERT)
+        self._upsert_batch_size = int(os.getenv("ECON_SIM_PG_UPSERT_BATCH", "500"))
 
     async def _get_pool(self) -> AsyncpgPool:
         if self._pool is not None:
@@ -489,6 +588,8 @@ class PostgresStateStore(StateStore):
         table_ident = quote_identifier(self._table)
         qualified_table = f"{schema_ident}.{table_ident}"
         index_ident = quote_identifier(f"{self._table}_updated_at_idx")
+        entities_table_ident = quote_identifier(f"{self._table}_entities")
+        qualified_entities = f"{schema_ident}.{entities_table_ident}"
 
         async with pool.acquire() as conn:
             if self._create_schema:
@@ -498,6 +599,25 @@ class PostgresStateStore(StateStore):
                 CREATE TABLE IF NOT EXISTS {qualified_table} (
                     simulation_id TEXT PRIMARY KEY,
                     tick INTEGER NOT NULL,
+
+            # Optional per-entity operations to support incremental persistence
+            async def store_entity(
+                self, simulation_id: str, scope: str, entity_id: Optional[str], payload: Dict
+            ) -> None:
+                if scope == "household":
+                    if entity_id is None:
+                        raise ValueError("household entity_id required for store_entity")
+                    await self._redis.set(self._household_key(simulation_id, str(entity_id)), json.dumps(payload))
+                else:
+                    await self._redis.set(self._entity_key(simulation_id, scope), json.dumps(payload))
+
+            async def delete_entity(self, simulation_id: str, scope: str, entity_id: Optional[str]) -> None:
+                if scope == "household":
+                    if entity_id is None:
+                        return
+                    await self._redis.delete(self._household_key(simulation_id, str(entity_id)))
+                else:
+                    await self._redis.delete(self._entity_key(simulation_id, scope))
                     day INTEGER NOT NULL,
                     payload JSONB NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
@@ -507,14 +627,56 @@ class PostgresStateStore(StateStore):
             await conn.execute(
                 f"CREATE INDEX IF NOT EXISTS {index_ident} ON {qualified_table} (updated_at DESC)"
             )
+            # entities table for incremental persistence (per-scope, per-entity rows)
+            await conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {qualified_entities} (
+                    simulation_id TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    payload JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+                    PRIMARY KEY (simulation_id, scope, entity_id)
+                )
+                """
+            )
+            await conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {quote_identifier(self._table + '_entities_updated_at_idx')} ON {qualified_entities} (updated_at DESC)"
+            )
 
-        self._qualified_table = qualified_table
+            self._qualified_table = qualified_table
+            # store qualified entities table name on instance
+            self._qualified_entities_table = qualified_entities
 
     async def load(self, simulation_id: str) -> Optional[Dict]:
         pool = await self._get_pool()
-        if self._qualified_table is None:  # pragma: no cover - defensive guard
+        if self._qualified_table is None or self._qualified_entities_table is None:
             raise RuntimeError("PostgresStateStore schema not initialized")
+
         async with pool.acquire() as conn:
+            # Prefer incremental entities table when it contains data for this simulation
+            rows = await conn.fetch(
+                f"SELECT scope, entity_id, payload FROM {self._qualified_entities_table} WHERE simulation_id = $1",
+                simulation_id,
+            )
+            if rows:
+                result: Dict[str, Any] = {}
+                # collect households specially
+                households: Dict[str, Any] = {}
+                for r in rows:
+                    scope = r["scope"]
+                    eid = r["entity_id"]
+                    payload = r["payload"]
+                    if scope == "household":
+                        households[eid] = payload
+                    else:
+                        # singletons and meta
+                        result[scope] = payload
+                if households:
+                    result["households"] = households
+                return result
+
+            # fallback to snapshot table
             row = await conn.fetchrow(
                 f"SELECT payload FROM {self._qualified_table} WHERE simulation_id = $1",
                 simulation_id,
@@ -528,28 +690,69 @@ class PostgresStateStore(StateStore):
 
     async def store(self, simulation_id: str, payload: Dict) -> None:
         pool = await self._get_pool()
-        if self._qualified_table is None:  # pragma: no cover - defensive guard
+        if self._qualified_entities_table is None:  # pragma: no cover - defensive guard
             raise RuntimeError("PostgresStateStore schema not initialized")
+
+        # decompose payload into entities and upsert into entities table
+        houses = payload.get("households", {})
         tick = int(payload.get("tick", 0))
         day = int(payload.get("day", 0))
-        data = json.dumps(payload)
         async with pool.acquire() as conn:
-            await conn.execute(
-                f"""
-                INSERT INTO {self._qualified_table} (simulation_id, tick, day, payload, updated_at)
-                VALUES ($1, $2, $3, $4::jsonb, timezone('utc', now()))
-                ON CONFLICT (simulation_id)
-                DO UPDATE SET
-                    tick = EXCLUDED.tick,
-                    day = EXCLUDED.day,
-                    payload = EXCLUDED.payload,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                simulation_id,
-                tick,
-                day,
-                data,
-            )
+            # perform all upserts within a single transaction to ensure atomic
+            # commit per-tick and avoid partial state persistence
+            async with conn.transaction():
+                # collect rows to upsert (simulation_id, scope, entity_id, payload_json)
+                rows: List[tuple] = []
+                for hid, hpayload in houses.items():
+                    rows.append(
+                        (simulation_id, "household", str(hid), json.dumps(hpayload))
+                    )
+
+                for scope in (
+                    "firm",
+                    "bank",
+                    "government",
+                    "central_bank",
+                    "macro",
+                    "features",
+                    "household_shocks",
+                ):
+                    if scope in payload:
+                        rows.append(
+                            (simulation_id, scope, "", json.dumps(payload[scope]))
+                        )
+
+                if not rows:
+                    return
+
+                batch_size = max(1, int(getattr(self, "_upsert_batch_size", 500)))
+
+                # execute batches of multi-row INSERT ... ON CONFLICT statements
+                for i in range(0, len(rows), batch_size):
+                    batch = rows[i : i + batch_size]
+                    # build parameterized VALUES clause
+                    params: List[Any] = []
+                    values_fragments: List[str] = []
+                    # each row uses 3 params: simulation_id, scope, entity_id, payload (payload cast to jsonb)
+                    # We'll append as ($1, $2, $3, $4::jsonb, timezone('utc', now())), ...
+                    param_index = 1
+                    for r in batch:
+                        # r -> (simulation_id, scope, entity_id, payload_json)
+                        params.extend([r[0], r[1], r[2], r[3]])
+                        # placeholders for this row
+                        placeholders = f"${param_index}, ${param_index+1}, ${param_index+2}, ${param_index+3}::jsonb, timezone('utc', now())"
+                        values_fragments.append(f"({placeholders})")
+                        param_index += 4
+
+                    values_sql = ",\n".join(values_fragments)
+                    sql = f"""
+                        INSERT INTO {self._qualified_entities_table} (simulation_id, scope, entity_id, payload, updated_at)
+                        VALUES
+                        {values_sql}
+                        ON CONFLICT (simulation_id, scope, entity_id)
+                        DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+                    """
+                    await conn.execute(sql, *params)
 
     async def list_simulation_ids(self) -> list[str]:
         pool = await self._get_pool()
@@ -574,6 +777,43 @@ class PostgresStateStore(StateStore):
     async def close(self) -> None:  # pragma: no cover - retained for compatibility
         self._pool = None
 
+    async def store_entity(
+        self, simulation_id: str, scope: str, entity_id: Optional[str], payload: Dict
+    ) -> None:
+        pool = await self._get_pool()
+        if self._qualified_entities_table is None:
+            raise RuntimeError("PostgresStateStore schema not initialized")
+        async with pool.acquire() as conn:
+            data = json.dumps(payload)
+            eid = "" if entity_id is None else str(entity_id)
+            await conn.execute(
+                f"""
+                INSERT INTO {self._qualified_entities_table} (simulation_id, scope, entity_id, payload, updated_at)
+                VALUES ($1, $2, $3, $4::jsonb, timezone('utc', now()))
+                ON CONFLICT (simulation_id, scope, entity_id)
+                DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+                """,
+                simulation_id,
+                scope,
+                eid,
+                data,
+            )
+
+    async def delete_entity(
+        self, simulation_id: str, scope: str, entity_id: Optional[str]
+    ) -> None:
+        pool = await self._get_pool()
+        if self._qualified_entities_table is None:
+            raise RuntimeError("PostgresStateStore schema not initialized")
+        eid = "" if entity_id is None else str(entity_id)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"DELETE FROM {self._qualified_entities_table} WHERE simulation_id = $1 AND scope = $2 AND entity_id = $3",
+                simulation_id,
+                scope,
+                eid,
+            )
+
 
 @dataclass
 class DataAccessLayer:
@@ -595,6 +835,14 @@ class DataAccessLayer:
     _log_retention: int = field(default=1000)
     _tick_log_store: Optional[PostgresTickLogStore] = None
     _runtime_store: Optional[RedisRuntimeStore] = None
+    # per-simulation write locks to prevent concurrent writes from clobbering each other
+    _write_locks: Dict[str, asyncio.Lock] = field(default_factory=dict)
+    # background sampler task and storage
+    _sampler_task: Optional[asyncio.Task] = field(default=None, init=False, repr=False)
+    _recent_sampler: deque = field(
+        default_factory=lambda: deque(maxlen=200), init=False, repr=False
+    )
+    _sampler_interval: float = field(default=5.0)
 
     @classmethod
     def with_default_store(
@@ -661,7 +909,7 @@ class DataAccessLayer:
                 persistent=persistent_store,
                 fallback=fallback,
             )
-            return cls(
+            instance = cls(
                 config=resolved_config,
                 store=composite,
                 cache_store=cache_store,
@@ -672,8 +920,11 @@ class DataAccessLayer:
                 _tick_log_store=tick_log_store,
                 _runtime_store=runtime_store,
             )
+            # sampler will be started explicitly via start_sampler() when desired
+            return instance
 
-        return cls(
+        # fallback to pure in-memory store when no cache or persistent configured
+        instance = cls(
             config=resolved_config,
             store=fallback,
             fallback_store=fallback,
@@ -681,6 +932,51 @@ class DataAccessLayer:
             failure_store=failure_store,
             _runtime_store=None,
         )
+        return instance
+
+    def start_sampler(self) -> None:
+        """Start the background sampler if not already running and an event loop is available."""
+        if self._sampler_task is not None and not self._sampler_task.done():
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            self._sampler_task = loop.create_task(self._background_sampler())
+        except RuntimeError:
+            # no running loop; caller may start sampler later
+            self._sampler_task = None
+
+    def stop_sampler(self) -> None:
+        """Stop the background sampler if running."""
+        if self._sampler_task is not None:
+            try:
+                self._sampler_task.cancel()
+            except Exception:
+                pass
+            self._sampler_task = None
+
+    async def _background_sampler(self) -> None:
+        """Periodically sample simple runtime stats for monitoring (non-critical)."""
+        try:
+            while True:
+                try:
+                    sample = {
+                        "timestamp": time.time(),
+                        "write_locks": len(self._write_locks),
+                        "known_simulations": len(self._known_simulations),
+                        "tick_logs_backlog": sum(
+                            len(v) for v in self._tick_logs.values()
+                        ),
+                    }
+                except Exception:
+                    sample = {"timestamp": time.time(), "error": True}
+                self._recent_sampler.append(sample)
+                await asyncio.sleep(self._sampler_interval)
+        except asyncio.CancelledError:
+            return
+
+    def get_runtime_samples(self) -> list:
+        """Return recent sampler values as a list (newest last)."""
+        return list(self._recent_sampler)
 
     async def ensure_simulation(self, simulation_id: str) -> WorldState:
         """确保仿真实例存在，不存在时按配置创建初始世界状态。"""
@@ -1031,8 +1327,17 @@ class DataAccessLayer:
 
     async def _persist_state(self, world_state: WorldState) -> None:
         """将世界状态写回底层存储。"""
-        await self.store.store(world_state.simulation_id, world_state.model_dump())
-        self._known_simulations.add(world_state.simulation_id)
+        sim_id = world_state.simulation_id
+        # obtain or create per-simulation lock
+        lock = self._write_locks.get(sim_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._write_locks[sim_id] = lock
+
+        async with lock:
+            await self.store.store(sim_id, world_state.model_dump())
+            # mark known simulation after successful persist
+            self._known_simulations.add(sim_id)
 
     def _build_initial_world_state(self, simulation_id: str) -> WorldState:
         """依据配置构造新的初始世界状态。"""
