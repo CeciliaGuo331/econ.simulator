@@ -95,7 +95,7 @@ async def test_seed_test_world_is_idempotent() -> None:
 @pytest.mark.asyncio
 # 测试：在用 seed_test_world 初始化后，simulation 能正确执行一次 tick，世界状态和脚本计数如预期。
 async def test_seed_test_world_can_execute_tick(
-    monkeypatch: pytest.MonkeyPatch,
+    patch: pytest.MonkeyPatch,
 ) -> None:
     orchestrator = SimulationOrchestrator()
     registry = ScriptRegistry()
@@ -105,9 +105,9 @@ async def test_seed_test_world_can_execute_tick(
     import econ_sim.core.orchestrator as orchestrator_module
     import econ_sim.script_engine.test_world_seed as seed_module
 
-    monkeypatch.setattr(script_engine_module, "script_registry", registry)
-    monkeypatch.setattr(orchestrator_module, "script_registry", registry)
-    monkeypatch.setattr(seed_module, "default_registry", registry)
+    patch.setattr(script_engine_module, "script_registry", registry)
+    patch.setattr(orchestrator_module, "script_registry", registry)
+    patch.setattr(seed_module, "default_registry", registry)
 
     summary = await seed_test_world(
         simulation_id="tick-sim",

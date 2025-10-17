@@ -113,26 +113,14 @@ def _build_world_state_dump(
     }
 
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+# client, override_user 等 fixtures 已移动到 tests/conftest.py
+# 直接使用 pytest fixture: override_user, client
 
 
-def _override_user(user):
-    app.dependency_overrides[views._require_session_user] = lambda: user
-    if user.get("user_type") == "admin":
-        app.dependency_overrides[views._require_admin_user] = lambda: user
-
-
-def _clear_override():
-    app.dependency_overrides.pop(views._require_session_user, None)
-    app.dependency_overrides.pop(views._require_admin_user, None)
-
-
-def test_download_logs_success(monkeypatch, client):
+def test_download_logs_success(patch_orchestrator, client, override_user):
     # 测试：当用户为 simulation 的参与者时，下载日志端点应返回 200 并包含日志内容与上下文。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     entries = [
         SimpleNamespace(tick=12, day=3, message="tick ok", context={"foo": "bar"}),
@@ -149,7 +137,7 @@ def test_download_logs_success(monkeypatch, client):
             assert limit == 500
             return entries
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.get("/web/logs/sim-1/download")
@@ -157,17 +145,17 @@ def test_download_logs_success(monkeypatch, client):
         assert "Day 3" in response.text
         assert 'context={"foo": "bar"}' in response.text
     finally:
-        _clear_override()
+        pass
 
 
-def test_dashboard_displays_script_limit(client):
+def test_dashboard_displays_script_limit(client, override_user, patch_orchestrator):
     # 测试：仪表盘页面应显示并反映指定 simulation 的脚本上限信息。
     async def _setup() -> None:
         await views._orchestrator.create_simulation("sim-limit")
         await script_registry.set_simulation_limit("sim-limit", 2)
 
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(_setup())
 
@@ -177,7 +165,7 @@ def test_dashboard_displays_script_limit(client):
         assert "当前脚本上限" in response.text
         assert re.search(r"脚本上限[\s\S]*2", response.text)
     finally:
-        _clear_override()
+        pass
 
         async def _cleanup() -> None:
             await script_registry.clear()
@@ -189,10 +177,10 @@ def test_dashboard_displays_script_limit(client):
         asyncio.run(_cleanup())
 
 
-def test_upload_script_saved_to_library(client):
+def test_upload_script_saved_to_library(client, override_user):
     # 测试：上传脚本到 /web/scripts 时，应把脚本保存到用户库（simulation_id 为空），并生成占位实体 ID。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
 
@@ -219,14 +207,14 @@ def test_upload_script_saved_to_library(client):
         assert script_registry.is_placeholder_entity_id(scripts[0].entity_id)
         assert scripts[0].agent_kind is AgentKind.HOUSEHOLD
     finally:
-        _clear_override()
+        pass
         asyncio.run(script_registry.clear())
 
 
-def test_detach_script_requires_tick_zero(monkeypatch, client):
+def test_detach_script_requires_tick_zero(patch_orchestrator, client, override_user):
     # 测试：在非 tick 0 时尝试从 simulation 分离脚本应被阻止并返回带 error 的重定向。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
     metadata = asyncio.run(
@@ -250,7 +238,7 @@ def test_detach_script_requires_tick_zero(monkeypatch, client):
             raise SimulationNotFoundError()
         return SimpleNamespace(tick=ticks[simulation_id])
 
-    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+    patch_orchestrator.setattr(views._orchestrator, "get_state", fake_get_state)
 
     try:
         response = client.post(
@@ -272,14 +260,14 @@ def test_detach_script_requires_tick_zero(monkeypatch, client):
         )
         assert meta_after.simulation_id == "sim-late"
     finally:
-        _clear_override()
+        pass
         asyncio.run(script_registry.clear())
 
 
-def test_detach_script_allows_tick_zero(monkeypatch, client):
+def test_detach_script_allows_tick_zero(patch_orchestrator, client, override_user):
     # 测试：在 tick 0 时允许从 simulation 分离脚本，分离后元数据中的 simulation_id 应为 None。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
     metadata = asyncio.run(
@@ -311,7 +299,7 @@ def test_detach_script_allows_tick_zero(monkeypatch, client):
             assert user_id == user["email"]
             await script_registry.detach_user_script(script_id, user_id)
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.post(
@@ -330,14 +318,14 @@ def test_detach_script_allows_tick_zero(monkeypatch, client):
         )
         assert meta_after.simulation_id is None
     finally:
-        _clear_override()
+        pass
         asyncio.run(script_registry.clear())
 
 
-def test_delete_script_unattached(client):
+def test_delete_script_unattached(client, override_user):
     # 测试：删除未绑定到 simulation 的用户脚本应成功并从用户库中移除。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
     metadata = asyncio.run(
@@ -365,14 +353,16 @@ def test_delete_script_unattached(client):
         scripts = asyncio.run(script_registry.list_user_scripts(user["email"]))
         assert not scripts
     finally:
-        _clear_override()
+        pass
         asyncio.run(script_registry.clear())
 
 
-def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
+def test_delete_script_attached_requires_tick_zero(
+    patch_orchestrator, client, override_user
+):
     # 测试：当脚本已绑定且 simulation 非 tick 0 时，删除操作应被阻止并返回错误重定向。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
     metadata = asyncio.run(
@@ -396,7 +386,7 @@ def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
             raise SimulationNotFoundError()
         return SimpleNamespace(tick=ticks[simulation_id])
 
-    monkeypatch.setattr(views._orchestrator, "get_state", fake_get_state)
+    patch_orchestrator.setattr(views._orchestrator, "get_state", fake_get_state)
 
     try:
         response = client.post(
@@ -416,14 +406,14 @@ def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
         )
         assert meta_after.simulation_id == "sim-run"
     finally:
-        _clear_override()
+        pass
         asyncio.run(script_registry.clear())
 
 
-def test_delete_script_attached_tick_zero(monkeypatch, client):
+def test_delete_script_attached_tick_zero(patch_orchestrator, client, override_user):
     # 测试：在 tick 0 时删除已绑定脚本应成功并从用户库中删除该脚本。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
     metadata = asyncio.run(
@@ -454,7 +444,7 @@ def test_delete_script_attached_tick_zero(monkeypatch, client):
             assert simulation_id == "sim-reset"
             await script_registry.delete_user_script(script_id, user["email"])
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.post(
@@ -470,20 +460,22 @@ def test_delete_script_attached_tick_zero(monkeypatch, client):
         scripts = asyncio.run(script_registry.list_user_scripts(user["email"]))
         assert not scripts
     finally:
-        _clear_override()
+        pass
         asyncio.run(script_registry.clear())
 
 
-def test_admin_delete_script_blocked_when_simulation_running(monkeypatch, client):
+def test_admin_delete_script_blocked_when_simulation_running(
+    patch_orchestrator, client, override_user
+):
     # 测试：管理员尝试删除 simulation 中的脚本但 simulation 正在运行（非 tick 0）时应收到合适的错误提示。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
-    _override_user(admin_user)
+    override_user(admin_user)
 
     class DummyOrchestrator:
         async def remove_script_from_simulation(self, simulation_id, script_id):
             raise SimulationStateError(simulation_id, 5)
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.post(
@@ -507,13 +499,15 @@ def test_admin_delete_script_blocked_when_simulation_running(monkeypatch, client
             "仿真实例 sim-live 已运行到 tick 5，仅在 tick 0 时允许删除挂载的脚本。"
         ]
     finally:
-        _clear_override()
+        pass
 
 
-def test_user_dashboard_displays_role_tables(monkeypatch, client):
+def test_user_dashboard_displays_role_tables(
+    patch_orchestrator, patch_script_registry, client, override_user
+):
     # 测试：用户仪表盘应展示角色相关表格以及关键指标（家庭、市场等）。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     households = {
         1: {
@@ -560,7 +554,7 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
             assert simulation_id == "sim-main"
             return DummyWorldState()
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     now = datetime(2024, 6, 1, tzinfo=timezone.utc)
     user_scripts = [
@@ -598,9 +592,11 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
         assert simulation_id == "sim-main"
         return 3
 
-    monkeypatch.setattr(script_registry, "list_user_scripts", fake_list_user_scripts)
-    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
-    monkeypatch.setattr(
+    patch_script_registry.setattr(
+        script_registry, "list_user_scripts", fake_list_user_scripts
+    )
+    patch_script_registry.setattr(script_registry, "list_scripts", fake_list_scripts)
+    patch_script_registry.setattr(
         script_registry, "get_simulation_limit", fake_get_simulation_limit
     )
 
@@ -615,13 +611,15 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
         assert "1,200.00" in body
         assert "就业率" in body
     finally:
-        _clear_override()
+        pass
 
 
-def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
+def test_admin_dashboard_displays_snapshot_tables(
+    patch_orchestrator, patch_script_registry, client, override_user
+):
     # 测试：管理员仪表盘应列出各 simulation 的快照信息、用户与脚本统计等。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
-    _override_user(admin_user)
+    override_user(admin_user)
 
     households = {
         1: {
@@ -674,7 +672,7 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
         async def list_recent_script_failures(self, simulation_id, limit=None):
             return []
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     now = datetime(2024, 6, 1, tzinfo=timezone.utc)
     scripts = [
@@ -729,12 +727,14 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
     async def fake_list_scripts(simulation_id: str):
         return [s for s in scripts if s.simulation_id == simulation_id]
 
-    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
-    monkeypatch.setattr(
+    patch_script_registry.setattr(
+        script_registry, "list_all_scripts", fake_list_all_scripts
+    )
+    patch_script_registry.setattr(
         script_registry, "get_simulation_limit", fake_get_simulation_limit
     )
-    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
-    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
+    patch_script_registry.setattr(script_registry, "list_scripts", fake_list_scripts)
+    patch_orchestrator.setattr(views.user_manager, "list_users", fake_list_users)
 
     try:
         response = client.get("/web/dashboard")
@@ -746,13 +746,13 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
         assert "家户样本（前 8 户）" in body
         assert "脚本功能开关" in body
     finally:
-        _clear_override()
+        pass
 
 
-def test_admin_can_update_script_limit(monkeypatch, client):
+def test_admin_can_update_script_limit(patch_orchestrator, client, override_user):
     # 测试：管理员可以通过表单更新指定 simulation 的脚本上限，并能收到确认重定向。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
-    _override_user(admin_user)
+    override_user(admin_user)
 
     calls = {}
 
@@ -761,7 +761,7 @@ def test_admin_can_update_script_limit(monkeypatch, client):
             calls["called"] = (simulation_id, limit)
             return limit
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.post(
@@ -781,13 +781,15 @@ def test_admin_can_update_script_limit(monkeypatch, client):
         assert location.startswith("/web/dashboard")
         assert "simulation_id=sim-42" in location
     finally:
-        _clear_override()
+        pass
 
 
-def test_admin_dashboard_displays_household_counts(monkeypatch, client):
+def test_admin_dashboard_displays_household_counts(
+    patch_orchestrator, patch_script_registry, client, override_user
+):
     # 测试：管理员仪表盘应显示按家庭计数的挂载脚本数和相关 DOM 元素。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
-    _override_user(admin_user)
+    override_user(admin_user)
 
     class DummyFeatures:
         def model_dump(self, mode: str = "json"):
@@ -820,7 +822,7 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
         async def list_recent_script_failures(self, simulation_id, limit=None):
             return []
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     async def fake_list_users():
         base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -849,9 +851,11 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
         assert simulation_id == "sim-main"
         return []
 
-    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
-    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
-    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+    patch_orchestrator.setattr(views.user_manager, "list_users", fake_list_users)
+    patch_script_registry.setattr(
+        script_registry, "list_all_scripts", fake_list_all_scripts
+    )
+    patch_script_registry.setattr(script_registry, "list_scripts", fake_list_scripts)
 
     try:
         response = client.get("/web/dashboard?simulation_id=sim-main")
@@ -859,13 +863,15 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
         assert "挂载家户脚本数" in response.text
         assert 'class="household-count"' in response.text
     finally:
-        _clear_override()
+        pass
 
 
-def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
+def test_admin_dashboard_household_counts_include_scripts(
+    patch_orchestrator, patch_script_registry, client, override_user
+):
     # 测试：家庭计数统计中应包含每个家庭挂载的脚本数量，页面应反映出脚本计数。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
-    _override_user(admin_user)
+    override_user(admin_user)
 
     base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
     script_meta_one = ScriptMetadata(
@@ -922,7 +928,7 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
             assert simulation_id == "sim-main"
             return []
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     async def fake_list_users():
         return [
@@ -940,22 +946,24 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
         assert simulation_id == "sim-main"
         return [script_meta_one, script_meta_two]
 
-    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
-    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
-    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+    patch_orchestrator.setattr(views.user_manager, "list_users", fake_list_users)
+    patch_script_registry.setattr(
+        script_registry, "list_all_scripts", fake_list_all_scripts
+    )
+    patch_script_registry.setattr(script_registry, "list_scripts", fake_list_scripts)
 
     try:
         response = client.get("/web/dashboard?simulation_id=sim-main")
         assert response.status_code == 200
         assert re.search(r'class="household-count"[^>]*>\s*1\s*户', response.text)
     finally:
-        _clear_override()
+        pass
 
 
-def test_attach_script_registers_participant(client):
+def test_attach_script_registers_participant(client, override_user):
     # 测试：将已上传脚本挂载到 simulation 时，应把脚本的 simulation_id 更新，并将用户注册为参与者。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
 
@@ -990,7 +998,7 @@ def test_attach_script_registers_participant(client):
         participants = asyncio.run(views._orchestrator.list_participants("sim-attach"))
         assert user["email"] in participants
     finally:
-        _clear_override()
+        pass
 
         async def _cleanup() -> None:
             await script_registry.clear()
@@ -1002,10 +1010,12 @@ def test_attach_script_registers_participant(client):
         asyncio.run(_cleanup())
 
 
-def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
+def test_admin_dashboard_lists_all_scripts(
+    patch_orchestrator, patch_script_registry, client, override_user
+):
     # 测试：管理员视图应列出所有脚本并能显示脚本标识，且不会显示“无脚本”占位文本。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
-    _override_user(admin_user)
+    override_user(admin_user)
 
     base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
     script_meta = ScriptMetadata(
@@ -1052,7 +1062,7 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
             assert simulation_id == "sim-main"
             return []
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     async def fake_list_users():
         return [
@@ -1070,9 +1080,11 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
         assert simulation_id == "sim-main"
         return [script_meta]
 
-    monkeypatch.setattr(views.user_manager, "list_users", fake_list_users)
-    monkeypatch.setattr(script_registry, "list_all_scripts", fake_list_all_scripts)
-    monkeypatch.setattr(script_registry, "list_scripts", fake_list_scripts)
+    patch_orchestrator.setattr(views.user_manager, "list_users", fake_list_users)
+    patch_script_registry.setattr(
+        script_registry, "list_all_scripts", fake_list_all_scripts
+    )
+    patch_script_registry.setattr(script_registry, "list_scripts", fake_list_scripts)
 
     try:
         response = client.get("/web/dashboard?simulation_id=sim-main")
@@ -1080,13 +1092,13 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
         assert "script-visible" in response.text
         assert "暂时没有上传脚本" not in response.text
     finally:
-        _clear_override()
+        pass
 
 
-def test_attach_script_respects_limit(client):
+def test_attach_script_respects_limit(client, override_user):
     # 测试：当 simulation 对单用户脚本数有限制时，超出限制的挂载请求应被拒绝并保留脚本为未绑定。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     asyncio.run(script_registry.clear())
 
@@ -1143,7 +1155,7 @@ def test_attach_script_respects_limit(client):
         )
         assert meta_after_second.simulation_id is None
     finally:
-        _clear_override()
+        pass
 
         async def _cleanup() -> None:
             await script_registry.clear()
@@ -1157,10 +1169,10 @@ def test_attach_script_respects_limit(client):
         asyncio.run(_cleanup())
 
 
-def test_download_logs_forbidden(monkeypatch, client):
+def test_download_logs_forbidden(patch_orchestrator, client, override_user):
     # 测试：非参与者访问下载日志接口应返回 403 并且不触发日志检索调用。
     user = {"email": "player@example.com", "user_type": "individual"}
-    _override_user(user)
+    override_user(user)
 
     class DummyOrchestrator:
         async def list_participants(self, simulation_id):
@@ -1169,10 +1181,10 @@ def test_download_logs_forbidden(monkeypatch, client):
         async def get_recent_logs(self, simulation_id, limit=None):
             pytest.fail("should not fetch logs when user is not a participant")
 
-    monkeypatch.setattr(views, "_orchestrator", DummyOrchestrator())
+    patch_orchestrator.setattr(views, "_orchestrator", DummyOrchestrator())
 
     try:
         response = client.get("/web/logs/sim-1/download")
         assert response.status_code == 403
     finally:
-        _clear_override()
+        pass
