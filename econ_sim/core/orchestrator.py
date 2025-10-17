@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import math
 import logging
-from collections import Counter
+import time
+from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
@@ -41,6 +42,18 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
 
 
 logger = logging.getLogger(__name__)
+
+# optional prometheus histogram for orchestrator phase durations
+try:
+    from prometheus_client import Histogram
+
+    PHASE_HISTOGRAM = Histogram(
+        "econ_sim_phase_duration_seconds",
+        "Duration of orchestrator phases",
+        ["phase"],
+    )
+except Exception:
+    PHASE_HISTOGRAM = None
 
 
 @dataclass
@@ -118,6 +131,8 @@ class SimulationOrchestrator:
             if failure_notifier is not None
             else LoggingScriptFailureNotifier()
         )
+        # keep recent per-phase timings for lightweight in-memory inspection
+        self._recent_phase_timings = deque(maxlen=200)
 
     async def create_simulation(self, simulation_id: str) -> WorldState:
         """确保指定 ID 的仿真实例存在。
@@ -308,11 +323,21 @@ class SimulationOrchestrator:
             shocks = generate_household_shocks(world_state, self.config)
             decision_state = apply_household_shocks_for_decision(world_state, shocks)
 
+        # baseline decisions (timed)
+        baseline_dur = None
+        start = time.perf_counter()
         try:
             baseline_decisions = self._fallback_manager.generate_decisions(
                 decision_state, self.config
             )
         except FallbackExecutionError as exc:
+            end = time.perf_counter()
+            baseline_dur = end - start
+            if PHASE_HISTOGRAM:
+                try:
+                    PHASE_HISTOGRAM.labels(phase="baseline").observe(baseline_dur)
+                except Exception:
+                    pass
             logger.exception(
                 "Failed to generate fallback decisions for simulation %s",
                 simulation_id,
@@ -320,7 +345,17 @@ class SimulationOrchestrator:
             raise RuntimeError(
                 "Baseline fallback failed to produce required decisions"
             ) from exc
+        else:
+            end = time.perf_counter()
+            baseline_dur = end - start
+            if PHASE_HISTOGRAM:
+                try:
+                    PHASE_HISTOGRAM.labels(phase="baseline").observe(baseline_dur)
+                except Exception:
+                    pass
 
+        # generate script overrides (timed)
+        start = time.perf_counter()
         (
             script_overrides,
             script_failure_logs,
@@ -328,6 +363,15 @@ class SimulationOrchestrator:
         ) = await script_registry.generate_overrides(
             simulation_id, decision_state, self.config
         )
+        end = time.perf_counter()
+        overrides_dur = end - start
+        if PHASE_HISTOGRAM:
+            try:
+                PHASE_HISTOGRAM.labels(phase="generate_overrides").observe(
+                    overrides_dur
+                )
+            except Exception:
+                pass
         # record timing and sandbox metrics for monitoring
         try:
             from ..script_engine.sandbox import get_sandbox_metrics
@@ -340,12 +384,23 @@ class SimulationOrchestrator:
         if failure_events:
             await self.data_access.record_script_failures(failure_events)
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
+        # collect decisions (timed)
+        start = time.perf_counter()
         decisions = await asyncio.to_thread(
             collect_tick_decisions,
             baseline_decisions,
             combined_overrides,
         )
+        end = time.perf_counter()
+        collect_dur = end - start
+        if PHASE_HISTOGRAM:
+            try:
+                PHASE_HISTOGRAM.labels(phase="collect_decisions").observe(collect_dur)
+            except Exception:
+                pass
 
+        # execute market logic (timed)
+        start = time.perf_counter()
         updates, logs = await asyncio.to_thread(
             execute_tick_logic,
             world_state,
@@ -353,6 +408,13 @@ class SimulationOrchestrator:
             self.config,
             shocks,
         )
+        end = time.perf_counter()
+        execute_dur = end - start
+        if PHASE_HISTOGRAM:
+            try:
+                PHASE_HISTOGRAM.labels(phase="execute_logic").observe(execute_dur)
+            except Exception:
+                pass
 
         if script_failure_logs:
             logs = script_failure_logs + logs
@@ -396,9 +458,38 @@ class SimulationOrchestrator:
             )
         )
 
+        # persist updates and record tick (timed)
+        start = time.perf_counter()
         updated_state = await self.data_access.apply_updates(simulation_id, updates)
         tick_result = TickResult(world_state=updated_state, logs=logs, updates=updates)
         await self.data_access.record_tick(tick_result)
+        end = time.perf_counter()
+        persist_dur = end - start
+        if PHASE_HISTOGRAM:
+            try:
+                PHASE_HISTOGRAM.labels(phase="persist").observe(persist_dur)
+            except Exception:
+                pass
+
+        # store recent phase timings in memory for lightweight inspection
+        try:
+            current_tick = world_state.tick
+            self._recent_phase_timings.append(
+                {
+                    "simulation_id": simulation_id,
+                    "tick": current_tick,
+                    "baseline": baseline_dur,
+                    "generate_overrides": overrides_dur,
+                    "collect_decisions": collect_dur,
+                    "execute_logic": execute_dur,
+                    "persist": persist_dur,
+                }
+            )
+        except Exception:
+            # best-effort: do not let metrics collection break tick execution
+            logger.debug(
+                "Failed to append phase timings for simulation %s", simulation_id
+            )
         return tick_result
 
     async def reset_simulation(self, simulation_id: str) -> WorldState:

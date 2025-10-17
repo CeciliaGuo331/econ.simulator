@@ -168,7 +168,14 @@ def execute_script(
     if timeout <= 0:
         raise ValueError("timeout must be positive")
 
-    safe_context = json.loads(json.dumps(context))
+    # Avoid an unconditional JSON round-trip which is expensive for large contexts.
+    # If the context is already JSON-serializable, use it directly; otherwise
+    # fall back to the json round-trip to coerce types to primitives.
+    try:
+        json.dumps(context)
+        safe_context = context
+    except (TypeError, ValueError):
+        safe_context = json.loads(json.dumps(context))
     modules = (
         set(allowed_modules) if allowed_modules is not None else set(ALLOWED_MODULES)
     )

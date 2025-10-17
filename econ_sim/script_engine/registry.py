@@ -958,12 +958,27 @@ class ScriptRegistry:
             concurrency = 8
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
+        # serialize world_state and config once to avoid repeated pydantic model_dump calls
+        try:
+            world_state_json = world_state.model_dump(mode="json")
+        except Exception:
+            world_state_json = None
+        try:
+            config_json = config.model_dump(mode="json")
+        except Exception:
+            config_json = None
+
         async def _run_record(rec: _ScriptRecord):
             async with semaphore:
                 try:
                     # run blocking call in default thread pool to avoid blocking event loop
                     return await asyncio.to_thread(
-                        self._execute_script, rec, world_state, config
+                        self._execute_script,
+                        rec,
+                        world_state,
+                        config,
+                        world_state_json,
+                        config_json,
                     )
                 except ScriptExecutionError as exc:
                     raise exc
@@ -1056,7 +1071,7 @@ class ScriptRegistry:
     def _serialize_entity_state(
         self,
         metadata: ScriptMetadata,
-        world_state: WorldState,
+        world_state: any,
     ) -> Optional[dict[str, object]]:
         kind = metadata.agent_kind
         if kind is AgentKind.HOUSEHOLD:
@@ -1064,30 +1079,62 @@ class ScriptRegistry:
                 household_id = int(metadata.entity_id)
             except ValueError:
                 return None
-            entity = world_state.households.get(household_id)
-            if entity is None:
-                return None
-            return entity.model_dump(mode="json")
+            # support both WorldState model and dict-like serialized state
+            if isinstance(world_state, dict):
+                entity = world_state.get("households", {}).get(str(household_id))
+                if entity is None:
+                    # try integer key
+                    entity = world_state.get("households", {}).get(household_id)
+                return entity
+            else:
+                entity = world_state.households.get(household_id)
+                if entity is None:
+                    return None
+                return entity.model_dump(mode="json")
         if kind is AgentKind.FIRM:
-            entity = world_state.firm
-            if entity is None or entity.id != metadata.entity_id:
-                return None
-            return entity.model_dump(mode="json")
+            if isinstance(world_state, dict):
+                entity = world_state.get("firm")
+                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
+                    return None
+                return entity
+            else:
+                entity = world_state.firm
+                if entity is None or entity.id != metadata.entity_id:
+                    return None
+                return entity.model_dump(mode="json")
         if kind is AgentKind.BANK:
-            entity = world_state.bank
-            if entity is None or entity.id != metadata.entity_id:
-                return None
-            return entity.model_dump(mode="json")
+            if isinstance(world_state, dict):
+                entity = world_state.get("bank")
+                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
+                    return None
+                return entity
+            else:
+                entity = world_state.bank
+                if entity is None or entity.id != metadata.entity_id:
+                    return None
+                return entity.model_dump(mode="json")
         if kind is AgentKind.GOVERNMENT:
-            entity = world_state.government
-            if entity is None or entity.id != metadata.entity_id:
-                return None
-            return entity.model_dump(mode="json")
+            if isinstance(world_state, dict):
+                entity = world_state.get("government")
+                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
+                    return None
+                return entity
+            else:
+                entity = world_state.government
+                if entity is None or entity.id != metadata.entity_id:
+                    return None
+                return entity.model_dump(mode="json")
         if kind is AgentKind.CENTRAL_BANK:
-            entity = world_state.central_bank
-            if entity is None or entity.id != metadata.entity_id:
-                return None
-            return entity.model_dump(mode="json")
+            if isinstance(world_state, dict):
+                entity = world_state.get("central_bank")
+                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
+                    return None
+                return entity
+            else:
+                entity = world_state.central_bank
+                if entity is None or entity.id != metadata.entity_id:
+                    return None
+                return entity.model_dump(mode="json")
         return None
 
     def _execute_script(
@@ -1095,13 +1142,82 @@ class ScriptRegistry:
         record: _ScriptRecord,
         world_state: WorldState,
         config: WorldConfig,
+        world_state_json: Optional[dict] = None,
+        config_json: Optional[dict] = None,
     ) -> Optional[TickDecisionOverrides]:
         """调用脚本并解析返回的决策覆盖。"""
 
         entity_state = self._serialize_entity_state(record.metadata, world_state)
+        # use pre-serialized JSON dicts if available to avoid repeated serialization
+        ws_full = (
+            world_state_json
+            if world_state_json is not None
+            else world_state.model_dump(mode="json")
+        )
+        cfg = config_json if config_json is not None else config.model_dump(mode="json")
+        # prune world state for per-entity scripts to minimize serialization/pickling costs
+        pruned_ws = ws_full
+        if isinstance(ws_full, dict):
+            meta_keys = {
+                "tick": ws_full.get("tick"),
+                "day": ws_full.get("day"),
+                "features": ws_full.get("features"),
+                "macro": ws_full.get("macro"),
+            }
+            kind = record.metadata.agent_kind
+            if kind is AgentKind.HOUSEHOLD:
+                household_entity = ws_full.get("households", {}).get(
+                    str(record.metadata.entity_id)
+                )
+                if household_entity is None:
+                    pruned_ws = {**meta_keys, "households": {}}
+                else:
+                    pruned_ws = {
+                        **meta_keys,
+                        "households": {
+                            str(record.metadata.entity_id): household_entity
+                        },
+                    }
+            elif kind is AgentKind.FIRM:
+                firm = ws_full.get("firm")
+                if firm is None:
+                    pruned_ws = {**meta_keys, "firm": None}
+                else:
+                    # only include firm if id matches
+                    if str(firm.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "firm": firm}
+                    else:
+                        pruned_ws = {**meta_keys, "firm": None}
+            elif kind is AgentKind.BANK:
+                bank = ws_full.get("bank")
+                if bank is None:
+                    pruned_ws = {**meta_keys, "bank": None}
+                else:
+                    if str(bank.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "bank": bank}
+                    else:
+                        pruned_ws = {**meta_keys, "bank": None}
+            elif kind is AgentKind.GOVERNMENT:
+                government = ws_full.get("government")
+                if government is None:
+                    pruned_ws = {**meta_keys, "government": None}
+                else:
+                    if str(government.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "government": government}
+                    else:
+                        pruned_ws = {**meta_keys, "government": None}
+            elif kind is AgentKind.CENTRAL_BANK:
+                central = ws_full.get("central_bank")
+                if central is None:
+                    pruned_ws = {**meta_keys, "central_bank": None}
+                else:
+                    if str(central.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "central_bank": central}
+                    else:
+                        pruned_ws = {**meta_keys, "central_bank": None}
         context = {
-            "world_state": world_state.model_dump(mode="json"),
-            "config": config.model_dump(mode="json"),
+            "world_state": pruned_ws,
+            "config": cfg,
             "script_api_version": 1,
             "agent_kind": record.metadata.agent_kind.value,
             "entity_id": record.metadata.entity_id,
