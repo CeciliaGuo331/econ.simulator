@@ -219,9 +219,6 @@ async def test_run_until_day_rejects_non_positive_days() -> None:
 
 
 @pytest.mark.asyncio
-<<<<<<< Updated upstream
-# 测试：当脚本在 tick 执行中抛出异常时，失败事件应被记录并可查询到。
-=======
 async def test_run_day_advances_by_config_ticks() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "run-day-direct"
@@ -312,9 +309,8 @@ def generate_decisions(context):
 """,
         )
 
-
 @pytest.mark.asyncio
->>>>>>> Stashed changes
+# 测试：当脚本在 tick 执行中抛出异常时，失败事件应被记录并可查询到。
 async def test_run_tick_records_script_failure_events() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "failure-record"
@@ -1315,9 +1311,6 @@ async def test_run_days_endpoint_advances_day() -> None:
 
 
 @pytest.mark.asyncio
-<<<<<<< Updated upstream
-# 测试：从 tick 1 开始运行多次 tick 时，day 的滚动逻辑应按配置 ticks_per_day 正确换日。
-=======
 async def test_run_day_endpoint_advances_single_day() -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1355,9 +1348,7 @@ async def test_run_day_endpoint_advances_single_day() -> None:
     assert payload["final_day"] >= 1
     assert payload["final_tick"] >= payload["ticks_executed"]
 
-
 @pytest.mark.asyncio
->>>>>>> Stashed changes
 async def test_day_rollover_starting_from_tick_one() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "day-rollover"
