@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import asyncio
 import json
 import logging
 import uuid
@@ -37,7 +38,10 @@ from ..data_access.models import AgentKind
 from ..script_engine import script_registry
 from ..script_engine.registry import ScriptExecutionError
 from ..utils.agents import get_default_agent_kind, resolve_agent_kind
+from ..utils.settings import get_world_config
 from .background import BackgroundJobManager, JobConflictError
+from .background import BackgroundJobManager, JobConflictError
+import mimetypes
 
 router = APIRouter(prefix="/web", tags=["web"])
 
@@ -50,6 +54,8 @@ _orchestrator = SimulationOrchestrator()
 _background_jobs = BackgroundJobManager()
 
 _DOCS_ROOT = Path(__file__).resolve().parents[2] / "docs" / "user_strategies"
+_STATIC_ROOT = Path(__file__).resolve().parent / "static"
+_AVATAR_DIR = _STATIC_ROOT / "avatars"
 
 ROLE_DOC_FILES: Dict[str, Dict[str, str]] = {
     "admin": {"title": "管理员操作指南", "filename": "admin.md"},
@@ -59,6 +65,46 @@ ROLE_DOC_FILES: Dict[str, Dict[str, str]] = {
     "commercial_bank": {"title": "商业银行策略指南", "filename": "bank.md"},
     "central_bank": {"title": "中央银行策略指南", "filename": "central_bank.md"},
 }
+
+
+def _get_ticks_per_day_default() -> int:
+    """获取默认的 ticks_per_day。
+
+    优先从 orchestrator.config 读取；当测试使用 DummyOrchestrator 无该属性时，
+    回退到全局 world 配置。
+    """
+    try:
+        cfg = getattr(_orchestrator, "config", None)
+        if cfg and getattr(cfg, "simulation", None):
+            return int(cfg.simulation.ticks_per_day)
+    except Exception:  # pragma: no cover - 防御性兜底
+        pass
+    return int(get_world_config().simulation.ticks_per_day)
+
+
+def _extract_tick_from_state(state: Any) -> Optional[int]:
+    """从世界状态对象或字典中提取 tick 值。
+
+    兼容 tests 中的 DummyWorldState（仅提供 model_dump）。
+    """
+    # object-like with attribute
+    tick = getattr(state, "tick", None)
+    if isinstance(tick, int):
+        return tick
+    # dict-like
+    if isinstance(state, dict):
+        raw_tick = state.get("tick")
+        return int(raw_tick) if isinstance(raw_tick, int) else None
+    # pydantic-like with model_dump
+    try:
+        if hasattr(state, "model_dump"):
+            dumped = state.model_dump(mode="json")  # type: ignore[attr-defined]
+            if isinstance(dumped, dict):
+                raw_tick = dumped.get("tick")
+                return int(raw_tick) if isinstance(raw_tick, int) else None
+    except Exception:  # pragma: no cover - 防御性兜底
+        return None
+    return None
 
 
 @lru_cache(maxsize=32)
@@ -354,6 +400,24 @@ def _build_entity_display_map(*script_groups: Iterable) -> Dict[str, str]:
     return display
 
 
+async def _bounded_gather(coros: Iterable, *, limit: int = 10):
+    """Run awaitables with a concurrency limit and collect results.
+
+    Items in `coros` are callables or coroutine objects; each will be awaited
+    under a semaphore to cap concurrent tasks to `limit`.
+    """
+    sem = asyncio.Semaphore(max(1, int(limit)))
+
+    async def _run(coro_or_fn):
+        async with sem:
+            if callable(coro_or_fn):
+                return await coro_or_fn()
+            return await coro_or_fn
+
+    tasks = [asyncio.create_task(_run(c)) for c in coros]
+    return await asyncio.gather(*tasks)
+
+
 async def _build_script_tick_map(
     current_simulation_id: str, current_tick: Optional[int], user_scripts: Iterable
 ) -> Dict[str, Optional[int]]:
@@ -368,13 +432,18 @@ async def _build_script_tick_map(
         and script.simulation_id != current_simulation_id
     }
 
-    for simulation_id in simulation_ids:
+    async def _fetch_tick(sid: str):
         try:
-            state = await _orchestrator.get_state(simulation_id)
+            state = await _orchestrator.get_state(sid)
         except SimulationNotFoundError:
-            result[simulation_id] = None
+            return (sid, None)
         else:
-            result[simulation_id] = state.tick
+            return (sid, getattr(state, "tick", None))
+
+    if simulation_ids:
+        pairs = await _bounded_gather([_fetch_tick(sid) for sid in simulation_ids])
+        for sid, tick in pairs:
+            result[sid] = tick  # may be None
 
     return result
 
@@ -422,6 +491,8 @@ async def login_submission(
         "email": profile.email,
         "token": token,
         "user_type": profile.user_type,
+        "display_name": getattr(profile, "display_name", None),
+        "avatar_url": getattr(profile, "avatar_url", None),
     }
     return RedirectResponse(url="/web/dashboard", status_code=303)
 
@@ -430,6 +501,164 @@ async def login_submission(
 async def logout(request: Request) -> RedirectResponse:
     request.session.pop("user", None)
     return RedirectResponse(url="/web/login", status_code=303)
+
+
+def _normalize_email_for_filename(email: str) -> str:
+    safe = email.strip().lower().replace("@", "_at_").replace("/", "_")
+    for ch in ["\\", ":", "*", "?", "\"", "<", ">", "|"]:
+        safe = safe.replace(ch, "_")
+    return safe
+
+
+@router.get("/profile", response_class=HTMLResponse)
+async def profile_page(request: Request, message: Optional[str] = None, error: Optional[str] = None) -> HTMLResponse:
+    user = await _require_session_user(request)
+    profile = await user_manager.get_profile(user["email"])  # type: ignore[index]
+    if profile is None:
+        return RedirectResponse(url="/web/login", status_code=303)
+
+    # Notifications MVP: 聚合该用户在其脚本所在仿真中的失败记录
+    recent_failures: List[Dict[str, Any]] = []
+    try:
+        scripts = await script_registry.list_user_scripts(profile.email)
+        sim_ids = sorted({s.simulation_id for s in scripts if s.simulation_id})
+
+        async def _fetch_failures(sid: str):
+            try:
+                return await _orchestrator.list_recent_script_failures(sid, limit=50)
+            except Exception:
+                return []
+
+        if sim_ids:
+            batches = await _bounded_gather([_fetch_failures(sid) for sid in sim_ids])
+            for events in batches:
+                for ev in events:
+                    if getattr(ev, "user_id", "").lower() == profile.email.lower():
+                        recent_failures.append(
+                            {
+                                "simulation_id": ev.simulation_id,
+                                "agent_kind": ev.agent_kind.value,
+                                "entity_id": ev.entity_id,
+                                "message": ev.message,
+                                "occurred_at": ev.occurred_at,
+                            }
+                        )
+            recent_failures.sort(key=lambda x: x.get("occurred_at"), reverse=True)
+    except Exception:
+        recent_failures = []
+
+    return _templates.TemplateResponse(
+        request,
+        "profile.html",
+        {
+            "request": request,
+            "user": {"email": profile.email, "user_type": profile.user_type},
+            "profile": profile,
+            "message": message,
+            "error": error,
+            "recent_failures": recent_failures,
+        },
+    )
+
+
+@router.post("/profile/display_name")
+async def update_display_name(
+    request: Request,
+    display_name: str = Form(""),
+) -> RedirectResponse:
+    user = await _require_session_user(request)
+    try:
+        await user_manager.update_display_name(user["email"], display_name)
+    except Exception as exc:
+        return _redirect_to_profile(error=f"更新昵称失败：{exc}")
+    return _redirect_to_profile(message="昵称已更新。")
+
+
+@router.post("/profile/password")
+async def change_password(
+    request: Request,
+    old_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+) -> RedirectResponse:
+    if (new_password or "") != (confirm_password or ""):
+        return _redirect_to_profile(error="两次输入的新密码不一致。")
+    user = await _require_session_user(request)
+    try:
+        await user_manager.change_password(user["email"], old_password, new_password)
+    except AuthenticationError as exc:
+        return _redirect_to_profile(error=str(exc))
+    except Exception as exc:  # pragma: no cover - defensive
+        return _redirect_to_profile(error=f"修改密码失败：{exc}")
+    return _redirect_to_profile(message="密码已更新。")
+
+
+@router.post("/profile/email")
+async def change_email(
+    request: Request,
+    new_email: str = Form(...),
+    current_password: str = Form(...),
+) -> RedirectResponse:
+    user = await _require_session_user(request)
+    try:
+        updated = await user_manager.change_email(user["email"], new_email, current_password)
+    except (AuthenticationError, ValueError) as exc:
+        return _redirect_to_profile(error=str(exc))
+    # Update session
+    request.session["user"]["email"] = updated.email
+    return _redirect_to_profile(message="邮箱已更新。")
+
+
+@router.post("/profile/avatar")
+async def update_avatar(
+    request: Request,
+    avatar_file: Optional[UploadFile] = File(None),
+    avatar_url: str = Form(""),
+) -> RedirectResponse:
+    user = await _require_session_user(request)
+    email = user["email"]
+    try:
+        url_value: Optional[str] = None
+        if avatar_file and avatar_file.filename:
+            # Save uploaded file to static/avatars
+            _AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+            filename_base = _normalize_email_for_filename(email)
+            mime = avatar_file.content_type or mimetypes.guess_type(avatar_file.filename)[0]
+            ext = ".png"
+            if mime and "/" in mime:
+                subtype = mime.split("/", 1)[1]
+                if subtype in {"jpeg", "jpg"}:
+                    ext = ".jpg"
+                elif subtype in {"png"}:
+                    ext = ".png"
+                elif subtype in {"gif"}:
+                    ext = ".gif"
+            target_path = _AVATAR_DIR / f"{filename_base}{ext}"
+            content = await avatar_file.read()
+            # rudimentary size guard: 2MB
+            if len(content) > 2 * 1024 * 1024:
+                return _redirect_to_profile(error="头像文件过大（最大 2MB）。")
+            target_path.write_bytes(content)
+            url_value = f"/web/static/avatars/{target_path.name}"
+        elif avatar_url.strip():
+            url_value = avatar_url.strip()
+        await user_manager.update_avatar_url(email, url_value)
+        # keep session in sync for top-bar avatar
+        if "user" in request.session:
+            request.session["user"]["avatar_url"] = url_value
+    except Exception as exc:
+        return _redirect_to_profile(error=f"更新头像失败：{exc}")
+    return _redirect_to_profile(message="头像已更新。")
+
+
+def _redirect_to_profile(message: Optional[str] = None, error: Optional[str] = None) -> RedirectResponse:
+    params = {}
+    if message:
+        params["message"] = message
+    if error:
+        params["error"] = error
+    query = f"?{urlencode(params)}" if params else ""
+    return RedirectResponse(url=f"/web/profile{query}", status_code=303)
 
 
 def _extract_view_data(
@@ -608,6 +837,7 @@ async def dashboard(
     request: Request,
     user: Dict[str, Any] = Depends(_require_session_user),
     simulation_id: str = "",
+    tab: Optional[str] = None,
     message: Optional[str] = None,
     error: Optional[str] = None,
 ) -> HTMLResponse:
@@ -617,6 +847,8 @@ async def dashboard(
     attachable_scripts: List = []
     features_by_sim: Dict[str, Optional[Dict[str, Any]]] = {}
     household_counts_by_sim: Dict[str, int] = {}
+    ticks_per_day_default = _get_ticks_per_day_default()
+    remaining_ticks_by_sim: Dict[str, Optional[int]] = {}
     user_profiles: List[Any] = []
     user_type_index: Dict[str, str] = {}
     scripts_by_user: Dict[str, List] = {}
@@ -644,6 +876,25 @@ async def dashboard(
                 if user_type_index.get(metadata.user_id.lower(), "") == "individual"
             }
             household_counts_by_sim[sid] = len(individual_owners)
+        # compute remaining to day-end for admins (parallel)
+        async def _fetch_state(sid: str):
+            try:
+                return (sid, await _orchestrator.get_state(sid))
+            except SimulationNotFoundError:
+                return (sid, None)
+
+        if all_simulations:
+            pairs = await _bounded_gather([_fetch_state(s) for s in all_simulations])
+            for sid, st in pairs:
+                if not st or ticks_per_day_default <= 0:
+                    remaining_ticks_by_sim[sid] = None
+                    continue
+                tick_val = _extract_tick_from_state(st)
+                if isinstance(tick_val, int):
+                    mod = tick_val % ticks_per_day_default
+                    remaining_ticks_by_sim[sid] = 0 if mod == 0 else (ticks_per_day_default - mod)
+                else:
+                    remaining_ticks_by_sim[sid] = None
 
     if not allow_create:
         user_scripts = await script_registry.list_user_scripts(user["email"])
@@ -651,13 +902,16 @@ async def dashboard(
             script for script in user_scripts if not script.simulation_id
         ]
     elif all_simulations:
-        for sid in all_simulations:
+        async def _fetch_features(sid: str):
             try:
-                features_model = await _orchestrator.get_simulation_features(sid)
+                fm = await _orchestrator.get_simulation_features(sid)
+                return (sid, fm.model_dump(mode="json"))
             except SimulationNotFoundError:
-                features_by_sim[sid] = None
-            else:
-                features_by_sim[sid] = features_model.model_dump(mode="json")
+                return (sid, None)
+
+        pairs = await _bounded_gather([_fetch_features(s) for s in all_simulations])
+        for sid, data in pairs:
+            features_by_sim[sid] = data
 
     normalized_id = (simulation_id or "").strip()
     if not normalized_id:
@@ -685,6 +939,11 @@ async def dashboard(
 
     current_tick: Optional[int] = None
 
+    # normalize active tab
+    raw_tab = (tab or "").strip().lower()
+    active_tab = raw_tab or ("overview")
+    show_all = not bool(raw_tab)
+
     if not allow_create and not simulation_id:
         script_tick_map = await _build_script_tick_map("", None, user_scripts)
         friendly_message = (
@@ -697,6 +956,8 @@ async def dashboard(
                 "request": request,
                 "user": user,
                 "simulation_id": simulation_id,
+                "active_tab": active_tab,
+                "show_all": show_all,
                 "scripts": [],
                 "context": {},
                 "error": None,
@@ -719,6 +980,8 @@ async def dashboard(
                 "script_failures": script_failures,
                 "entity_display_map": _build_entity_display_map(user_scripts),
                 "script_form_defaults": base_form_defaults,
+                "ticks_per_day_default": ticks_per_day_default,
+                "remaining_ticks_by_sim": remaining_ticks_by_sim,
             },
             status_code=200,
         )
@@ -742,6 +1005,8 @@ async def dashboard(
                 "request": request,
                 "user": user,
                 "simulation_id": simulation_id,
+                "active_tab": active_tab,
+                "show_all": show_all,
                 "scripts": [],
                 "context": {"world": {}},
                 "error": error,
@@ -762,6 +1027,8 @@ async def dashboard(
                 "script_tick_map": {},
                 "household_counts_by_sim": household_counts_by_sim,
                 "script_failures": script_failures,
+                "ticks_per_day_default": ticks_per_day_default,
+                "remaining_ticks_by_sim": remaining_ticks_by_sim,
             },
         )
 
@@ -801,6 +1068,8 @@ async def dashboard(
                 "request": request,
                 "user": user,
                 "simulation_id": simulation_id,
+                "active_tab": active_tab,
+                "show_all": show_all,
                 "scripts": scripts_for_view,
                 "context": context,
                 "error": friendly_error,
@@ -827,6 +1096,8 @@ async def dashboard(
                     scripts_for_view, user_scripts, attachable_scripts
                 ),
                 "script_form_defaults": base_form_defaults,
+                "ticks_per_day_default": ticks_per_day_default,
+                "remaining_ticks_by_sim": remaining_ticks_by_sim,
             },
             status_code=404,
         )
@@ -879,6 +1150,8 @@ async def dashboard(
             "request": request,
             "user": user,
             "simulation_id": simulation_id,
+            "active_tab": active_tab,
+            "show_all": show_all,
             "scripts": scripts,
             "context": context,
             "error": error,
@@ -905,6 +1178,8 @@ async def dashboard(
                 scripts, user_scripts, attachable_scripts
             ),
             "script_form_defaults": base_form_defaults,
+            "ticks_per_day_default": ticks_per_day_default,
+            "remaining_ticks_by_sim": remaining_ticks_by_sim,
         },
     )
 
@@ -1130,6 +1405,53 @@ async def admin_run_tick(
         "tick": result.world_state.tick,
         "day": result.world_state.day,
         "ticks_executed": 1,
+    }
+    return _async_response(request, target, message=note, extra=extra)
+
+
+@router.post("/admin/simulations/run_one_day")
+async def admin_run_one_day(
+    request: Request,
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    ticks_per_day: str = Form(""),
+    current_simulation_id: str = Form("default-simulation"),
+):
+    target = simulation_id.strip() or current_simulation_id or "default-simulation"
+    custom_ticks: Optional[int] = None
+    raw = (ticks_per_day or "").strip()
+    if raw:
+        try:
+            custom_ticks = int(raw)
+        except (TypeError, ValueError):
+            return _async_response(request, target, error="请输入合法的 Tick 数（正整数）。")
+        if custom_ticks <= 0:
+            return _async_response(request, target, error="Tick 数必须大于 0。")
+
+    try:
+        result = await _orchestrator.run_day(
+            target,
+            ticks_per_day=custom_ticks,
+        )
+    except SimulationNotFoundError:
+        return _async_response(
+            request,
+            current_simulation_id or target,
+            error=f"仿真实例 {target} 不存在，无法执行日批处理。",
+        )
+    except ValueError as exc:
+        return _async_response(request, target, error=str(exc))
+
+    note = _format_tick_progress_message(
+        target,
+        tick=result.world_state.tick,
+        day=result.world_state.day,
+        ticks_executed=result.ticks_executed,
+    )
+    extra = {
+        "tick": result.world_state.tick,
+        "day": result.world_state.day,
+        "ticks_executed": result.ticks_executed,
     }
     return _async_response(request, target, message=note, extra=extra)
 
@@ -1636,6 +1958,65 @@ async def detach_script(
     return _redirect_to_dashboard(
         redirect_target,
         message=f"脚本 {script_id} 已从仿真实例 {target_simulation} 取消挂载。",
+    )
+
+
+@router.post("/scripts/rotate")
+async def rotate_script_at_day_end(
+    user: Dict[str, Any] = Depends(_require_session_user),
+    simulation_id: str = Form(...),
+    script_id: str = Form(...),
+    new_description: str = Form(""),
+    script_file: UploadFile = File(...),
+):
+    if user["user_type"] == "admin":
+        return _redirect_to_dashboard(
+            simulation_id,
+            error="管理员账号请使用后台操作。",
+        )
+
+    target = simulation_id.strip()
+    if not target:
+        return _redirect_to_dashboard("", error="请选择仿真实例后再进行脚本替换。")
+
+    filename = (script_file.filename or "").strip()
+    if not filename or not filename.lower().endswith(".py"):
+        await script_file.close()
+        return _redirect_to_dashboard(target, error="请上传 .py 类型的脚本文件。")
+
+    try:
+        raw = await script_file.read()
+    finally:
+        await script_file.close()
+    if not raw:
+        return _redirect_to_dashboard(target, error="上传的脚本文件为空。")
+
+    try:
+        new_code = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return _redirect_to_dashboard(target, error="脚本文件必须为 UTF-8 编码。")
+
+    try:
+        updated = await _orchestrator.update_script_code_at_day_end(
+            target,
+            script_id=script_id,
+            user_id=user.get("email"),
+            new_code=new_code,
+            new_description=(new_description or None),
+        )
+    except SimulationNotFoundError:
+        return _redirect_to_dashboard("", error=f"仿真实例 {target} 不存在。")
+    except ScriptExecutionError as exc:
+        return _redirect_to_dashboard(target, error=str(exc))
+    except Exception as exc:
+        detail = str(exc)
+        if "not at day boundary" in detail:
+            return _redirect_to_dashboard(target, error="仅在日终边界可替换脚本，请先执行完当日 Tick。")
+        return _redirect_to_dashboard(target, error=f"替换脚本失败: {exc}")
+
+    return _redirect_to_dashboard(
+        target,
+        message=f"脚本 {updated.script_id} 已更新代码，下一交易日生效。",
     )
 
 

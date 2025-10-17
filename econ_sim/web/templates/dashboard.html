@@ -3,6 +3,16 @@
 {% block title %}仪表盘 - Econ Simulator{% endblock %}
 {% block content %}
     {% set entity_map = entity_display_map if entity_display_map is defined else {} %}
+    {% set _tab = (active_tab if active_tab is defined and active_tab else 'overview') %}
+    <nav class="tabs">
+        {% set _base = '/web/dashboard' %}
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=overview" class="tab{% if _tab == 'overview' %} active{% endif %}">总览</a>
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=scripts" class="tab{% if _tab == 'scripts' %} active{% endif %}">脚本</a>
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=upload" class="tab{% if _tab == 'upload' %} active{% endif %}">上传/挂载</a>
+        {% if simulation_id %}
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=rotate" class="tab{% if _tab == 'rotate' %} active{% endif %}">日终轮换</a>
+        {% endif %}
+    </nav>
     <section class="panel">
         <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
         <p>
@@ -27,7 +37,7 @@
         {% if message %}<div class="status success">{{ message }}</div>{% endif %}
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
     </section>
-    {% if log_download_url %}
+    {% if log_download_url and _tab == 'overview' %}
         <section class="panel">
             <h3>调试工具</h3>
             <p>可通过下方链接下载最近的执行日志（最多保留 1000 条），帮助定位脚本报错与经济状态变化。</p>
@@ -36,7 +46,7 @@
             </p>
         </section>
     {% endif %}
-    {% if user.user_type != "admin" %}
+    {% if user.user_type != "admin" and _tab == 'overview' %}
         <section class="panel">
             <h3>查看仿真世界</h3>
             {% if all_simulations %}
@@ -56,6 +66,7 @@
             {% endif %}
         </section>
     {% endif %}
+    {% if _tab == 'overview' %}
     <section class="grid">
         <article class="card">
             <h3>角色视角数据</h3>
@@ -276,7 +287,131 @@
                         {% endfor %}
                     </ul>
                 </div>
-            {% else %}
+                {% endif %}
+
+                {% if _tab == 'scripts' %}
+                <section class="panel">
+                    <h3>当前仿真世界脚本</h3>
+                    {% if simulation_id and scripts %}
+                        <div class="scroll-pane">
+                            <ul class="script-list">
+                                {% for script in scripts %}
+                                    <li>
+                                        <div class="script-item">
+                                            <div class="script-detail">
+                                                <span class="label">上传者</span>
+                                                <span class="value">{{ script.user_id }}</span>
+                                                <span class="label">上传时间</span>
+                                                <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                                                <span class="label">脚本 ID</span>
+                                                <span class="value">{{ script.script_id }}</span>
+                                                <span class="label">主体类型</span>
+                                                <span class="value">{{ script.agent_kind.value }}</span>
+                                                <span class="label">实体 ID</span>
+                                                <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
+                                                <span class="label">版本</span>
+                                                <span class="value">{{ script.code_version }}</span>
+                                            </div>
+                                            {% if script.description %}
+                                                <p class="script-desc">{{ script.description }}</p>
+                                            {% else %}
+                                                <p class="script-desc empty">（无描述）</p>
+                                            {% endif %}
+                                        </div>
+                                        {% if user.user_type != "admin" and script.user_id == user.email %}
+                                            {% set allow_detach = current_simulation_tick == 0 %}
+                                            <div class="script-actions">
+                                                <form method="post"
+                                                      action="/web/scripts/detach"
+                                                      class="script-action-form inline-form">
+                                                    <input type="hidden" name="script_id" value="{{ script.script_id }}">
+                                                    <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
+                                                    <input type="hidden"
+                                                           name="current_simulation_id"
+                                                           value="{{ simulation_id }}">
+                                                    <button type="submit"
+                                                            class="danger"
+                                                            {% if not allow_detach %}disabled{% endif %}>取消挂载</button>
+                                                </form>
+                                            </div>
+                                        {% endif %}
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    {% elif simulation_id %}
+                        <div class="scroll-pane">
+                            <p class="empty">尚未有脚本挂载。</p>
+                        </div>
+                    {% else %}
+                        <p class="empty">请选择或加入仿真世界后查看脚本列表。</p>
+                    {% endif %}
+                </section>
+                <section class="panel">
+                    <h3>个人脚本库</h3>
+                    {% if user_scripts %}
+                        <div class="scroll-pane">
+                            <ul class="script-list">
+                                {% for script in user_scripts %}
+                                    <li>
+                                        <div class="script-item">
+                                            <div class="script-detail">
+                                                <span class="label">上传时间</span>
+                                                <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+                                                <span class="label">上传者</span>
+                                                <span class="value">{{ script.user_id }}</span>
+                                                <span class="label">脚本 ID</span>
+                                                <span class="value">{{ script.script_id }}</span>
+                                                <span class="label">主体类型</span>
+                                                <span class="value">{{ script.agent_kind.value }}</span>
+                                                <span class="label">实体 ID</span>
+                                                <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
+                                                <span class="label">版本</span>
+                                                <span class="value">{{ script.code_version }}</span>
+                                                <span class="label">状态</span>
+                                                <span class="value">
+                                                    {% if script.simulation_id %}
+                                                        已挂载至 {{ script.simulation_id }}
+                                                    {% else %}
+                                                        未挂载
+                                                    {% endif %}
+                                                </span>
+                                            </div>
+                                            {% if script.description %}
+                                                <p class="script-desc">{{ script.description }}</p>
+                                            {% else %}
+                                                <p class="script-desc empty">（无描述）</p>
+                                            {% endif %}
+                                        </div>
+                                        {% set script_tick = script_tick_map.get(script.simulation_id) %}
+                                        {% set detach_enabled = script.simulation_id and script_tick == 0 %}
+                                        {% set delete_enabled = (script.simulation_id is none) or (script_tick is none) or (script_tick == 0) %}
+                                        <div class="script-actions">
+                                            <form method="post"
+                                                  action="/web/scripts/delete"
+                                                  class="script-action-form inline-form">
+                                                <input type="hidden" name="script_id" value="{{ script.script_id }}">
+                                                <input type="hidden"
+                                                       name="current_simulation_id"
+                                                       value="{{ simulation_id }}">
+                                                <button type="submit"
+                                                        class="danger"
+                                                        {% if not delete_enabled %}disabled{% endif %}>删除脚本</button>
+                                            </form>
+                                        </div>
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    {% else %}
+                        <div class="scroll-pane">
+                            <p class="empty">还没有上传任何脚本。</p>
+                        </div>
+                    {% endif %}
+                </section>
+                {% endif %}
+
+                {% if _tab == 'upload' %}
                 <div class="scroll-pane">
                     <p class="empty">还没有上传任何脚本，下面的表单可将脚本保存到个人脚本库。</p>
                 </div>
@@ -356,6 +491,36 @@
             {% else %}
                 <p class="empty">个人脚本库暂无未挂载的脚本。</p>
             {% endif %}
+        </section>
+    {% endif %}
+    {% endif %}
+
+    {% if _tab == 'rotate' and simulation_id and scripts %}
+        <section class="panel">
+            <h3>日终脚本轮换</h3>
+            <p class="form-hint">当日所有 Tick 执行完毕（到达日终）后，可替换已挂载脚本的代码，实体状态将被保留，变更在下一交易日生效。</p>
+            <form method="post" action="/web/scripts/rotate" class="script-form" enctype="multipart/form-data">
+                <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
+                <label>
+                    选择已挂载脚本
+                    <select name="script_id" required>
+                        {% for script in scripts if script.user_id == user.email %}
+                            <option value="{{ script.script_id }}">
+                                {{ script.script_id }} · {{ script.agent_kind.value }} · ID={{ entity_map.get(script.script_id, script.entity_id) }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    新脚本描述（可选）
+                    <input type="text" name="new_description" placeholder="本次版本的说明">
+                </label>
+                <label>
+                    新脚本文件（.py）
+                    <input type="file" name="script_file" accept=".py" required>
+                </label>
+                <button type="submit">在日终替换脚本</button>
+            </form>
         </section>
     {% endif %}
     <script>

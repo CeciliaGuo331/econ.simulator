@@ -306,6 +306,66 @@ class TickLogEntry(BaseModel):
     context: Dict[str, float | int | str] = Field(default_factory=dict)
 
 
+class OrderSide(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+class OrderBookLevel(BaseModel):
+    """聚合订单薄档位（按价格聚合）。"""
+
+    price: float
+    quantity: float
+    side: OrderSide
+
+
+class MarketRuntime(BaseModel):
+    """交易市场运行时快照（撮合视图）。"""
+
+    last_price: float | None = None
+    last_quantity: float | None = None
+    volume_day: float = 0.0
+    bids: List[OrderBookLevel] = Field(default_factory=list)
+    asks: List[OrderBookLevel] = Field(default_factory=list)
+
+
+class TradeRecord(BaseModel):
+    """成交记录（撮合结果事件）。"""
+
+    tick: int
+    day: int
+    buyer_kind: AgentKind
+    buyer_id: str
+    seller_kind: AgentKind
+    seller_id: str
+    quantity: float
+    price: float
+    amount: float
+
+
+class LedgerEntry(BaseModel):
+    """账户流水记录。用于主体资产的记账追踪。"""
+
+    tick: int
+    day: int
+    account_kind: AgentKind
+    entity_id: str
+    entry_type: str  # e.g. "trade_settlement", "wage_payment", "tax", "loan"
+    amount: float
+    balance_after: Optional[float] = None
+    reference: Optional[str] = None  # optional external ref (trade_id, order_id)
+
+
+class AgentSnapshotRecord(BaseModel):
+    """主体状态快照（草案），用于持久化单主体的局部状态。"""
+
+    tick: int
+    day: int
+    agent_kind: AgentKind
+    entity_id: str
+    payload: Dict[str, Any]
+
+
 class ScriptFailureRecord(BaseModel):
     """单次脚本执行失败的持久化记录。"""
 

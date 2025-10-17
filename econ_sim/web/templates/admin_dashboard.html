@@ -2,6 +2,15 @@
 {% from "partials/state_macros.html" import fmt_number, render_table, render_households_table %}
 {% block title %}管理员仪表盘 - Econ Simulator{% endblock %}
 {% block content %}
+    {% set _tab = (active_tab if active_tab is defined and active_tab else 'overview') %}
+    <nav class="tabs">
+        {% set _base = '/web/dashboard' %}
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=overview" class="tab{% if _tab == 'overview' %} active{% endif %}">总览</a>
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=manage" class="tab{% if _tab == 'manage' %} active{% endif %}">世界管理</a>
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=users" class="tab{% if _tab == 'users' %} active{% endif %}">用户</a>
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=scripts" class="tab{% if _tab == 'scripts' %} active{% endif %}">脚本</a>
+        <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=failures" class="tab{% if _tab == 'failures' %} active{% endif %}">失败事件</a>
+    </nav>
     <section class="panel">
         <h2>管理员中心</h2>
         <p>
@@ -29,7 +38,7 @@
              data-error-box
              {% if not error %}style="display: none;"{% endif %}>{{ error or "" }}</div>
     </section>
-    {% if log_download_url %}
+    {% if log_download_url and (_tab == 'overview') %}
         <section class="panel">
             <h3>调试工具</h3>
             <p>选择仿真世界后，可以直接下载最近的执行日志，便于排查玩家脚本或系统状态。</p>
@@ -38,6 +47,7 @@
             </p>
         </section>
     {% endif %}
+    {% if show_all or _tab == 'failures' %}
     <section class="panel">
         <h3>脚本失败事件</h3>
         {% if script_failures %}
@@ -76,6 +86,9 @@
             <p class="empty">暂时没有脚本执行失败记录。</p>
         {% endif %}
     </section>
+    {% endif %}
+
+    {% if show_all or _tab == 'manage' %}
     <section class="panel">
         <h3>仿真世界管理</h3>
         <form method="post"
@@ -147,7 +160,7 @@
                                 <td class="actions">
                                     {% set row_features = features_by_sim.get(sid) %}
                                     <div class="action-row primary-actions">
-                                        <form method="post"
+                            <form method="post"
                                               action="/web/admin/simulations/run"
                                               class="inline-form"
                                               data-async="true"
@@ -161,21 +174,31 @@
                                             <button type="submit">执行 Tick</button>
                                         </form>
                                         <form method="post"
-                                              action="/web/admin/simulations/run_days"
+                                              action="/web/admin/simulations/run_one_day"
                                               class="inline-form auto-run-form"
                                               data-async="true"
-                                              data-action-type="run-days"
+                                              data-action-type="run-one-day"
                                               data-reload="true"
                                               data-reload-delay="1600">
                                             <input type="hidden" name="simulation_id" value="{{ sid }}">
                                             <input type="hidden"
                                                    name="current_simulation_id"
                                                    value="{{ simulation_id }}">
-                                            <button type="submit" class="auto-run-button">自动执行</button>
+                                            <button type="submit" class="auto-run-button">执行 1 day</button>
                                             <label class="auto-run-input-wrap">
-                                                <input type="number" name="days" min="1" value="1" required>
-                                                <span class="auto-run-suffix">day</span>
+                                                <input type="number" name="ticks_per_day" min="1" value="{{ ticks_per_day_default }}" placeholder="当日 Tick 数">
+                                                <span class="auto-run-suffix">ticks</span>
                                             </label>
+                                            {% set remaining = remaining_ticks_by_sim.get(sid) %}
+                                            {% if remaining is not none and remaining > 0 %}
+                                                <button type="button"
+                                                        class="auto-run-button"
+                                                        data-fill-remaining="{{ remaining }}">
+                                                    补齐当日（剩余 {{ remaining }}）
+                                                </button>
+                                            {% elif remaining == 0 %}
+                                                <span class="hint">已处于日终</span>
+                                            {% endif %}
                                         </form>
                                         <form method="post"
                                               action="/web/admin/simulations/reset"
@@ -249,6 +272,9 @@
             {% endif %}
         </div>
     </section>
+    {% endif %}
+
+    {% if show_all or _tab == 'overview' %}
     <section class="grid">
         <article class="card wide">
             <h3>世界状态快照</h3>
@@ -338,6 +364,9 @@
             {% endif %}
         </article>
     </section>
+    {% endif %}
+
+    {% if show_all or _tab == 'users' %}
     <section class="panel">
         <h3>用户管理</h3>
         <div class="scroll-pane">
@@ -381,6 +410,9 @@
             {% endif %}
         </div>
     </section>
+    {% endif %}
+
+    {% if show_all or _tab == 'scripts' %}
     <section class="panel">
         <h3>脚本管理</h3>
         <div class="scroll-pane">
@@ -444,6 +476,7 @@
             {% endif %}
         </div>
     </section>
+    {% endif %}
     <script>
 document.addEventListener("DOMContentLoaded", () => {
     const successBox = document.querySelector("[data-status-box]");
@@ -757,6 +790,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             rememberScroll();
+        });
+    });
+
+    // Quick-fill remaining ticks buttons
+    document.querySelectorAll("button[data-fill-remaining]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+            const remaining = Number(btn.getAttribute("data-fill-remaining") || "");
+            if (!Number.isFinite(remaining) || remaining <= 0) return;
+            const form = btn.closest("form");
+            if (!form) return;
+            const input = form.querySelector("input[name='ticks_per_day']");
+            if (!input) return;
+            input.value = String(remaining);
+            form.requestSubmit();
         });
     });
 });

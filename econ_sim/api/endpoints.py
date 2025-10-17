@@ -220,6 +220,41 @@ class RunDaysResponse(BaseModel):
     logs: List[TickLogEntry]
 
 
+class RunDayRequest(BaseModel):
+    """执行单个仿真日时提交的请求体。"""
+
+    ticks_per_day: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="本次执行的 Tick 数量，缺省采用世界配置值",
+    )
+
+
+class RunDayResponse(BaseModel):
+    """执行单日仿真后的结果摘要。"""
+
+    message: str
+    ticks_executed: int
+    final_tick: int
+    final_day: int
+    logs: List[TickLogEntry]
+
+
+class TickLogQueryParams(BaseModel):
+    since_tick: Optional[int] = Field(default=None, ge=0)
+    until_tick: Optional[int] = Field(default=None, ge=0)
+    since_day: Optional[int] = Field(default=None, ge=0)
+    until_day: Optional[int] = Field(default=None, ge=0)
+    message: Optional[str] = None
+    limit: Optional[int] = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+
+class TickLogListResponse(BaseModel):
+    simulation_id: str
+    items: List[TickLogEntry]
+
+
 @router.post("", response_model=SimulationCreateResponse)
 async def create_simulation(
     payload: SimulationCreateRequest,
@@ -336,6 +371,38 @@ async def run_days(
     )
 
 
+@router.post("/{simulation_id}/run_day", response_model=RunDayResponse)
+async def run_day(
+    simulation_id: str,
+    payload: Optional[RunDayRequest] = None,
+    admin: UserProfile = Depends(require_admin_user),
+) -> RunDayResponse:
+    """执行单个仿真日（按配置或指定 Tick 数量）。"""
+
+    ticks_per_day = payload.ticks_per_day if payload else None
+    try:
+        result = await _orchestrator.run_day(
+            simulation_id, ticks_per_day=ticks_per_day
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except MissingAgentScriptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return RunDayResponse(
+        message="Simulation advanced by one day.",
+        ticks_executed=result.ticks_executed,
+        final_tick=result.world_state.tick,
+        final_day=result.world_state.day,
+        logs=result.logs,
+    )
+
+
 @router.get("/{simulation_id}/state/full", response_model=WorldState)
 async def get_full_state(simulation_id: str) -> WorldState:
     """返回仿真实例的完整世界状态快照。"""
@@ -343,6 +410,37 @@ async def get_full_state(simulation_id: str) -> WorldState:
         return await _orchestrator.get_state(simulation_id)
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/{simulation_id}/history/tick_logs", response_model=TickLogListResponse)
+async def get_tick_logs(
+    simulation_id: str,
+    since_tick: Optional[int] = Query(default=None, ge=0),
+    until_tick: Optional[int] = Query(default=None, ge=0),
+    since_day: Optional[int] = Query(default=None, ge=0),
+    until_day: Optional[int] = Query(default=None, ge=0),
+    message: Optional[str] = Query(default=None),
+    limit: Optional[int] = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+) -> TickLogListResponse:
+    """查询历史 Tick 日志（若未配置 Postgres 历史持久化则返回空列表）。"""
+    try:
+        # Ensure simulation exists
+        await _orchestrator.get_state(simulation_id)
+    except SimulationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    items = await _orchestrator.data_access.query_tick_logs(
+        simulation_id,
+        since_tick=since_tick,
+        until_tick=until_tick,
+        since_day=since_day,
+        until_day=until_day,
+        message=message,
+        limit=limit,
+        offset=offset,
+    )
+    return TickLogListResponse(simulation_id=simulation_id, items=items)
 
 
 class AgentStateList(BaseModel):

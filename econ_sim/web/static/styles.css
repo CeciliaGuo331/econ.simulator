@@ -420,6 +420,7 @@ body {
 .role-state h4 {
   margin: 0 0 0.6rem;
   font-size: 1.05rem;
+  color: #e8f3ff; /* 提升对比度：浅蓝接近白 */
 }
 
 .state-table {
@@ -806,6 +807,7 @@ body {
 .admin-table th {
   background-color: rgba(15, 23, 42, 0.8);
   font-weight: 600;
+  color: #eaf4ff; /* 提升表头可读性 */
 }
 
 .admin-table td.cell-id {
@@ -983,6 +985,85 @@ button:disabled,
   margin-top: 0.6rem;
 }
 
+/* ---- Profile & Form UI refinements ---- */
+.profile .profile-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.profile .profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.2rem;
+  margin: 1rem 0 1.2rem;
+}
+
+.form label,
+.card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.92rem;
+}
+
+.input {
+  width: 100%;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background-color: rgba(15, 23, 42, 0.6);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input:focus {
+  border-color: rgba(56, 189, 248, 0.6);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  border: none;
+  color: #0f172a;
+  font-weight: 600;
+  padding: 0.55rem 1rem;
+  border-radius: 0.55rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.btn:hover { 
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(56, 189, 248, 0.28);
+}
+
+.btn-sm {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.9rem;
+  border-radius: 0.5rem;
+}
+
+.alert { 
+  padding: 0.65rem 0.9rem; 
+  border-radius: 0.6rem;
+}
+.alert-ok { 
+  background: rgba(94, 234, 212, 0.18); color: #5eead4; 
+}
+.alert-error { 
+  background: rgba(248, 113, 113, 0.18); color: #f87171; 
+}
+
+.avatar-link img {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
 
 .site-footer {
   /* position: fixed; */
@@ -1049,3 +1130,19 @@ button:disabled,
     padding: 0.9rem 1.2rem;
   }
 }
+
+/* --- Simple tabs for dashboard/admin --- */
+.tabs { display: flex; gap: 8px; margin: 8px 0 16px; flex-wrap: wrap; }
+.tabs .tab {
+  padding: 6px 10px;
+  border: 1px solid rgba(148,163,184,0.25);
+  border-radius: 6px;
+  text-decoration: none;
+  color: #f0f7ff; /* 更亮的文字 */
+  background: rgba(15,23,42,0.5);
+}
+.tabs .tab:visited { color: #f0f7ff; text-decoration: none; }
+.tabs .tab:focus, .tabs .tab:active { text-decoration: none; outline: none; }
+.tabs .tab:focus-visible { outline: 2px solid rgba(56,189,248,0.6); outline-offset: 2px; }
+.tabs .tab:hover { border-color: rgba(56,189,248,0.6); }
+.tabs .tab.active { background: rgba(56,189,248,0.22); border-color: rgba(56,189,248,0.8); color: #ffffff; box-shadow: 0 6px 18px rgba(56,189,248,0.18); }
