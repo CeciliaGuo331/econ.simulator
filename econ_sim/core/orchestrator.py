@@ -328,6 +328,14 @@ class SimulationOrchestrator:
         ) = await script_registry.generate_overrides(
             simulation_id, decision_state, self.config
         )
+        # record timing and sandbox metrics for monitoring
+        try:
+            from ..script_engine.sandbox import get_sandbox_metrics
+
+            metrics = get_sandbox_metrics()
+            logger.debug("Sandbox metrics after generate_overrides: %s", metrics)
+        except Exception:
+            logger.debug("Failed to collect sandbox metrics")
         self._dispatch_script_failures(failure_events)
         if failure_events:
             await self.data_access.record_script_failures(failure_events)
@@ -489,8 +497,8 @@ class SimulationOrchestrator:
             ticks_executed += 1
             aggregated_logs.extend(last_result.logs)
 
-            if ticks_executed % 5 == 0:
-                await asyncio.sleep(0)
+            # yield to event loop each tick to improve responsiveness under load
+            await asyncio.sleep(0)
 
             if ticks_executed > safety_limit:
                 raise RuntimeError(
@@ -554,7 +562,7 @@ class SimulationOrchestrator:
         user_id: Optional[str],
         new_code: str,
         new_description: Optional[str] = None,
-    ) -> "script_registry.ScriptMetadata":
+    ) -> "ScriptMetadata":
         """在“日终”边界更换脚本代码而保留实体，下一交易日生效。
 
         约束：

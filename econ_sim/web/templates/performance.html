@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+{% block content %}
+    <div class="container">
+        <h1>性能监控</h1>
+        <p>展示脚本沙箱执行相关的实时指标（平均耗时、p95、样本数、超时次数）。</p>
+        <div>
+            <canvas id="chart_avg_p95" width="800" height="300"></canvas>
+        </div>
+        <div>
+            <canvas id="chart_counts" width="800" height="200"></canvas>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script>
+    const metricsUrl = '/web/performance/metrics';
+
+    async function fetchMetrics() {
+      const res = await fetch(metricsUrl, {credentials: 'same-origin'});
+      if (!res.ok) throw new Error('Failed to fetch metrics');
+      return res.json();
+    }
+
+    function buildCharts() {
+      const ctx1 = document.getElementById('chart_avg_p95').getContext('2d');
+      const ctx2 = document.getElementById('chart_counts').getContext('2d');
+
+      const chart1 = new Chart(ctx1, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'avg_sec', backgroundColor: 'rgba(75,192,192,0.2)', borderColor: 'rgba(75,192,192,1)', data: [] },
+            { label: 'p95_sec', backgroundColor: 'rgba(192,75,192,0.2)', borderColor: 'rgba(192,75,192,1)', data: [] },
+          ],
+        },
+        options: { scales: { x: { display: true }, y: { beginAtZero: true } } },
+      });
+
+      const chart2 = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'samples', backgroundColor: 'rgba(54,162,235,0.5)', data: [] },
+            { label: 'timeouts', backgroundColor: 'rgba(255,99,132,0.5)', data: [] },
+          ],
+        },
+        options: { scales: { x: { display: true }, y: { beginAtZero: true } } },
+      });
+
+      async function tick() {
+        try {
+          const m = await fetchMetrics();
+          const now = new Date().toLocaleTimeString();
+          // push and keep last 20
+          for (let i = 0; i < chart1.data.datasets.length; i++) {
+            const key = chart1.data.datasets[i].label;
+            const value = m[key] || 0;
+            chart1.data.datasets[i].data.push(value);
+            if (chart1.data.datasets[i].data.length > 20) chart1.data.datasets[i].data.shift();
+          }
+          chart1.data.labels.push(now);
+          if (chart1.data.labels.length > 20) chart1.data.labels.shift();
+          chart1.update();
+
+          // counts
+          chart2.data.labels.push(now);
+          chart2.data.datasets[0].data.push(m.samples || 0);
+          chart2.data.datasets[1].data.push(m.timeouts || 0);
+          if (chart2.data.labels.length > 20) chart2.data.labels.shift();
+          if (chart2.data.datasets[0].data.length > 20) chart2.data.datasets[0].data.shift();
+          if (chart2.data.datasets[1].data.length > 20) chart2.data.datasets[1].data.shift();
+          chart2.update();
+        } catch (e) {
+          console.error('Failed to update metrics', e);
+        }
+      }
+
+      // initial
+      tick();
+      setInterval(tick, 3000);
+    }
+
+    document.addEventListener('DOMContentLoaded', buildCharts);
+        </script>
+    </div>
+{% endblock %}

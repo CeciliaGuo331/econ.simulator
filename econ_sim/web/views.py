@@ -19,6 +19,7 @@ from fastapi.responses import (
     JSONResponse,
     RedirectResponse,
     StreamingResponse,
+    PlainTextResponse,
 )
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
@@ -1608,6 +1609,103 @@ async def admin_reset_simulation(
 
     note = f"仿真实例 {target} 已重置至 Tick {state.tick}。"
     return _redirect_to_dashboard(target, message=note)
+
+
+@router.get("/admin/sandbox_metrics")
+async def admin_sandbox_metrics(
+    user: Dict[str, Any] = Depends(_require_admin_user),
+):
+    try:
+        from ..script_engine.sandbox import get_sandbox_metrics
+
+        metrics = get_sandbox_metrics()
+    except Exception as exc:
+        logger.exception("Failed to read sandbox metrics: %s", exc)
+        raise HTTPException(status_code=500, detail="无法获取沙箱指标")
+    return JSONResponse(metrics)
+
+
+@router.post("/admin/smoke_test")
+async def admin_smoke_test(
+    request: Request,
+    user: Dict[str, Any] = Depends(_require_admin_user),
+    simulation_id: str = Form(...),
+    ticks: str = Form("1"),
+):
+    # schedule a light-weight smoke test job that runs a few ticks and returns timing
+    target = (simulation_id or "").strip()
+    try:
+        t = int((ticks or "1").strip())
+    except Exception:
+        return _async_response(request, target, error="请提供合法的 ticks 数（整数）。")
+
+    async def _job_factory() -> Dict[str, Any]:
+        start = asyncio.get_event_loop().time()
+        try:
+            result = await _orchestrator.run_day(target, ticks_per_day=t)
+        except Exception as exc:
+            raise
+        elapsed = asyncio.get_event_loop().time() - start
+        return {
+            "message": f"Smoke test completed: ran {result.ticks_executed} ticks",
+            "extra": {"elapsed_sec": elapsed, "ticks_executed": result.ticks_executed},
+        }
+
+    try:
+        job = await _background_jobs.enqueue(target, "smoke_test", _job_factory)
+    except JobConflictError as exc:
+        existing = await _background_jobs.get(exc.existing_job_id)
+        extra = {}
+        if existing:
+            extra = {"job_id": existing.job_id, "job_status": existing.status}
+        return _async_response(
+            request, target, error="已有 smoke test 在运行", extra=extra
+        )
+
+    return _async_response(
+        request,
+        target,
+        message=(f"已启动 smoke test (Job: {job.job_id[:8]}…)"),
+        extra={"job_id": job.job_id},
+    )
+
+
+@router.get("/performance", response_class=HTMLResponse)
+async def performance_page(
+    request: Request, user: Dict[str, Any] = Depends(_require_session_user)
+) -> HTMLResponse:
+    return _templates.TemplateResponse(
+        request, "performance.html", {"request": request, "user": user}
+    )
+
+
+@router.get("/performance/metrics")
+async def performance_metrics(user: Dict[str, Any] = Depends(_require_session_user)):
+    try:
+        from ..script_engine.sandbox import get_sandbox_metrics
+
+        metrics = get_sandbox_metrics()
+    except Exception as exc:
+        logger.exception("Failed to read sandbox metrics: %s", exc)
+        raise HTTPException(status_code=500, detail="无法获取沙箱指标")
+    return JSONResponse(metrics)
+
+
+@router.get("/metrics")
+async def prometheus_metrics():
+    try:
+        from prometheus_client import generate_latest
+
+        metrics = generate_latest()
+        # generate_latest returns bytes
+        return PlainTextResponse(
+            content=metrics.decode("utf-8"),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+    except Exception:
+        return PlainTextResponse(
+            content="# prometheus metrics not available\n", media_type="text/plain"
+        )
 
 
 @router.get("/admin/jobs/{job_id}")

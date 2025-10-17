@@ -14,3 +14,6 @@ asyncpg>=0.29.0
 markdown>=3.6
 Pygments>=2.15.0
 
+
+prometheus-client>=0.17.0
+

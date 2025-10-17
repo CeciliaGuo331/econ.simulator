@@ -20,6 +20,8 @@ class SimulationParameters(BaseModel):
     initial_tick: int = Field(default=0, ge=0)
     initial_day: int = Field(default=0, ge=0)
     seed: int = Field(default=42)
+    # 最大并发脚本执行数（用于控制沙箱并发）
+    script_execution_concurrency: int = Field(default=8, ge=1)
 
 
 class GoodsMarketConfig(BaseModel):

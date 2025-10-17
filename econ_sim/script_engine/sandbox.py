@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import builtins
+import concurrent.futures
 import json
 import multiprocessing
+import os
 import sys
+import threading
+import time
 import traceback
+from collections import deque
 from multiprocessing.connection import Connection
 from types import MappingProxyType
 from typing import Any, Dict, Iterable, Optional, Set
 
-try:  # pragma: no cover - 平台兼容性
+try:  # pragma: no cover - platform compatibility
     import resource
-except ImportError:  # pragma: no cover - Windows 等平台
+except ImportError:  # pragma: no cover - Windows etc
     resource = None  # type: ignore[assignment]
 
 DEFAULT_SANDBOX_TIMEOUT = 0.75
@@ -78,16 +83,71 @@ class ScriptSandboxTimeout(ScriptSandboxError):
     """脚本执行超时。"""
 
 
-def _select_context():
-    if sys.platform != "win32":
-        try:
-            return multiprocessing.get_context("fork")
-        except ValueError:  # pragma: no cover - 平台不支持 fork
-            pass
-    return multiprocessing.get_context("spawn")
+# Process pool for executing scripts (reuse worker processes to avoid spawn/kill costs)
+_PROCESS_POOL: Optional[concurrent.futures.ProcessPoolExecutor] = None
+_POOL_LOCK = threading.Lock()
+
+# Lightweight in-process metrics
+_metrics_lock = threading.Lock()
+_script_durations: deque[float] = deque(maxlen=2000)
+_timeout_count = 0
+_exec_count = 0
+
+# Optional Prometheus instrumentation
+_PROMETHEUS_AVAILABLE = False
+try:
+    import prometheus_client as prom
+
+    # register some basic metrics
+    _PROMETHEUS_AVAILABLE = True
+    SCRIPT_DURATION = prom.Histogram(
+        "econ_sim_script_duration_seconds",
+        "Per-script execution duration (seconds)",
+    )
+    SCRIPT_EXECUTIONS = prom.Counter(
+        "econ_sim_script_executions_total", "Total script executions"
+    )
+    SCRIPT_TIMEOUTS = prom.Counter(
+        "econ_sim_script_timeouts_total", "Total script timeouts"
+    )
+    SCRIPT_SAMPLES = prom.Gauge("econ_sim_script_samples", "Sample window size")
+except Exception:
+    _PROMETHEUS_AVAILABLE = False
 
 
-_CTX = _select_context()
+def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
+    global _PROCESS_POOL
+    with _POOL_LOCK:
+        if _PROCESS_POOL is not None:
+            return _PROCESS_POOL
+        cpu = os.cpu_count() or 2
+        max_workers = max(2, min(8, cpu))
+        _PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+        return _PROCESS_POOL
+
+
+def get_sandbox_metrics() -> Dict[str, object]:
+    """Return simple execution metrics for monitoring and alerts.
+
+    Returns: dict with avg/p95 durations, total executions and timeouts.
+    """
+    with _metrics_lock:
+        durations = list(_script_durations)
+        total = _exec_count
+        timeouts = _timeout_count
+    if durations:
+        avg = sum(durations) / len(durations)
+        p95 = sorted(durations)[max(0, int(len(durations) * 0.95) - 1)]
+    else:
+        avg = 0.0
+        p95 = 0.0
+    return {
+        "avg_sec": avg,
+        "p95_sec": p95,
+        "samples": len(durations),
+        "total_executions": total,
+        "timeouts": timeouts,
+    }
 
 
 def execute_script(
@@ -98,66 +158,81 @@ def execute_script(
     script_id: Optional[str] = None,
     allowed_modules: Optional[Iterable[str]] = None,
 ) -> Any:
-    """在受限环境中执行脚本并返回结果。"""
+    """Execute script in a reusable process pool and return the result.
+
+    This implementation submits a callable to a ProcessPoolExecutor so worker
+    processes are reused instead of spawning per-call. The call waits for up to
+    `timeout` seconds and raises ScriptSandboxTimeout on timeout.
+    """
 
     if timeout <= 0:
         raise ValueError("timeout must be positive")
 
     safe_context = json.loads(json.dumps(context))
-    parent_conn, child_conn = _CTX.Pipe()
     modules = (
         set(allowed_modules) if allowed_modules is not None else set(ALLOWED_MODULES)
     )
 
-    proc = _CTX.Process(
-        target=_worker,
-        args=(code, safe_context, modules, child_conn),
-        daemon=True,
-    )
-    proc.start()
-    child_conn.close()
-
+    pool = _get_process_pool()
+    start = time.time()
+    future = pool.submit(_pool_worker, code, safe_context, modules)
+    success = False
     try:
-        if not parent_conn.poll(timeout):
-            _terminate_process(proc)
-            raise ScriptSandboxTimeout(
-                f"脚本执行超过 {timeout} 秒"
-                + (f" (id={script_id})" if script_id else "")
-            )
+        result = future.result(timeout=timeout)
+        success = True
+    except concurrent.futures.TimeoutError as exc:
+        # Best-effort cancel and record metric
         try:
-            status, payload = parent_conn.recv()
-        except EOFError as exc:
-            raise ScriptSandboxError(
-                "沙箱进程提前退出，可能因资源限制或运行时错误"
-            ) from exc
+            future.cancel()
+        except Exception:
+            pass
+        with _metrics_lock:
+            global _timeout_count, _exec_count
+            _timeout_count += 1
+            _exec_count += 1
+            if _PROMETHEUS_AVAILABLE:
+                try:
+                    SCRIPT_TIMEOUTS.inc()
+                except Exception:
+                    pass
+        raise ScriptSandboxTimeout(
+            f"脚本执行超时: {timeout} 秒" + (f" (id={script_id})" if script_id else "")
+        ) from exc
+    except Exception as exc:
+        with _metrics_lock:
+            _exec_count += 1
+            if _PROMETHEUS_AVAILABLE:
+                try:
+                    SCRIPT_EXECUTIONS.inc()
+                except Exception:
+                    pass
+        raise ScriptSandboxError(f"脚本执行失败: {exc}") from exc
     finally:
-        parent_conn.close()
-        proc.join(0.1)
-        if proc.is_alive():
-            _terminate_process(proc)
+        elapsed = time.time() - start
+        with _metrics_lock:
+            _script_durations.append(elapsed)
+            # count successful executions
+            if success:
+                _exec_count += 1
+            if _PROMETHEUS_AVAILABLE:
+                try:
+                    SCRIPT_DURATION.observe(elapsed)
+                    SCRIPT_SAMPLES.set(len(_script_durations))
+                    if success:
+                        SCRIPT_EXECUTIONS.inc()
+                except Exception:
+                    pass
 
-    if status == "ok":
-        return payload
-    raise ScriptSandboxError(payload)
-
-
-def _terminate_process(proc: multiprocessing.Process) -> None:
-    if not proc.is_alive():
-        proc.join(0.05)
-        return
-    proc.terminate()
-    proc.join(0.1)
-    if proc.is_alive():
-        proc.kill()
-        proc.join(0.1)
+    # result may be arbitrary; treat exceptions raised in worker as failures
+    return result
 
 
-def _worker(
-    code: str,
-    context: Dict[str, Any],
-    allowed_modules: Set[str],
-    conn: Connection,
-) -> None:
+def _pool_worker(code: str, context: Dict[str, Any], allowed_modules: Set[str]) -> Any:
+    """Worker function executed inside pool worker process.
+
+    This function is intentionally top-level so it can be pickled by the
+    ProcessPoolExecutor.
+    """
     try:
         _apply_resource_limits()
         safe_builtins = _build_safe_builtins(allowed_modules)
@@ -168,12 +243,10 @@ def _worker(
             raise ScriptSandboxError(
                 "脚本中必须定义可调用的 generate_decisions(context) 函数"
             )
-        result = func(context)
-        conn.send(("ok", result))
-    except Exception as exc:  # pragma: no cover - 错误路径
-        conn.send(("error", "".join(traceback.format_exception(exc))))
-    finally:
-        conn.close()
+        return func(context)
+    except Exception:
+        # Re-raise to be captured by future.exception() in the parent
+        raise
 
 
 def _build_safe_builtins(allowed_modules: Set[str]) -> MappingProxyType:
@@ -189,7 +262,7 @@ def _build_safe_builtins(allowed_modules: Set[str]) -> MappingProxyType:
         if level != 0:
             raise ImportError("禁止相对导入")
         if not _module_allowed(name, allowed_modules):
-            raise ImportError(f"模块 {name!r} 不在许可列表中")
+            raise ImportError(f"模块 {name!r} 不在允许列表中")
         return original_import(name, globals, locals, fromlist, level)
 
     safe["__import__"] = safe_import
@@ -201,15 +274,15 @@ def _module_allowed(name: str, allowed: Set[str]) -> bool:
 
 
 def _apply_resource_limits() -> None:
-    if resource is None:  # pragma: no cover - 平台不支持
+    if resource is None:  # pragma: no cover - platform does not support
         return
     try:
         resource.setrlimit(
             resource.RLIMIT_CPU, (CPU_TIME_LIMIT_SECONDS, CPU_TIME_LIMIT_SECONDS)
         )
-    except (ValueError, OSError):  # pragma: no cover - 最佳努力
+    except (ValueError, OSError):
         pass
     try:
         resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES))
-    except (ValueError, OSError):  # pragma: no cover - 最佳努力
+    except (ValueError, OSError):
         pass

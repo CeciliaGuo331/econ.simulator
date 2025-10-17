@@ -24,7 +24,10 @@
             <div class="brand">Econ Simulator</div>
             <nav class="nav-links">
                 <a href="/web/dashboard">仪表盘</a>
-                <a href="https://ceciliaguo331.github.io/econ.simulator.doc/" target="_blank" rel="noopener">文档</a>
+                <a href="/web/performance">性能</a>
+                <a href="https://ceciliaguo331.github.io/econ.simulator.doc/"
+                   target="_blank"
+                   rel="noopener">文档</a>
                 <a href="/web/profile" title="个人主页" class="avatar-link">
                     {% set _u = request.session.get('user') if request and request.session else None %}
                     {% set _avatar = (_u.avatar_url if _u and _u.get('avatar_url') else None) %}

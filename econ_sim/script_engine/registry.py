@@ -28,6 +28,7 @@ from ..data_access.models import (
 )
 from ..logic_modules.agent_logic import merge_tick_overrides
 from ..utils.settings import WorldConfig
+from ..utils.settings import get_world_config
 from .sandbox import (
     ALLOWED_MODULES,
     DEFAULT_SANDBOX_TIMEOUT,
@@ -948,18 +949,41 @@ class ScriptRegistry:
 
         records.sort(key=lambda record: record.metadata.created_at)
 
+        # bounded concurrency: run blocking _execute_script off the event loop
+        try:
+            concurrency = int(
+                get_world_config().simulation.script_execution_concurrency
+            )
+        except Exception:
+            concurrency = 8
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def _run_record(rec: _ScriptRecord):
+            async with semaphore:
+                try:
+                    # run blocking call in default thread pool to avoid blocking event loop
+                    return await asyncio.to_thread(
+                        self._execute_script, rec, world_state, config
+                    )
+                except ScriptExecutionError as exc:
+                    raise exc
+
         combined: Optional[TickDecisionOverrides] = None
         failure_logs: List[TickLogEntry] = []
         failure_events: List[ScriptFailureEvent] = []
         status_updates: List[tuple[str, Optional[datetime], Optional[str]]] = []
 
-        for record in records:
+        # schedule all tasks concurrently but bounded by semaphore
+        tasks = [asyncio.create_task(_run_record(rec)) for rec in records]
+
+        # iterate results in creation order to preserve deterministic merge order
+        for rec, task in zip(records, tasks):
             try:
-                overrides = self._execute_script(record, world_state, config)
+                overrides = await task
             except ScriptExecutionError as exc:
                 logger.error(
                     "Script %s failed during tick %s: %s",
-                    record.metadata.script_id,
+                    rec.metadata.script_id,
                     world_state.tick,
                     exc,
                 )
@@ -969,42 +993,36 @@ class ScriptRegistry:
                     TickLogEntry(
                         tick=world_state.tick,
                         day=world_state.day,
-                        message=(f"脚本执行失败: {record.metadata.script_id}"),
+                        message=(f"脚本执行失败: {rec.metadata.script_id}"),
                         context={
-                            "agent_kind": record.metadata.agent_kind.value,
-                            "entity_id": record.metadata.entity_id,
-                            "script_id": record.metadata.script_id,
-                            "user_id": record.metadata.user_id,
+                            "agent_kind": rec.metadata.agent_kind.value,
+                            "entity_id": rec.metadata.entity_id,
+                            "script_id": rec.metadata.script_id,
+                            "user_id": rec.metadata.user_id,
                         },
                     )
                 )
                 failure_events.append(
                     ScriptFailureEvent(
-                        script_id=record.metadata.script_id,
+                        script_id=rec.metadata.script_id,
                         simulation_id=simulation_id,
-                        user_id=record.metadata.user_id,
-                        agent_kind=record.metadata.agent_kind,
-                        entity_id=record.metadata.entity_id,
+                        user_id=rec.metadata.user_id,
+                        agent_kind=rec.metadata.agent_kind,
+                        entity_id=rec.metadata.entity_id,
                         message=str(exc),
                         traceback=failure_trace,
                         occurred_at=timestamp,
                     )
                 )
-                status_updates.append(
-                    (
-                        record.metadata.script_id,
-                        timestamp,
-                        str(exc),
-                    )
-                )
+                status_updates.append((rec.metadata.script_id, timestamp, str(exc)))
                 continue
 
             combined = merge_tick_overrides(combined, overrides)
             if (
-                record.metadata.last_failure_at is not None
-                or record.metadata.last_failure_reason is not None
+                rec.metadata.last_failure_at is not None
+                or rec.metadata.last_failure_reason is not None
             ):
-                status_updates.append((record.metadata.script_id, None, None))
+                status_updates.append((rec.metadata.script_id, None, None))
 
         if status_updates:
             async with self._registry_lock:
