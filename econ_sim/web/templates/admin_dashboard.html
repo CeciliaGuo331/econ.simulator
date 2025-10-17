@@ -52,7 +52,7 @@
             </p>
         </section>
     {% endif %}
-    {% if show_all or _tab == 'failures' %}
+    {% if _tab == 'failures' %}
         <section class="panel">
             <h3>脚本失败事件</h3>
             {% if script_failures %}
@@ -92,7 +92,7 @@
             {% endif %}
         </section>
     {% endif %}
-    {% if show_all or _tab == 'manage' %}
+    {% if _tab == 'manage' %}
         <section class="panel">
             <h3>仿真世界管理</h3>
             <form method="post"
@@ -281,7 +281,7 @@
             </div>
         </section>
     {% endif %}
-    {% if show_all or _tab == 'overview' %}
+    {% if _tab == 'overview' %}
         <section class="grid">
             <article class="card wide">
                 <h3>世界状态快照</h3>
@@ -362,8 +362,13 @@
                             ]) }}
                         </div>
                         <div class="state-block">
-                            <h4>家户样本（前 8 户）</h4>
-                            {{ render_households_table(world.households, 8) }}
+                            <h4>家户样本（全部）</h4>
+                            {# prefer the pre-sorted list if available #}
+                            {% if world.households_list is defined %}
+                                {{ render_households_table(world.households_list, -1) }}
+                            {% else %}
+                                {{ render_households_table(world.households, -1) }}
+                            {% endif %}
                         </div>
                     </div>
                 {% else %}
@@ -372,7 +377,7 @@
             </article>
         </section>
     {% endif %}
-    {% if show_all or _tab == 'users' %}
+    {% if _tab == 'users' %}
         <section class="panel">
             <h3>用户管理</h3>
             <div class="scroll-pane">
@@ -417,7 +422,7 @@
             </div>
         </section>
     {% endif %}
-    {% if show_all or _tab == 'scripts' %}
+    {% if _tab == 'scripts' %}
         <section class="panel">
             <h3>脚本管理</h3>
             <div class="scroll-pane">

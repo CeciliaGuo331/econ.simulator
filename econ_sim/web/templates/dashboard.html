@@ -70,6 +70,7 @@
             {% endif %}
         </section>
     {% endif %}
+    {# ==================== 总览标签页 ==================== #}
     {% if _tab == 'overview' %}
         <section class="grid">
             <article class="card">
@@ -158,7 +159,7 @@
                                     {{ render_table([
                                                                         ("当前 Tick", world_view.tick if world_view.tick is defined else None, True) ,
                                     ("当前日", world_view.day if world_view.day is defined else None, True),
-                                    ("家户数量", world_view.households | length if world_view.households is defined else 0, True)
+                                    ("家户数量", (world_view.households | length) if world_view.households is defined else 0, True)
                                     ]) }}
                                 </div>
                                 {% if world_view.macro is defined %}
@@ -246,16 +247,10 @@
                                         <div class="script-detail">
                                             <span class="label">上传时间</span>
                                             <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
-                                            <span class="label">上传者</span>
-                                            <span class="value">{{ script.user_id }}</span>
                                             <span class="label">脚本 ID</span>
                                             <span class="value">{{ script.script_id }}</span>
                                             <span class="label">主体类型</span>
                                             <span class="value">{{ script.agent_kind.value }}</span>
-                                            <span class="label">实体 ID</span>
-                                            <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
-                                            <span class="label">版本</span>
-                                            <span class="value">{{ script.code_version }}</span>
                                             <span class="label">状态</span>
                                             <span class="value">
                                                 {% if script.simulation_id %}
@@ -271,13 +266,110 @@
                                             <p class="script-desc empty">（无描述）</p>
                                         {% endif %}
                                     </div>
-                                    {% set script_tick = script_tick_map.get(script.simulation_id) %}
-                                    {% set detach_enabled = script.simulation_id and script_tick == 0 %}
-                                    {% set delete_enabled = (script.simulation_id is none) or (script_tick is none) or (script_tick == 0) %}
-                                    <div class="script-actions">
-                                        <form method="post"
-                                              action="/web/scripts/delete"
-                                              class="script-action-form inline-form">
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% else %}
+                    <p class="empty">还没有上传任何脚本。</p>
+                {% endif %}
+            </article>
+        </section>
+    {% endif %}
+    {# ==================== 脚本标签页 ==================== #}
+    {% if _tab == 'scripts' %}
+        <section class="panel">
+            <h3>当前仿真世界脚本</h3>
+            {% if simulation_id and scripts %}
+                <div class="scroll-pane">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>上传者</th>
+                                <th>脚本 ID</th>
+                                <th>主体类型</th>
+                                <th>实体 ID</th>
+                                <th>版本</th>
+                                <th>描述</th>
+                                <th>上传时间</th>
+                                {% if user.user_type != "admin" %}<th>操作</th>{% endif %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for script in scripts %}
+                                <tr>
+                                    <td>{{ script.user_id }}</td>
+                                    <td class="cell-id">{{ script.script_id }}</td>
+                                    <td>{{ script.agent_kind.value }}</td>
+                                    <td>{{ entity_map.get(script.script_id, script.entity_id) }}</td>
+                                    <td>{{ script.code_version }}</td>
+                                    <td>{{ script.description if script.description else "（无）" }}</td>
+                                    <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+                                    {% if user.user_type != "admin" and script.user_id == user.email %}
+                                        <td>
+                                            {% set allow_detach = current_simulation_tick == 0 %}
+                                            <form method="post" action="/web/scripts/detach" class="inline-form">
+                                                <input type="hidden" name="script_id" value="{{ script.script_id }}">
+                                                <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
+                                                <input type="hidden"
+                                                       name="current_simulation_id"
+                                                       value="{{ simulation_id }}">
+                                                <button type="submit"
+                                                        class="danger"
+                                                        {% if not allow_detach %}disabled{% endif %}>取消挂载</button>
+                                            </form>
+                                        </td>
+                                    {% elif user.user_type != "admin" %}
+                                        <td>-</td>
+                                    {% endif %}
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% elif simulation_id %}
+                <p class="empty">尚未有脚本挂载。</p>
+            {% else %}
+                <p class="empty">请选择或加入仿真世界后查看脚本列表。</p>
+            {% endif %}
+        </section>
+        <section class="panel">
+            <h3>个人脚本库</h3>
+            {% if user_scripts %}
+                <div class="scroll-pane">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>脚本 ID</th>
+                                <th>主体类型</th>
+                                <th>实体 ID</th>
+                                <th>版本</th>
+                                <th>状态</th>
+                                <th>描述</th>
+                                <th>上传时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for script in user_scripts %}
+                                <tr>
+                                    <td class="cell-id">{{ script.script_id }}</td>
+                                    <td>{{ script.agent_kind.value }}</td>
+                                    <td>{{ entity_map.get(script.script_id, script.entity_id) }}</td>
+                                    <td>{{ script.code_version }}</td>
+                                    <td>
+                                        {% if script.simulation_id %}
+                                            已挂载至 {{ script.simulation_id }}
+                                        {% else %}
+                                            未挂载
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ script.description if script.description else "（无）" }}</td>
+                                    <td>{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+                                    <td>
+                                        {% set script_tick = script_tick_map.get(script.simulation_id) %}
+                                        {% set delete_enabled = (script.simulation_id is none) or (script_tick is none) or (script_tick == 0) %}
+                                        <form method="post" action="/web/scripts/delete" class="inline-form">
                                             <input type="hidden" name="script_id" value="{{ script.script_id }}">
                                             <input type="hidden"
                                                    name="current_simulation_id"
@@ -286,144 +378,19 @@
                                                     class="danger"
                                                     {% if not delete_enabled %}disabled{% endif %}>删除脚本</button>
                                         </form>
-                                    </div>
-                                </li>
+                                    </td>
+                                </tr>
                             {% endfor %}
-                        </ul>
-                    </div>
-                {% endif %}
-                {% if _tab == 'scripts' %}
-                    <section class="panel">
-                        <h3>当前仿真世界脚本</h3>
-                        {% if simulation_id and scripts %}
-                            <div class="scroll-pane">
-                                <ul class="script-list">
-                                    {% for script in scripts %}
-                                        <li>
-                                            <div class="script-item">
-                                                <div class="script-detail">
-                                                    <span class="label">上传者</span>
-                                                    <span class="value">{{ script.user_id }}</span>
-                                                    <span class="label">上传时间</span>
-                                                    <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
-                                                    <span class="label">脚本 ID</span>
-                                                    <span class="value">{{ script.script_id }}</span>
-                                                    <span class="label">主体类型</span>
-                                                    <span class="value">{{ script.agent_kind.value }}</span>
-                                                    <span class="label">实体 ID</span>
-                                                    <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
-                                                    <span class="label">版本</span>
-                                                    <span class="value">{{ script.code_version }}</span>
-                                                </div>
-                                                {% if script.description %}
-                                                    <p class="script-desc">{{ script.description }}</p>
-                                                {% else %}
-                                                    <p class="script-desc empty">（无描述）</p>
-                                                {% endif %}
-                                            </div>
-                                            {% if user.user_type != "admin" and script.user_id == user.email %}
-                                                {% set allow_detach = current_simulation_tick == 0 %}
-                                                <div class="script-actions">
-                                                    <form method="post"
-                                                          action="/web/scripts/detach"
-                                                          class="script-action-form inline-form">
-                                                        <input type="hidden" name="script_id" value="{{ script.script_id }}">
-                                                        <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
-                                                        <input type="hidden"
-                                                               name="current_simulation_id"
-                                                               value="{{ simulation_id }}">
-                                                        <button type="submit"
-                                                                class="danger"
-                                                                {% if not allow_detach %}disabled{% endif %}>
-                                                            取消挂载
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                            {% endif %}
-                                        </li>
-                                    {% endfor %}
-                                </ul>
-                            </div>
-                        {% elif simulation_id %}
-                            <div class="scroll-pane">
-                                <p class="empty">尚未有脚本挂载。</p>
-                            </div>
-                        {% else %}
-                            <p class="empty">请选择或加入仿真世界后查看脚本列表。</p>
-                        {% endif %}
-                    </section>
-                    <section class="panel">
-                        <h3>个人脚本库</h3>
-                        {% if user_scripts %}
-                            <div class="scroll-pane">
-                                <ul class="script-list">
-                                    {% for script in user_scripts %}
-                                        <li>
-                                            <div class="script-item">
-                                                <div class="script-detail">
-                                                    <span class="label">上传时间</span>
-                                                    <span class="value">{{ script.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</span>
-                                                    <span class="label">上传者</span>
-                                                    <span class="value">{{ script.user_id }}</span>
-                                                    <span class="label">脚本 ID</span>
-                                                    <span class="value">{{ script.script_id }}</span>
-                                                    <span class="label">主体类型</span>
-                                                    <span class="value">{{ script.agent_kind.value }}</span>
-                                                    <span class="label">实体 ID</span>
-                                                    <span class="value">{{ entity_map.get(script.script_id, script.entity_id) }}</span>
-                                                    <span class="label">版本</span>
-                                                    <span class="value">{{ script.code_version }}</span>
-                                                    <span class="label">状态</span>
-                                                    <span class="value">
-                                                        {% if script.simulation_id %}
-                                                            已挂载至 {{ script.simulation_id }}
-                                                        {% else %}
-                                                            未挂载
-                                                        {% endif %}
-                                                    </span>
-                                                </div>
-                                                {% if script.description %}
-                                                    <p class="script-desc">{{ script.description }}</p>
-                                                {% else %}
-                                                    <p class="script-desc empty">（无描述）</p>
-                                                {% endif %}
-                                            </div>
-                                            {% set script_tick = script_tick_map.get(script.simulation_id) %}
-                                            {% set detach_enabled = script.simulation_id and script_tick == 0 %}
-                                            {% set delete_enabled = (script.simulation_id is none) or (script_tick is none) or (script_tick == 0) %}
-                                            <div class="script-actions">
-                                                <form method="post"
-                                                      action="/web/scripts/delete"
-                                                      class="script-action-form inline-form">
-                                                    <input type="hidden" name="script_id" value="{{ script.script_id }}">
-                                                    <input type="hidden"
-                                                           name="current_simulation_id"
-                                                           value="{{ simulation_id }}">
-                                                    <button type="submit"
-                                                            class="danger"
-                                                            {% if not delete_enabled %}disabled{% endif %}>
-                                                        删除脚本
-                                                    </button>
-                                                </form>
-                                            </div>
-                                        </li>
-                                    {% endfor %}
-                                </ul>
-                            </div>
-                        {% else %}
-                            <div class="scroll-pane">
-                                <p class="empty">还没有上传任何脚本。</p>
-                            </div>
-                        {% endif %}
-                    </section>
-                {% endif %}
-                {% if _tab == 'upload' %}
-                    <div class="scroll-pane">
-                        <p class="empty">还没有上传任何脚本，下面的表单可将脚本保存到个人脚本库。</p>
-                    </div>
-                {% endif %}
-            </article>
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="empty">还没有上传任何脚本。</p>
+            {% endif %}
         </section>
+    {% endif %}
+    {# ==================== 上传/挂载标签页 ==================== #}
+    {% if _tab == 'upload' %}
         <section class="panel">
             <h3>上传脚本</h3>
             {% set script_defaults = script_form_defaults if script_form_defaults is defined else {} %}
@@ -500,6 +467,7 @@
             </section>
         {% endif %}
     {% endif %}
+    {# ==================== 日终轮换标签页 ==================== #}
     {% if _tab == 'rotate' and simulation_id and scripts %}
         <section class="panel">
             <h3>日终脚本轮换</h3>

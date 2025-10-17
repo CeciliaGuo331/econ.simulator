@@ -2,3 +2,4 @@ __pycache__/
 .obsidian/
 .conda/
 .pytest_cache/
+.claude/

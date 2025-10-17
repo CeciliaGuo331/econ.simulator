@@ -42,18 +42,32 @@
 {% macro render_households_table(households, limit=8) -%}
     {%- set ns = namespace(rows=[]) -%}
     {%- if households is mapping -%}
-        {%- for hid, info in households | dictsort -%}
+        {# iterate in insertion order so backend-supplied ordering is preserved #}
+        {%- for hid, info in households.items() -%}
             {%- if limit < 0 or loop.index <= limit -%}
                 {%- set ns.rows = ns.rows + [(hid, info)] -%}
             {%- endif -%}
         {%- endfor -%}
     {%- elif households is sequence -%}
-        {%- for info in households -%}
-            {%- if limit < 0 or loop.index <= limit -%}
-                {%- set hid = info.id if info.id is defined else (info["id"] if "id" in info else loop.index0) -%}
-                {%- set ns.rows = ns.rows + [(hid, info)] -%}
-            {%- endif -%}
-        {%- endfor -%}
+        {# sequence may be either a list of info objects or a list of (id, info) pairs
+           detect pairs by checking length/structure of first element #}
+        {%- set _first = households[0] if households | length > 0 else None -%}
+        {%- if _first is sequence and _first | length >= 2 -%}
+            {%- for pair in households -%}
+                {%- set hid = pair[0] -%}
+                {%- set info = pair[1] -%}
+                {%- if limit < 0 or loop.index <= limit -%}
+                    {%- set ns.rows = ns.rows + [(hid, info)] -%}
+                {%- endif -%}
+            {%- endfor -%}
+        {%- else -%}
+            {%- for info in households -%}
+                {%- if limit < 0 or loop.index <= limit -%}
+                    {%- set hid = info.id if info.id is defined else (info["id"] if "id" in info else loop.index0) -%}
+                    {%- set ns.rows = ns.rows + [(hid, info)] -%}
+                {%- endif -%}
+            {%- endfor -%}
+        {%- endif -%}
     {%- endif -%}
     <table class="state-table">
         <thead>

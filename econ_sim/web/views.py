@@ -42,6 +42,7 @@ from ..utils.settings import get_world_config
 from .background import BackgroundJobManager, JobConflictError
 from .background import BackgroundJobManager, JobConflictError
 import mimetypes
+import re
 
 router = APIRouter(prefix="/web", tags=["web"])
 
@@ -258,6 +259,40 @@ def _prepare_world_for_template(raw_world: Dict[str, Any]) -> Dict[str, Any]:
     world.setdefault("households", {})
     world.setdefault("household_shocks", {})
     world.setdefault("features", {})
+
+    # Sort households by numeric ID if they are dict
+    households = world.get("households")
+    if isinstance(households, dict) and households:
+        # Use an alphanumeric key that treats digit runs as integers so
+        # that keys like "1", "2", "10" sort numerically and mixed
+        # keys like "house-2" / "house-10" sort intuitively.
+        def _alphanum_key(s: object):
+            # split into digit and non-digit parts
+            parts = re.split(r"(\d+)", str(s))
+            key_parts = []
+            for p in parts:
+                if p.isdigit():
+                    try:
+                        key_parts.append(int(p))
+                    except Exception:
+                        key_parts.append(p)
+                else:
+                    key_parts.append(p.lower())
+            return key_parts
+
+        try:
+            sorted_items = sorted(
+                households.items(), key=lambda item: _alphanum_key(item[0])
+            )
+            # Keep a dict for backwards-compatibility, but also expose an
+            # ordered list of (id, info) pairs so templates can reliably
+            # iterate in the numeric-aware order.
+            sorted_households = dict(sorted_items)
+            world["households"] = sorted_households
+            world["households_list"] = sorted_items
+        except Exception:
+            # If anything unexpected happens, keep original order
+            pass
 
     for agent_key in ("firm", "bank", "government", "central_bank"):
         agent_raw = world.get(agent_key)
