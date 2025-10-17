@@ -219,6 +219,98 @@ async def test_run_until_day_rejects_non_positive_days() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_day_advances_by_config_ticks() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "run-day-direct"
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
+
+    initial_state = await orchestrator.get_state(simulation_id)
+    result = await orchestrator.run_day(simulation_id)
+
+    expected_ticks = orchestrator.config.simulation.ticks_per_day
+    assert result.ticks_executed == expected_ticks
+    assert result.world_state.tick == initial_state.tick + expected_ticks
+    assert result.world_state.day >= initial_state.day + 1
+
+
+@pytest.mark.asyncio
+async def test_run_day_with_custom_ticks() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "run-day-custom"
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
+
+    custom_ticks = 1
+    result = await orchestrator.run_day(simulation_id, ticks_per_day=custom_ticks)
+    assert result.ticks_executed == custom_ticks
+    assert result.world_state.tick >= custom_ticks
+
+    with pytest.raises(ValueError):
+        await orchestrator.run_day(simulation_id, ticks_per_day=0)
+
+
+@pytest.mark.asyncio
+async def test_day_end_script_rotation_preserves_entity_and_updates_version() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "rotation-sim"
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
+
+    # 选择企业脚本作为替换对象
+    scripts = await script_registry.list_scripts(simulation_id)
+    firm_script = next(s for s in scripts if s.agent_kind is AgentKind.FIRM)
+    old_version = firm_script.code_version
+    entity_id_before = firm_script.entity_id
+
+    # 跑满一天到达日终
+    await orchestrator.run_day(simulation_id)
+    state = await orchestrator.get_state(simulation_id)
+    ticks_per_day = orchestrator.config.simulation.ticks_per_day
+    assert state.tick % ticks_per_day == 0
+
+    # 在日终替换脚本代码
+    updated = await orchestrator.update_script_code_at_day_end(
+        simulation_id,
+        script_id=firm_script.script_id,
+        user_id=firm_script.user_id,
+        new_code="""
+def generate_decisions(context):
+    return {"firm": {"price": 19.9}}
+""",
+        new_description="rotated at day end",
+    )
+    assert updated.script_id == firm_script.script_id
+    assert updated.entity_id == entity_id_before
+    assert updated.code_version != old_version
+
+    # 下一 Tick 应可正常运行
+    result = await orchestrator.run_tick(simulation_id)
+    assert result.world_state.tick == state.tick + 1
+
+    # 非日终时替换应失败
+    with pytest.raises(Exception):
+        await orchestrator.update_script_code_at_day_end(
+            simulation_id,
+            script_id=firm_script.script_id,
+            user_id=firm_script.user_id,
+            new_code="""
+def generate_decisions(context):
+    return {}
+""",
+        )
+
+
+@pytest.mark.asyncio
 # 测试：当脚本在 tick 执行中抛出异常时，失败事件应被记录并可查询到。
 async def test_run_tick_records_script_failure_events() -> None:
     orchestrator = SimulationOrchestrator()
@@ -1220,7 +1312,45 @@ async def test_run_days_endpoint_advances_day() -> None:
 
 
 @pytest.mark.asyncio
-# 测试：从 tick 1 开始运行多次 tick 时，day 的滚动逻辑应按配置 ticks_per_day 正确换日。
+async def test_run_day_endpoint_advances_single_day() -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        admin_login = await client.post(
+            "/auth/login",
+            json={
+                "email": DEFAULT_ADMIN_EMAIL,
+                "password": DEFAULT_ADMIN_PASSWORD,
+            },
+        )
+        admin_token = admin_login.json()["access_token"]
+        headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+        simulation_id = "run-day-endpoint"
+        await client.post(
+            "/simulations",
+            json={"simulation_id": simulation_id},
+            headers=headers_admin,
+        )
+
+        await _seed_minimal_coverage(
+            api_endpoints._orchestrator,
+            simulation_id,
+            households=[0],
+        )
+
+        response = await client.post(
+            f"/simulations/{simulation_id}/run_day",
+            headers=headers_admin,
+        )
+        assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["ticks_executed"] == get_world_config().simulation.ticks_per_day
+    assert payload["final_day"] >= 1
+    assert payload["final_tick"] >= payload["ticks_executed"]
+
+
+@pytest.mark.asyncio
 async def test_day_rollover_starting_from_tick_one() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "day-rollover"

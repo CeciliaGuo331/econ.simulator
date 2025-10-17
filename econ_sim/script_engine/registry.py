@@ -792,6 +792,59 @@ class ScriptRegistry:
             raise ScriptExecutionError("Script not found")
         return True
 
+    async def update_script_code(
+        self,
+        *,
+        script_id: str,
+        user_id: Optional[str] = None,
+        new_code: str,
+        new_description: Optional[str] = None,
+    ) -> ScriptMetadata:
+        """更新现有脚本的代码并提升版本号。
+
+        - 保持 script_id、simulation_id、agent_kind、entity_id 不变，用于“日终轮换”继承实体状态。
+        - 可选地更新描述。
+        - 验证新脚本合法性；持久化存储存在时同步写入。
+        - 若提供 user_id，将校验拥有者；未提供则不校验（供管理员或内部流程使用）。
+        """
+
+        self._validate_script(new_code)
+
+        async with self._registry_lock:
+            record = self._records.get(script_id)
+            if record is None:
+                raise ScriptExecutionError("Script not found")
+            if user_id is not None and record.metadata.user_id != user_id:
+                raise ScriptExecutionError("脚本不存在或无权限操作。")
+
+            old_meta = record.metadata
+            updated_meta = old_meta.model_copy(
+                update={
+                    "code_version": str(uuid.uuid4()),
+                    "description": (
+                        new_description
+                        if new_description is not None
+                        else old_meta.description
+                    ),
+                }
+            )
+            record.metadata = updated_meta
+            record.code = new_code
+
+        if self._store is not None:
+            try:
+                await self._store.save_script(updated_meta, new_code)
+            except Exception as exc:  # pragma: no cover - defensive log
+                # 回滚内存更新以保持一致性
+                async with self._registry_lock:
+                    existing = self._records.get(script_id)
+                    if existing is not None:
+                        existing.metadata = old_meta
+                        existing.code = record.code  # type: ignore[attr-defined]
+                raise ScriptExecutionError(f"更新脚本失败: {exc}") from exc
+
+        return updated_meta
+
     async def clear(self) -> None:
         """清空所有已注册脚本，主要用于测试。"""
 

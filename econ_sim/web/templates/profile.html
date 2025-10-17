@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}个人主页 - Econ Simulator{% endblock %}
+{% block content %}
+    <section class="profile">
+        <h1>个人主页</h1>
+        {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+        {% if message %}<div class="alert alert-ok">{{ message }}</div>{% endif %}
+        <div class="profile-header">
+            <div class="avatar">
+                {% set avatar_src = profile.avatar_url or '/web/static/favicon-dark.svg' %}
+                <img src="{{ avatar_src }}"
+                     alt="avatar"
+                     width="96"
+                     height="96"
+                     style="border-radius: 50%;
+                            object-fit: cover" />
+            </div>
+            <div class="meta">
+                <div>
+                    <strong>{{ profile.display_name or profile.email }}</strong>
+                </div>
+                <div class="muted">{{ profile.email }} · {{ profile.user_type }}</div>
+            </div>
+        </div>
+        <div class="profile-grid">
+            <form method="post"
+                  action="/web/profile/avatar"
+                  enctype="multipart/form-data"
+                  class="card">
+                <h3>更新头像</h3>
+                <label>
+                    上传图片（最大 2MB）
+                    <input class="input" type="file" name="avatar_file" accept="image/*" />
+                </label>
+                <div class="or">或</div>
+                <label>
+                    使用图片 URL
+                    <input class="input"
+                           type="url"
+                           name="avatar_url"
+                           placeholder="https://example.com/avatar.png" />
+                </label>
+                <button class="btn btn-sm" type="submit">保存头像</button>
+            </form>
+            <form method="post" action="/web/profile/display_name" class="card">
+                <h3>显示名</h3>
+                <label>
+                    昵称
+                    <input class="input"
+                           type="text"
+                           name="display_name"
+                           value="{{ profile.display_name or '' }}"
+                           maxlength="40" />
+                </label>
+                <button class="btn btn-sm" type="submit">保存显示名</button>
+            </form>
+            <form method="post" action="/web/profile/password" class="card">
+                <h3>修改密码</h3>
+                <label>
+                    当前密码
+                    <input class="input" type="password" name="old_password" required />
+                </label>
+                <label>
+                    新密码
+                    <input class="input"
+                           type="password"
+                           name="new_password"
+                           minlength="8"
+                           maxlength="128"
+                           required />
+                </label>
+                <label>
+                    确认新密码
+                    <input class="input"
+                           type="password"
+                           name="confirm_password"
+                           minlength="8"
+                           maxlength="128"
+                           required />
+                </label>
+                <button class="btn btn-sm" type="submit">更新密码</button>
+            </form>
+            <form method="post" action="/web/profile/email" class="card">
+                <h3>变更登录邮箱</h3>
+                <label>
+                    新邮箱
+                    <input class="input" type="email" name="new_email" required />
+                </label>
+                <label>
+                    当前密码
+                    <input class="input" type="password" name="current_password" required />
+                </label>
+                <button class="btn btn-sm" type="submit">更新邮箱</button>
+            </form>
+        </div>
+        <div class="card">
+            <h3>通知（近期脚本失败）</h3>
+            {% if recent_failures %}
+                <ul class="list">
+                    {% for item in recent_failures %}
+                        <li>
+                            <span class="muted">{{ item.occurred_at }}</span>
+                            <span>仿真 {{ item.simulation_id }} · {{ item.agent_kind }}[{{ item.entity_id }}] · {{ item.message }}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div class="muted">暂无通知。</div>
+            {% endif %}
+        </div>
+    </section>
+{% endblock %}

@@ -6,10 +6,12 @@
 
 | 数据域 | 存储介质 | 说明 |
 | ------ | -------- | ---- |
-| 仿真世界状态 (`WorldState`) | Redis | Tick/Day、宏观指标、主体资产负债表；高频读写，保持 JSON 化映射 |
-| Tick 日志 / 参与者列表 | Redis | 统一由 `DataAccessLayer` 管理，Pipeline 保证写一致性 |
-| 用户脚本源码 & 元数据 | PostgreSQL | 表 `scripts`，存储脚本代码、归属、挂载状态、版本号 |
+| 仿真世界状态 (`WorldState`) | Redis + PostgreSQL | Redis 作为热数据缓存；PostgreSQL 作为 world_state_snapshots 持久化（写穿） |
+| Tick 日志 / 参与者列表 | Redis | 由 `DataAccessLayer` 管理，Pipeline 保证写一致性；Tick 日志支持持久化归档到 Postgres（可选） |
+| 交易撮合与流水（运行时） | Redis | `sim:{id}:market_runtime`、`sim:{id}:trades`、`sim:{id}:ledger` |
+| 用户脚本源码 & 元数据 | PostgreSQL | 表 `scripts`，存储脚本代码、归属、挂载状态、版本号；附表 `scripts_versions` 记录历史版本 |
 | 脚本限额 & 仿真设置 | PostgreSQL | `simulation_limits`（在 `PostgresSimulationSettingsStore` 中维护） |
+| 主体状态快照（草案） | PostgreSQL | `agent_snapshots`，按主体维度增量落库，便于后续状态回放与分析 |
 | 用户账号 / 会话 | 内存（默认）或 Redis | `UserManager`/`SessionManager` 可切换后端，默认内存够用 |
 
 ### 接口一览
@@ -31,6 +33,9 @@ graph TD
   Redis --> Agent["sim:#123;id#125;:agent:#123;agent_id#125;"]
   Redis --> Participants["sim:#123;id#125;:participants"]
   Redis --> Logs["sim:#123;id#125;:logs"]
+  Redis --> Runtime["sim:#123;id#125;:market_runtime"]
+  Redis --> Trades["sim:#123;id#125;:trades"]
+  Redis --> Ledger["sim:#123;id#125;:ledger"]
 
     World:::node
     Agent:::node
@@ -45,6 +50,9 @@ graph TD
   - `sim:{id}:agent:{agent_id}`：代理人 Hash（资产负债、行为参数）。
   - `sim:{id}:participants`：Set，存储参与者邮箱。
   - `sim:{id}:logs`：List，按时间追加 Tick 日志。
+  - `sim:{id}:market_runtime`：JSON，撮合视图与盘口聚合（bids/asks、last_price、volume_day）。
+  - `sim:{id}:trades`：List，成交记录（`TradeRecord`）。
+  - `sim:{id}:ledger`：List，账户流水（`LedgerEntry`），保留最近 N 条，默认 5000。
 - **访问方式**：统一通过 `DataAccessLayer` 方法：
   - `ensure_simulation()` 初始化或读取世界状态。
   - `get_world_state()`：组装 `WorldState` Pydantic 模型。
@@ -65,19 +73,39 @@ graph TD
 
 ```mermaid
 erDiagram
-    scripts {
-        UUID script_id PK
-        TEXT simulation_id
-        TEXT user_id
-        TEXT description
-        TIMESTAMPTZ created_at
-        TEXT code
-        UUID code_version
+  scripts {
+    UUID script_id PK
+    TEXT simulation_id
+    TEXT user_id
+    TEXT description
+    TIMESTAMPTZ created_at
+    TEXT code
+    UUID code_version
+  }
+  scripts_versions {
+    SERIAL id PK
+    UUID script_id
+    UUID code_version
+    TIMESTAMPTZ created_at
+    TEXT user_id
+    TEXT simulation_id
+    TEXT agent_kind
+    TEXT entity_id
   }
   simulation_limits {
     TEXT simulation_id PK
     INT script_limit
     TIMESTAMPTZ updated_at
+  }
+  agent_snapshots {
+    SERIAL id PK
+    TEXT simulation_id
+    INT tick
+    INT day
+    TEXT agent_kind
+    TEXT entity_id
+    JSONB payload
+    TIMESTAMPTZ created_at
   }
 ```
 
@@ -176,6 +204,14 @@ sequenceDiagram
 
 需要深入了解字段含义或模型定义时，可参考 `econ_sim/data_access/models.py`。
 
+### 4.4 交易与流水（运行时）
+
+- `MarketRuntime`：撮合视图（盘口档位）、最新成交价与当日成交量。
+- `TradeRecord`：单笔成交（买卖双方、数量、价格、金额）。
+- `LedgerEntry`：账户流水（入账/出账、余额后值、关联业务）。
+
+上述三类运行时数据保存在 Redis，支持快速查询最近窗口；如需归档可以追加 PostgreSQL 表（后续阶段）。
+
 ## 5. 协作与账号存储
 
 除世界状态外，系统还维护以下集合：
@@ -194,8 +230,14 @@ sequenceDiagram
   - `StateUpdateCommand`：逻辑模块输出的更新指令，`DataAccessLayer.apply_updates` 解析执行。
   - `TickDecisionOverrides`：脚本或外部输入的决策覆盖。
 - `ScriptRegistry` 与逻辑模块通过这些模型交流，保证类型安全与边界清晰。特别注意 `StateUpdateCommand.assign/delta` 语义：
-  - `assign`：直接覆盖 Redis 中的字段（常用于元数据、Tick、Day 等标量）。
-  - `delta`：对数值型字段做增量更新（例如现金余额）。
+  - `assign`：幂等覆盖，直接写入新值；适用于 Tick/Day、元数据与状态切换。
+  - `delta`：相对更新，只对数值字段做加法；适用于余额、库存、产出等可累加量。
+
+同步策略建议：
+
+- 写穿（Write-through）：`DataAccessLayer._persist_state` 已采用写穿，将世界状态同时写入 Redis 与 PostgreSQL。
+- 双写（Dual-write）准备：交易与流水采用 Redis List 作为主写入；如需归档到 PostgreSQL，可在 `record_tick` 或撮合模块末尾追加 `append_trades`/`append_ledger` 的 Postgres 写入钩子。
+- 回放策略：长期看以 `agent_snapshots`+`tick_logs` 作为状态回放与诊断的基础，必要时可在日终落一份精简的 `world_state_snapshots`。
 
 ## 7. 事务与一致性
 

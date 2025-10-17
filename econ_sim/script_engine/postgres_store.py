@@ -69,6 +69,23 @@ class PostgresScriptStore:
                     )
                     """
                 )
+                # versions table to track every code_version (append-only)
+                versions_ident = quote_identifier(self._table + "_versions")
+                qualified_versions = f"{schema_ident}.{versions_ident}"
+                await conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {qualified_versions} (
+                        id SERIAL PRIMARY KEY,
+                        script_id UUID NOT NULL,
+                        code_version UUID NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        user_id TEXT NOT NULL,
+                        simulation_id TEXT,
+                        agent_kind TEXT NOT NULL,
+                        entity_id TEXT NOT NULL
+                    )
+                    """
+                )
                 await conn.execute(
                     f"ALTER TABLE {qualified} ALTER COLUMN simulation_id DROP NOT NULL"
                 )
@@ -123,6 +140,22 @@ class PostgresScriptStore:
                 metadata.entity_id,
                 metadata.last_failure_at,
                 metadata.last_failure_reason,
+            )
+            # append a version row for history
+            versions_ident = quote_identifier(self._table + "_versions")
+            qualified_versions = f"{schema_ident}.{versions_ident}"
+            await conn.execute(
+                f"""
+                INSERT INTO {qualified_versions} (script_id, code_version, created_at, user_id, simulation_id, agent_kind, entity_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                script_id,
+                code_version,
+                created_at,
+                metadata.user_id,
+                metadata.simulation_id,
+                metadata.agent_kind.value,
+                metadata.entity_id,
             )
 
     async def fetch_simulation_scripts(self, simulation_id: str) -> List[StoredScript]:

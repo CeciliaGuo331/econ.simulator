@@ -75,6 +75,18 @@ class MissingAgentScriptsError(RuntimeError):
         self.missing_agents = tuple(missing_agents)
 
 
+class DayBoundaryRequiredError(RuntimeError):
+    """在非日终边界尝试执行仅可在日终进行的操作时抛出。"""
+
+    def __init__(self, simulation_id: str, tick: int, ticks_per_day: int) -> None:
+        super().__init__(
+            f"Simulation {simulation_id} at tick {tick} is not at day boundary (ticks_per_day={ticks_per_day})."
+        )
+        self.simulation_id = simulation_id
+        self.tick = tick
+        self.ticks_per_day = ticks_per_day
+
+
 class SimulationOrchestrator:
     """仿真调度器，负责组织数据访问、决策生成与市场结算。"""
 
@@ -491,6 +503,39 @@ class SimulationOrchestrator:
             logs=aggregated_logs,
         )
 
+    async def run_day(
+        self,
+        simulation_id: str,
+        *,
+        ticks_per_day: Optional[int] = None,
+    ) -> BatchRunResult:
+        """执行单个仿真日（按配置或指定 Tick 数量）。"""
+
+        state = await self.create_simulation(simulation_id)
+        configured_ticks = self.config.simulation.ticks_per_day
+        ticks_to_run = configured_ticks if ticks_per_day is None else ticks_per_day
+        if ticks_to_run <= 0:
+            raise ValueError("ticks_per_day must be a positive integer")
+
+        aggregated_logs: List[TickLogEntry] = []
+        ticks_executed = 0
+        last_result: Optional[TickResult] = None
+
+        for _ in range(ticks_to_run):
+            last_result = await self.run_tick(simulation_id)
+            state = last_result.world_state
+            aggregated_logs.extend(last_result.logs)
+            ticks_executed += 1
+
+        if last_result is None:
+            return BatchRunResult(world_state=state, ticks_executed=0, logs=[])
+
+        return BatchRunResult(
+            world_state=state,
+            ticks_executed=ticks_executed,
+            logs=aggregated_logs,
+        )
+
     async def delete_simulation(self, simulation_id: str) -> dict[str, int]:
         """删除仿真实例的世界状态，并解除与参与者、脚本的关联。"""
 
@@ -500,6 +545,45 @@ class SimulationOrchestrator:
             "participants_removed": participants_removed,
             "scripts_detached": scripts_removed,
         }
+
+    async def update_script_code_at_day_end(
+        self,
+        simulation_id: str,
+        *,
+        script_id: str,
+        user_id: Optional[str],
+        new_code: str,
+        new_description: Optional[str] = None,
+    ) -> "script_registry.ScriptMetadata":
+        """在“日终”边界更换脚本代码而保留实体，下一交易日生效。
+
+        约束：
+        - 必须在日终边界调用：即当前 tick 能被 ticks_per_day 整除。
+        - 不允许在 tick 0 之前进行（需仿真已创建）。
+        - 仅替换代码与描述，不改变 script_id、entity_id、agent_kind、simulation_id。
+        """
+        state = await self.data_access.get_world_state(simulation_id)
+        ticks_per_day = self.config.simulation.ticks_per_day
+        if ticks_per_day <= 0:
+            raise ValueError("ticks_per_day must be positive in config")
+        # day boundary: after finishing a day; with our progression, a boundary is when current tick % ticks_per_day == 0
+        if state.tick % ticks_per_day != 0:
+            raise DayBoundaryRequiredError(simulation_id, state.tick, ticks_per_day)
+
+        # 校验脚本确实属于该仿真
+        scripts = await script_registry.list_scripts(simulation_id)
+        target = next((m for m in scripts if m.script_id == script_id), None)
+        if target is None:
+            raise ScriptExecutionError("Script not found for simulation")
+
+        # 替换代码
+        updated = await script_registry.update_script_code(
+            script_id=script_id,
+            user_id=user_id,
+            new_code=new_code,
+            new_description=new_description,
+        )
+        return updated
 
     async def _require_agent_coverage(self, simulation_id: str) -> None:
         state = await self.data_access.get_world_state(simulation_id)
