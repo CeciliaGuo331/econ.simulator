@@ -206,15 +206,21 @@ class RedisRuntimeStore:
         return MarketRuntime.model_validate(data)
 
     async def set_runtime(self, simulation_id: str, runtime: MarketRuntime) -> None:
-        await self._redis.set(self._runtime_key(simulation_id), runtime.model_dump_json())
+        await self._redis.set(
+            self._runtime_key(simulation_id), runtime.model_dump_json()
+        )
 
-    async def append_trades(self, simulation_id: str, trades: Iterable[TradeRecord]) -> int:
+    async def append_trades(
+        self, simulation_id: str, trades: Iterable[TradeRecord]
+    ) -> int:
         items = [t.model_dump_json() for t in trades]
         if not items:
             return 0
         return await self._redis.rpush(self._trades_key(simulation_id), *items)
 
-    async def list_trades(self, simulation_id: str, start: int = -200, end: int = -1) -> List[TradeRecord]:
+    async def list_trades(
+        self, simulation_id: str, start: int = -200, end: int = -1
+    ) -> List[TradeRecord]:
         values = await self._redis.lrange(self._trades_key(simulation_id), start, end)
         out: List[TradeRecord] = []
         for v in values:
@@ -225,7 +231,9 @@ class RedisRuntimeStore:
                 continue
         return out
 
-    async def append_ledger(self, simulation_id: str, entries: Iterable[LedgerEntry], *, max_len: int = 5000) -> int:
+    async def append_ledger(
+        self, simulation_id: str, entries: Iterable[LedgerEntry], *, max_len: int = 5000
+    ) -> int:
         items = [e.model_dump_json() for e in entries]
         if not items:
             return 0
@@ -235,7 +243,9 @@ class RedisRuntimeStore:
         await self._redis.ltrim(key, -max_len, -1)
         return n
 
-    async def list_ledger(self, simulation_id: str, start: int = -500, end: int = -1) -> List[LedgerEntry]:
+    async def list_ledger(
+        self, simulation_id: str, start: int = -500, end: int = -1
+    ) -> List[LedgerEntry]:
         values = await self._redis.lrange(self._ledger_key(simulation_id), start, end)
         out: List[LedgerEntry] = []
         for v in values:
@@ -858,30 +868,46 @@ class DataAccessLayer:
             return MarketRuntime()
         return await self._runtime_store.get_runtime(simulation_id)
 
-    async def set_market_runtime(self, simulation_id: str, runtime: MarketRuntime) -> None:
+    async def set_market_runtime(
+        self, simulation_id: str, runtime: MarketRuntime
+    ) -> None:
         if self._runtime_store is None:
             return
         await self._runtime_store.set_runtime(simulation_id, runtime)
 
-    async def append_trades(self, simulation_id: str, trades: Iterable[TradeRecord]) -> int:
+    async def append_trades(
+        self, simulation_id: str, trades: Iterable[TradeRecord]
+    ) -> int:
         if self._runtime_store is None:
             return 0
         return await self._runtime_store.append_trades(simulation_id, trades)
 
-    async def list_recent_trades(self, simulation_id: str, limit: int = 200) -> List[TradeRecord]:
+    async def list_recent_trades(
+        self, simulation_id: str, limit: int = 200
+    ) -> List[TradeRecord]:
         if self._runtime_store is None:
             return []
-        return await self._runtime_store.list_trades(simulation_id, start=-limit, end=-1)
+        return await self._runtime_store.list_trades(
+            simulation_id, start=-limit, end=-1
+        )
 
-    async def append_ledger(self, simulation_id: str, entries: Iterable[LedgerEntry], *, max_len: int = 5000) -> int:
+    async def append_ledger(
+        self, simulation_id: str, entries: Iterable[LedgerEntry], *, max_len: int = 5000
+    ) -> int:
         if self._runtime_store is None:
             return 0
-        return await self._runtime_store.append_ledger(simulation_id, entries, max_len=max_len)
+        return await self._runtime_store.append_ledger(
+            simulation_id, entries, max_len=max_len
+        )
 
-    async def list_recent_ledger(self, simulation_id: str, limit: int = 500) -> List[LedgerEntry]:
+    async def list_recent_ledger(
+        self, simulation_id: str, limit: int = 500
+    ) -> List[LedgerEntry]:
         if self._runtime_store is None:
             return []
-        return await self._runtime_store.list_ledger(simulation_id, start=-limit, end=-1)
+        return await self._runtime_store.list_ledger(
+            simulation_id, start=-limit, end=-1
+        )
 
     async def register_participant(self, simulation_id: str, user_id: str) -> None:
         """登记参与同一仿真实例的用户，用于共享会话管理。"""

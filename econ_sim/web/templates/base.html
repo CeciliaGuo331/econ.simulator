@@ -29,7 +29,12 @@
                     {% set _u = request.session.get('user') if request and request.session else None %}
                     {% set _avatar = (_u.avatar_url if _u and _u.get('avatar_url') else None) %}
                     {% set avatar_src = _avatar or url_for('web-static', path='favicon-dark.svg') %}
-                    <img src="{{ avatar_src }}" alt="profile" width="20" height="20" style="vertical-align: middle; border-radius: 50%;" />
+                    <img src="{{ avatar_src }}"
+                         alt="profile"
+                         width="20"
+                         height="20"
+                         style="vertical-align: middle;
+                                border-radius: 50%" />
                 </a>
                 <a href="/web/logout">退出</a>
             </nav>

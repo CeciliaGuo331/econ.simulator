@@ -397,7 +397,9 @@ class UserManager:
         await self._sessions.revoke_user(normalized)
 
     # ---- Profile management ----
-    async def update_display_name(self, email: str, display_name: Optional[str]) -> UserProfile:
+    async def update_display_name(
+        self, email: str, display_name: Optional[str]
+    ) -> UserProfile:
         await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
@@ -414,7 +416,9 @@ class UserManager:
             avatar_url=record.avatar_url,
         )
 
-    async def update_avatar_url(self, email: str, avatar_url: Optional[str]) -> UserProfile:
+    async def update_avatar_url(
+        self, email: str, avatar_url: Optional[str]
+    ) -> UserProfile:
         await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
@@ -431,7 +435,9 @@ class UserManager:
             avatar_url=record.avatar_url,
         )
 
-    async def change_password(self, email: str, old_password: str, new_password: str) -> None:
+    async def change_password(
+        self, email: str, old_password: str, new_password: str
+    ) -> None:
         await self._ensure_default_accounts()
         validate_email(email)
         normalized = self._normalize_email(email)
@@ -443,7 +449,9 @@ class UserManager:
         record.password_hash = hash_password(new_password)
         await self._store.save_user(record)
 
-    async def change_email(self, current_email: str, new_email: str, current_password: str) -> UserProfile:
+    async def change_email(
+        self, current_email: str, new_email: str, current_password: str
+    ) -> UserProfile:
         """变更登录邮箱；保持向后兼容，迁移脚本持有者与参与者（若可用）。"""
         await self._ensure_default_accounts()
         validate_email(current_email)
@@ -486,11 +494,14 @@ class UserManager:
             from ..data_access.postgres_participants import PostgresParticipantStore
             from ..data_access.postgres_support import get_pool
             import os as _os
+
             dsn = _os.getenv("ECON_SIM_POSTGRES_DSN")
             if dsn:
                 store = PostgresParticipantStore(dsn)
                 # Implement rename via remove+reinsert fallback
-                sims = await store.list_participants("*dummy*")  # no direct list by user; skip
+                sims = await store.list_participants(
+                    "*dummy*"
+                )  # no direct list by user; skip
         except Exception:
             # Silently ignore; participants migration is best-effort
             pass

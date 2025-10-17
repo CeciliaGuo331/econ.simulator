@@ -28,7 +28,9 @@ class LLMResponse:
 class LLMProvider:
     """Provider interface for text generation."""
 
-    async def generate(self, req: LLMRequest, *, user_id: str) -> LLMResponse:  # pragma: no cover - interface
+    async def generate(
+        self, req: LLMRequest, *, user_id: str
+    ) -> LLMResponse:  # pragma: no cover - interface
         raise NotImplementedError
 
 

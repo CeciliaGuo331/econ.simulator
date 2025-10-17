@@ -505,13 +505,15 @@ async def logout(request: Request) -> RedirectResponse:
 
 def _normalize_email_for_filename(email: str) -> str:
     safe = email.strip().lower().replace("@", "_at_").replace("/", "_")
-    for ch in ["\\", ":", "*", "?", "\"", "<", ">", "|"]:
+    for ch in ["\\", ":", "*", "?", '"', "<", ">", "|"]:
         safe = safe.replace(ch, "_")
     return safe
 
 
 @router.get("/profile", response_class=HTMLResponse)
-async def profile_page(request: Request, message: Optional[str] = None, error: Optional[str] = None) -> HTMLResponse:
+async def profile_page(
+    request: Request, message: Optional[str] = None, error: Optional[str] = None
+) -> HTMLResponse:
     user = await _require_session_user(request)
     profile = await user_manager.get_profile(user["email"])  # type: ignore[index]
     if profile is None:
@@ -601,7 +603,9 @@ async def change_email(
 ) -> RedirectResponse:
     user = await _require_session_user(request)
     try:
-        updated = await user_manager.change_email(user["email"], new_email, current_password)
+        updated = await user_manager.change_email(
+            user["email"], new_email, current_password
+        )
     except (AuthenticationError, ValueError) as exc:
         return _redirect_to_profile(error=str(exc))
     # Update session
@@ -623,7 +627,10 @@ async def update_avatar(
             # Save uploaded file to static/avatars
             _AVATAR_DIR.mkdir(parents=True, exist_ok=True)
             filename_base = _normalize_email_for_filename(email)
-            mime = avatar_file.content_type or mimetypes.guess_type(avatar_file.filename)[0]
+            mime = (
+                avatar_file.content_type
+                or mimetypes.guess_type(avatar_file.filename)[0]
+            )
             ext = ".png"
             if mime and "/" in mime:
                 subtype = mime.split("/", 1)[1]
@@ -651,7 +658,9 @@ async def update_avatar(
     return _redirect_to_profile(message="头像已更新。")
 
 
-def _redirect_to_profile(message: Optional[str] = None, error: Optional[str] = None) -> RedirectResponse:
+def _redirect_to_profile(
+    message: Optional[str] = None, error: Optional[str] = None
+) -> RedirectResponse:
     params = {}
     if message:
         params["message"] = message
@@ -876,6 +885,7 @@ async def dashboard(
                 if user_type_index.get(metadata.user_id.lower(), "") == "individual"
             }
             household_counts_by_sim[sid] = len(individual_owners)
+
         # compute remaining to day-end for admins (parallel)
         async def _fetch_state(sid: str):
             try:
@@ -892,7 +902,9 @@ async def dashboard(
                 tick_val = _extract_tick_from_state(st)
                 if isinstance(tick_val, int):
                     mod = tick_val % ticks_per_day_default
-                    remaining_ticks_by_sim[sid] = 0 if mod == 0 else (ticks_per_day_default - mod)
+                    remaining_ticks_by_sim[sid] = (
+                        0 if mod == 0 else (ticks_per_day_default - mod)
+                    )
                 else:
                     remaining_ticks_by_sim[sid] = None
 
@@ -902,6 +914,7 @@ async def dashboard(
             script for script in user_scripts if not script.simulation_id
         ]
     elif all_simulations:
+
         async def _fetch_features(sid: str):
             try:
                 fm = await _orchestrator.get_simulation_features(sid)
@@ -1424,7 +1437,9 @@ async def admin_run_one_day(
         try:
             custom_ticks = int(raw)
         except (TypeError, ValueError):
-            return _async_response(request, target, error="请输入合法的 Tick 数（正整数）。")
+            return _async_response(
+                request, target, error="请输入合法的 Tick 数（正整数）。"
+            )
         if custom_ticks <= 0:
             return _async_response(request, target, error="Tick 数必须大于 0。")
 
@@ -2011,7 +2026,9 @@ async def rotate_script_at_day_end(
     except Exception as exc:
         detail = str(exc)
         if "not at day boundary" in detail:
-            return _redirect_to_dashboard(target, error="仅在日终边界可替换脚本，请先执行完当日 Tick。")
+            return _redirect_to_dashboard(
+                target, error="仅在日终边界可替换脚本，请先执行完当日 Tick。"
+            )
         return _redirect_to_dashboard(target, error=f"替换脚本失败: {exc}")
 
     return _redirect_to_dashboard(

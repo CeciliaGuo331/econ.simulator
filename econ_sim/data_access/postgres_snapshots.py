@@ -66,7 +66,9 @@ class PostgresAgentSnapshotStore:
                 )
             self._initialized = True
 
-    async def record_many(self, simulation_id: str, records: Iterable[AgentSnapshotRecord]) -> int:
+    async def record_many(
+        self, simulation_id: str, records: Iterable[AgentSnapshotRecord]
+    ) -> int:
         await self._ensure_schema()
         batch = list(records)
         if not batch:

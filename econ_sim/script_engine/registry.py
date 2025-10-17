@@ -821,9 +821,11 @@ class ScriptRegistry:
             updated_meta = old_meta.model_copy(
                 update={
                     "code_version": str(uuid.uuid4()),
-                    "description": new_description
-                    if new_description is not None
-                    else old_meta.description,
+                    "description": (
+                        new_description
+                        if new_description is not None
+                        else old_meta.description
+                    ),
                 }
             )
             record.metadata = updated_meta

@@ -30,7 +30,9 @@ async def lifespan(app: FastAPI):
     # startup
     try:
         skip_flag = os.getenv("ECON_SIM_SKIP_TEST_WORLD_SEED", "").lower()
-        skip = skip_flag in {"1", "true", "yes", "on"} or os.getenv("PYTEST_CURRENT_TEST")
+        skip = skip_flag in {"1", "true", "yes", "on"} or os.getenv(
+            "PYTEST_CURRENT_TEST"
+        )
         if not skip:
             from .script_engine.test_world_seed import seed_test_world
 

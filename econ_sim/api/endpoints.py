@@ -381,9 +381,7 @@ async def run_day(
 
     ticks_per_day = payload.ticks_per_day if payload else None
     try:
-        result = await _orchestrator.run_day(
-            simulation_id, ticks_per_day=ticks_per_day
-        )
+        result = await _orchestrator.run_day(simulation_id, ticks_per_day=ticks_per_day)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except MissingAgentScriptsError as exc:

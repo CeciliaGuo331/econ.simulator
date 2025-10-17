@@ -26,7 +26,9 @@ class RateLimitResult:
 
 
 class RateLimiter:
-    def __init__(self, *, window_seconds: int, max_calls: int, prefix: str = "econ_sim:rl") -> None:
+    def __init__(
+        self, *, window_seconds: int, max_calls: int, prefix: str = "econ_sim:rl"
+    ) -> None:
         self.window = int(window_seconds)
         self.max_calls = int(max_calls)
         self.prefix = prefix
@@ -62,7 +64,9 @@ class RateLimiter:
         remaining = max(0, self.max_calls - calls)
         allowed = calls <= self.max_calls
         reset = self.window - (now - window_start)
-        return RateLimitResult(allowed=allowed, remaining=remaining, reset_seconds=int(reset))
+        return RateLimitResult(
+            allowed=allowed, remaining=remaining, reset_seconds=int(reset)
+        )
 
     async def _check_memory(self, name: str) -> RateLimitResult:
         import time
@@ -80,11 +84,13 @@ class RateLimiter:
         remaining = max(0, self.max_calls - count)
         allowed = count <= self.max_calls
         reset = self.window - (now - window_start)
-        return RateLimitResult(allowed=allowed, remaining=remaining, reset_seconds=int(reset))
+        return RateLimitResult(
+            allowed=allowed, remaining=remaining, reset_seconds=int(reset)
+        )
+
+
 """Lightweight async-safe token bucket rate limiter.
 
 Per-user limiter with burst and refill rate. In-memory only; can be swapped
 to Redis later.
 """
-
- 

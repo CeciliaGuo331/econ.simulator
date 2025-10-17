@@ -22,13 +22,22 @@ router = APIRouter(prefix="/llm", tags=["llm"])
 
 async def get_current_user(authorization: str) -> UserProfile:
     if not authorization:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+        )
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header",
+        )
     profile = await user_manager.get_profile_by_token(token.strip())
     if profile is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired access token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired access token",
+        )
     return profile
 
 
@@ -62,7 +71,9 @@ async def completions(
             detail=f"Rate limit exceeded. Try again in {rl.reset_seconds}s.",
         )
     provider = resolve_llm_provider()
-    text = await provider.complete(payload.prompt, model=payload.model, max_tokens=payload.max_tokens)
+    text = await provider.complete(
+        payload.prompt, model=payload.model, max_tokens=payload.max_tokens
+    )
     # Simple token usage estimate by characters (placeholder)
     usage = min(len(payload.prompt) // 4 + (payload.max_tokens or 0), 4096)
     return CompletionResponse(
@@ -72,4 +83,3 @@ async def completions(
         rate_remaining=rl.remaining,
         rate_reset_seconds=rl.reset_seconds,
     )
- 

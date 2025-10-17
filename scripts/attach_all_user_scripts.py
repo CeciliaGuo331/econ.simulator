@@ -56,9 +56,7 @@ async def _attach_all(
     # Collect targets
     all_scripts = await script_registry.list_all_scripts()
     targets = [
-        m
-        for m in all_scripts
-        if (not only_unmounted) or (m.simulation_id is None)
+        m for m in all_scripts if (not only_unmounted) or (m.simulation_id is None)
     ]
 
     attempted = 0

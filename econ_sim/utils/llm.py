@@ -12,14 +12,26 @@ from typing import Optional, Protocol
 
 
 class LLMProvider(Protocol):
-    async def complete(self, prompt: str, *, model: Optional[str] = None, max_tokens: Optional[int] = None) -> str: ...
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str: ...
 
 
 @dataclass
 class MockLLMProvider:
     prefix: str = "Echo"
 
-    async def complete(self, prompt: str, *, model: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
         text = prompt.strip()
         if max_tokens is not None and max_tokens > 0:
             # naive token cap by characters for mock

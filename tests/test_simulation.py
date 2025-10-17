@@ -309,6 +309,7 @@ def generate_decisions(context):
 """,
         )
 
+
 @pytest.mark.asyncio
 # 测试：当脚本在 tick 执行中抛出异常时，失败事件应被记录并可查询到。
 async def test_run_tick_records_script_failure_events() -> None:
@@ -1347,6 +1348,7 @@ async def test_run_day_endpoint_advances_single_day() -> None:
     assert payload["ticks_executed"] == get_world_config().simulation.ticks_per_day
     assert payload["final_day"] >= 1
     assert payload["final_tick"] >= payload["ticks_executed"]
+
 
 @pytest.mark.asyncio
 async def test_day_rollover_starting_from_tick_one() -> None:
