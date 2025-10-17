@@ -65,6 +65,7 @@ async def _ensure_entities_from_scripts(
 
 
 @pytest.mark.asyncio
+# 测试：执行一次 tick 后，世界状态的 tick 应递增且 macro 指标有效。
 async def test_tick_progression_increments() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "test_sim"
@@ -82,6 +83,7 @@ async def test_tick_progression_increments() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：通过传入 overrides，决策逻辑应反映在世界状态（例如家庭消费与企业价格）。
 async def test_overrides_affect_decisions() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "override_sim"
@@ -105,6 +107,7 @@ async def test_overrides_affect_decisions() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：启用/禁用家庭冲击功能后，世界状态中的 features 与 household_shocks 应相应变化。
 async def test_household_shock_toggle_updates_state() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "shock-toggle"
@@ -147,6 +150,7 @@ async def test_household_shock_toggle_updates_state() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：在非 tick 0 时尝试从 simulation 移除脚本应引发 SimulationStateError。
 async def test_remove_script_from_simulation_requires_tick_zero() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "tick-guard-remove"
@@ -188,6 +192,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：调用 run_until_day 应执行指定的天数并返回执行的 ticks 数与最终世界状态。
 async def test_run_until_day_executes_required_ticks() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "run-days"
@@ -203,6 +208,7 @@ async def test_run_until_day_executes_required_ticks() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：向 run_until_day 传入非正整数应抛出 ValueError。
 async def test_run_until_day_rejects_non_positive_days() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "run-days-invalid"
@@ -213,6 +219,7 @@ async def test_run_until_day_rejects_non_positive_days() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：当脚本在 tick 执行中抛出异常时，失败事件应被记录并可查询到。
 async def test_run_tick_records_script_failure_events() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "failure-record"
@@ -262,6 +269,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：reset_simulation 应将 simulation 恢复到初始 tick/day 并保留参与者与脚本绑定（或解绑定为占位）。
 async def test_reset_simulation_restores_initial_state() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "reset-sim"
@@ -311,6 +319,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：删除 simulation 应移除参与者、解绑脚本并使 simulation 无法再被访问。
 async def test_delete_simulation_detaches_associations() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "delete-sim"
@@ -361,6 +370,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：在 tick 0 时允许注册并绑定脚本到 simulation；在 tick 前进后再次注册应被拒绝。
 async def test_register_script_for_simulation_requires_tick_zero() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "tick-guard-register"
@@ -407,6 +417,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：将已上传的脚本挂载到 simulation（attach）在 tick 0 时允许，tick 前进后应被拒绝。
 async def test_attach_script_to_simulation_requires_tick_zero() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "tick-guard-attach"
@@ -465,6 +476,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：baseline 提供的家庭脚本应能在 simulation 中执行且不会导致错误，tick 会推进。
 async def test_household_baseline_script_executes_successfully() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "baseline-household"
@@ -504,6 +516,7 @@ async def test_household_baseline_script_executes_successfully() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：当脚本失败时，传入的 failure_notifier 应接收到相应的失败事件对象。
 async def test_script_failure_triggers_notifier() -> None:
     await script_registry.clear()
     notifier = StubFailureNotifier()
@@ -548,6 +561,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：普通用户不能创建 simulation 或运行控制接口，而管理员可以执行这些操作。
 async def test_admin_restrictions_for_simulation_control() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -619,6 +633,7 @@ async def test_admin_restrictions_for_simulation_control() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：向不存在的 simulation 上传脚本应返回 404；对已存在 simulation 上传脚本应成功。
 async def test_script_upload_requires_existing_simulation() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -687,6 +702,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：当 simulation 的 tick 前进后，上传、挂载、或更改设置等控制性操作应被拒绝并返回包含 tick 信息的错误。
 async def test_script_controls_blocked_after_tick_advances() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -785,6 +801,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：管理员在 tick 前进后尝试删除脚本或切换功能应被拒绝并返回包含 tick 信息的错误。
 async def test_admin_delete_script_blocked_after_tick_advances() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -876,6 +893,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：管理员能够设置、获取以及移除某个 simulation 的脚本上限，且无效输入返回 422。
 async def test_admin_can_set_and_get_script_limit() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -941,6 +959,7 @@ async def test_admin_can_set_and_get_script_limit() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：管理员可通过 API 切换 simulation 的特性（例如 household_shock），并能读取快照。
 async def test_admin_can_toggle_features_via_api() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -993,6 +1012,7 @@ async def test_admin_can_toggle_features_via_api() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：当为 simulation 设置了较低的用户脚本上限时，进一步上传附属于该 simulation 的脚本会被拒绝。
 async def test_limit_setting_blocks_additional_scripts() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -1069,6 +1089,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：将脚本上限降低到少于当前已挂载脚本数时应被拒绝并返回错误。
 async def test_lowering_limit_below_existing_scripts_is_rejected() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -1151,6 +1172,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：通过 run_days endpoint 请求推进多天时，应执行相应数量的 ticks 并返回最终状态摘要。
 async def test_run_days_endpoint_advances_day() -> None:
     await user_manager.reset()
     await script_registry.clear()
@@ -1198,6 +1220,7 @@ async def test_run_days_endpoint_advances_day() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：从 tick 1 开始运行多次 tick 时，day 的滚动逻辑应按配置 ticks_per_day 正确换日。
 async def test_day_rollover_starting_from_tick_one() -> None:
     orchestrator = SimulationOrchestrator()
     simulation_id = "day-rollover"

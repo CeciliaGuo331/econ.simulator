@@ -15,6 +15,8 @@ from econ_sim.script_engine.test_world_seed import (
 
 
 @pytest.mark.asyncio
+# 测试：seed_test_world 能为所有必需的 agent 类型（家庭、企业、银行、政府、央行）生成脚本并创建实体，
+# 并返回包含创建和总脚本数的摘要。
 async def test_seed_test_world_provisions_all_agents() -> None:
     orchestrator = SimulationOrchestrator()
     registry = ScriptRegistry()
@@ -57,6 +59,7 @@ async def test_seed_test_world_provisions_all_agents() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：多次对同一 simulation 调用 seed_test_world 是幂等的，后续调用不应重复创建用户或脚本。
 async def test_seed_test_world_is_idempotent() -> None:
     orchestrator = SimulationOrchestrator()
     registry = ScriptRegistry()
@@ -90,6 +93,7 @@ async def test_seed_test_world_is_idempotent() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：在用 seed_test_world 初始化后，simulation 能正确执行一次 tick，世界状态和脚本计数如预期。
 async def test_seed_test_world_can_execute_tick(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

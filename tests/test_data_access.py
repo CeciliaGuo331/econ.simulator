@@ -32,6 +32,7 @@ class FakePersistentStore:
 
 
 @pytest.mark.asyncio
+# 测试：DataAccessLayer 能从持久化存储加载 simulation 列表并在首次查询后缓存已知 simulation。
 async def test_data_access_hydrates_simulations_from_persistent_store():
     persistent = FakePersistentStore(
         {

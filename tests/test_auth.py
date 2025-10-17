@@ -13,6 +13,7 @@ from econ_sim.script_engine import script_registry
 
 
 @pytest.mark.asyncio
+# 测试：用户可以注册并通过登录接口获取有效的访问 token（access token 为非空字符串）。
 async def test_user_registration_and_login() -> None:
     await user_manager.reset()
 
@@ -40,6 +41,7 @@ async def test_user_registration_and_login() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：重复注册相同邮箱应返回 409 冲突状态码，防止重复创建用户。
 async def test_duplicate_registration_returns_conflict() -> None:
     await user_manager.reset()
 
@@ -67,6 +69,7 @@ async def test_duplicate_registration_returns_conflict() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：使用错误密码登录应返回 401 未授权响应。
 async def test_login_with_wrong_password_fails() -> None:
     await user_manager.reset()
 
@@ -88,6 +91,7 @@ async def test_login_with_wrong_password_fails() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：传递无效的 user_type 到注册接口应被验证拦截并返回 422。
 async def test_register_with_invalid_user_type() -> None:
     await user_manager.reset()
 
@@ -105,6 +109,7 @@ async def test_register_with_invalid_user_type() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：默认管理员凭证应能成功登录并返回 200 状态码。
 async def test_default_admin_can_login() -> None:
     await user_manager.reset()
 
@@ -121,6 +126,7 @@ async def test_default_admin_can_login() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：基线用户集合应已被创建，使用默认基线密码登录应成功。
 async def test_baseline_users_seeded() -> None:
     await user_manager.reset()
 

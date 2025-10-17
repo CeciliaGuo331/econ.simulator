@@ -9,6 +9,7 @@ from tests.utils import seed_required_scripts
 
 
 @pytest.mark.asyncio
+# 测试：注册脚本后，script registry 能在给定世界状态下生成 overrides，且不产生失败事件。
 async def test_script_registry_generates_overrides() -> None:
     registry = ScriptRegistry()
     orchestrator = SimulationOrchestrator()
@@ -49,6 +50,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：脚本生成的 overrides 应影响随后 tick 的执行（例如强制设定企业价格）。
 async def test_script_overrides_affect_tick_execution() -> None:
     await script_registry.clear()
 
@@ -83,6 +85,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：预先上传到用户库的脚本在随后 attach 到 simulation 后应生效并影响生成的 overrides。
 async def test_script_can_attach_after_pre_upload() -> None:
     registry = ScriptRegistry()
     preloaded = await registry.register_script(
@@ -124,6 +127,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：register_script 在未指定实体 ID 时应生成占位实体 ID 以供后续分配。
 async def test_register_script_generates_placeholder_id_when_missing() -> None:
     registry = ScriptRegistry()
     meta = await registry.register_script(
@@ -140,6 +144,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：将占位实体 ID 的脚本 attach 到某个 simulation 后，应为该脚本分配真实（数字）实体 ID。
 async def test_attach_script_replaces_placeholder_with_allocated_id() -> None:
     await script_registry.clear()
 
@@ -170,6 +175,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：list_user_scripts 应包含未绑定到任何 simulation 的脚本（library 中的脚本）。
 async def test_list_user_scripts_includes_unattached() -> None:
     await script_registry.clear()
 
@@ -192,6 +198,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：按 ID 删除脚本应返回 True，重复删除应抛出 ScriptExecutionError。
 async def test_delete_script_by_id() -> None:
     registry = ScriptRegistry()
     meta = await registry.register_script(
@@ -212,6 +219,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：上传含有禁止导入（如 os）的脚本应被拒绝并抛出 ScriptExecutionError。
 async def test_rejects_forbidden_import() -> None:
     registry = ScriptRegistry()
     with pytest.raises(ScriptExecutionError):
@@ -230,6 +238,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：当脚本在 sandbox 中超时，registry 应报告失败日志与失败事件，并将最后失败原因写入元数据。
 async def test_script_timeout_is_reported() -> None:
     registry = ScriptRegistry(sandbox_timeout=0.1)
     orchestrator = SimulationOrchestrator()
@@ -274,6 +283,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：为特定 simulation 设置的上限应覆盖 registry 的默认 per-user 限制，并能恢复默认值。
 async def test_simulation_specific_limit_overrides_default() -> None:
     registry = ScriptRegistry(max_scripts_per_user=3)
 
@@ -311,6 +321,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：全局 per-user 限制生效时，超过限制的注册应被拒绝并抛出错误。
 async def test_register_script_enforces_per_user_limit() -> None:
     registry = ScriptRegistry(max_scripts_per_user=1)
 
@@ -342,6 +353,7 @@ def generate_decisions(context):
 
 
 @pytest.mark.asyncio
+# 测试：attach 操作在遵守 per-user 限制时应阻止超额挂载请求。
 async def test_attach_script_respects_per_user_limit() -> None:
     registry = ScriptRegistry(max_scripts_per_user=1)
 
@@ -402,6 +414,7 @@ class StubLimitStore:
 
 
 @pytest.mark.asyncio
+# 测试：脚本上限设置应持久化到提供的存储实现，并能被新的 registry 实例恢复。
 async def test_limits_are_persisted_via_store() -> None:
     store = StubLimitStore()
     registry = ScriptRegistry(limit_store=store)

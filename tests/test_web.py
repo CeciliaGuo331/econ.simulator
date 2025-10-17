@@ -130,6 +130,7 @@ def _clear_override():
 
 
 def test_download_logs_success(monkeypatch, client):
+    # 测试：当用户为 simulation 的参与者时，下载日志端点应返回 200 并包含日志内容与上下文。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -160,6 +161,7 @@ def test_download_logs_success(monkeypatch, client):
 
 
 def test_dashboard_displays_script_limit(client):
+    # 测试：仪表盘页面应显示并反映指定 simulation 的脚本上限信息。
     async def _setup() -> None:
         await views._orchestrator.create_simulation("sim-limit")
         await script_registry.set_simulation_limit("sim-limit", 2)
@@ -188,6 +190,7 @@ def test_dashboard_displays_script_limit(client):
 
 
 def test_upload_script_saved_to_library(client):
+    # 测试：上传脚本到 /web/scripts 时，应把脚本保存到用户库（simulation_id 为空），并生成占位实体 ID。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -221,6 +224,7 @@ def test_upload_script_saved_to_library(client):
 
 
 def test_detach_script_requires_tick_zero(monkeypatch, client):
+    # 测试：在非 tick 0 时尝试从 simulation 分离脚本应被阻止并返回带 error 的重定向。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -273,6 +277,7 @@ def test_detach_script_requires_tick_zero(monkeypatch, client):
 
 
 def test_detach_script_allows_tick_zero(monkeypatch, client):
+    # 测试：在 tick 0 时允许从 simulation 分离脚本，分离后元数据中的 simulation_id 应为 None。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -330,6 +335,7 @@ def test_detach_script_allows_tick_zero(monkeypatch, client):
 
 
 def test_delete_script_unattached(client):
+    # 测试：删除未绑定到 simulation 的用户脚本应成功并从用户库中移除。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -364,6 +370,7 @@ def test_delete_script_unattached(client):
 
 
 def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
+    # 测试：当脚本已绑定且 simulation 非 tick 0 时，删除操作应被阻止并返回错误重定向。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -414,6 +421,7 @@ def test_delete_script_attached_requires_tick_zero(monkeypatch, client):
 
 
 def test_delete_script_attached_tick_zero(monkeypatch, client):
+    # 测试：在 tick 0 时删除已绑定脚本应成功并从用户库中删除该脚本。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -467,6 +475,7 @@ def test_delete_script_attached_tick_zero(monkeypatch, client):
 
 
 def test_admin_delete_script_blocked_when_simulation_running(monkeypatch, client):
+    # 测试：管理员尝试删除 simulation 中的脚本但 simulation 正在运行（非 tick 0）时应收到合适的错误提示。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
 
@@ -502,6 +511,7 @@ def test_admin_delete_script_blocked_when_simulation_running(monkeypatch, client
 
 
 def test_user_dashboard_displays_role_tables(monkeypatch, client):
+    # 测试：用户仪表盘应展示角色相关表格以及关键指标（家庭、市场等）。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -609,6 +619,7 @@ def test_user_dashboard_displays_role_tables(monkeypatch, client):
 
 
 def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
+    # 测试：管理员仪表盘应列出各 simulation 的快照信息、用户与脚本统计等。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
 
@@ -739,6 +750,7 @@ def test_admin_dashboard_displays_snapshot_tables(monkeypatch, client):
 
 
 def test_admin_can_update_script_limit(monkeypatch, client):
+    # 测试：管理员可以通过表单更新指定 simulation 的脚本上限，并能收到确认重定向。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
 
@@ -773,6 +785,7 @@ def test_admin_can_update_script_limit(monkeypatch, client):
 
 
 def test_admin_dashboard_displays_household_counts(monkeypatch, client):
+    # 测试：管理员仪表盘应显示按家庭计数的挂载脚本数和相关 DOM 元素。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
 
@@ -850,6 +863,7 @@ def test_admin_dashboard_displays_household_counts(monkeypatch, client):
 
 
 def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
+    # 测试：家庭计数统计中应包含每个家庭挂载的脚本数量，页面应反映出脚本计数。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
 
@@ -939,6 +953,7 @@ def test_admin_dashboard_household_counts_include_scripts(monkeypatch, client):
 
 
 def test_attach_script_registers_participant(client):
+    # 测试：将已上传脚本挂载到 simulation 时，应把脚本的 simulation_id 更新，并将用户注册为参与者。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -988,6 +1003,7 @@ def test_attach_script_registers_participant(client):
 
 
 def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
+    # 测试：管理员视图应列出所有脚本并能显示脚本标识，且不会显示“无脚本”占位文本。
     admin_user = {"email": "admin@example.com", "user_type": "admin"}
     _override_user(admin_user)
 
@@ -1068,6 +1084,7 @@ def test_admin_dashboard_lists_all_scripts(monkeypatch, client):
 
 
 def test_attach_script_respects_limit(client):
+    # 测试：当 simulation 对单用户脚本数有限制时，超出限制的挂载请求应被拒绝并保留脚本为未绑定。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 
@@ -1141,6 +1158,7 @@ def test_attach_script_respects_limit(client):
 
 
 def test_download_logs_forbidden(monkeypatch, client):
+    # 测试：非参与者访问下载日志接口应返回 403 并且不触发日志检索调用。
     user = {"email": "player@example.com", "user_type": "individual"}
     _override_user(user)
 

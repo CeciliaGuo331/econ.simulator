@@ -47,6 +47,7 @@ class RecordingStore:
 
 
 @pytest.mark.asyncio
+# 测试：CompositeStateStore 在加载时优先从缓存返回数据，避免不必要的持久化查询。
 async def test_composite_store_prefers_cache_first():
     cache = RecordingStore(initial={"sim": {"tick": 1}}, fail_on_store=False)
     persistent = RecordingStore(initial={"sim": {"tick": 2}})
@@ -60,6 +61,7 @@ async def test_composite_store_prefers_cache_first():
 
 
 @pytest.mark.asyncio
+# 测试：store.store 操作应写入到持久化存储与缓存（写穿），并确保持久化接收到了数据。
 async def test_composite_store_writes_through_to_persistent_and_cache():
     cache = RecordingStore()
     persistent = RecordingStore()
@@ -75,6 +77,7 @@ async def test_composite_store_writes_through_to_persistent_and_cache():
 
 
 @pytest.mark.asyncio
+# 测试：当持久化写入失败时，CompositeStateStore 应抛出 PersistenceError。
 async def test_composite_store_raises_if_persistent_write_fails():
     cache = RecordingStore()
     persistent = RecordingStore(fail_on_store=True)
@@ -85,6 +88,7 @@ async def test_composite_store_raises_if_persistent_write_fails():
 
 
 @pytest.mark.asyncio
+# 测试：当持久化存储不可用且有回退存储时，CompositeStateStore 应从回退中读取并将数据写回缓存。
 async def test_composite_store_falls_back_when_persistent_unavailable():
     cache = RecordingStore()
     persistent = RecordingStore(fail_on_load=True)
