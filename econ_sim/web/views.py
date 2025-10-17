@@ -2218,42 +2218,16 @@ async def register_submission(
     )
 
 
-@router.get("/docs", response_class=HTMLResponse)
-async def docs_page(request: Request) -> HTMLResponse:
-    session_user = _get_session_user(request)
-    user_type = session_user.get("user_type") if session_user else None
+@router.get("/docs")
+async def docs_page(request: Request):
+    """Redirect the docs route to the external GitHub Pages site.
 
-    platform_doc = _render_markdown("platform_api.md")
-
-    role_docs: List[Dict[str, Any]] = []
-    if user_type == "admin":
-        role_docs = [
-            {
-                "key": "admin",
-                "title": ROLE_DOC_FILES["admin"]["title"],
-                "content": _render_markdown(ROLE_DOC_FILES["admin"]["filename"]),
-            }
-        ]
-    elif user_type and user_type in ROLE_DOC_FILES:
-        role_meta = ROLE_DOC_FILES[user_type]
-        role_docs = [
-            {
-                "key": user_type,
-                "title": role_meta["title"],
-                "content": _render_markdown(role_meta["filename"]),
-            }
-        ]
-
-    return _templates.TemplateResponse(
-        request,
-        "docs.html",
-        {
-            "request": request,
-            "platform_doc": platform_doc,
-            "role_docs": role_docs,
-            "active_role": user_type,
-        },
-    )
+    The project maintains documentation on GitHub Pages at
+    https://ceciliaguo331.github.io/econ.simulator.doc/; instead of
+    rendering internal markdown, just redirect users there.
+    """
+    external = "https://ceciliaguo331.github.io/econ.simulator.doc/"
+    return RedirectResponse(url=external, status_code=302)
 
 
 @router.get("/logs/{simulation_id}/download")
