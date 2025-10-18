@@ -513,6 +513,24 @@ class SimulationOrchestrator:
                 **previous_features.model_dump(),
             )
 
+        # After resetting the world state we must ensure any scripts still
+        # registered for this simulation have their corresponding entity
+        # state seeded. Otherwise scripts may exist in the registry but the
+        # world will not contain the required entities, causing subsequent
+        # tick execution to fail with missing agent coverage.
+        try:
+            scripts = await script_registry.list_scripts(simulation_id)
+            for meta in scripts:
+                # _ensure_entity_seeded is a no-op for unbound/placeholder scripts
+                await self._ensure_entity_seeded(meta)
+        except Exception:
+            # best-effort: do not let seeding failures break the reset flow;
+            # callers can inspect logs or re-run seeding explicitly in tests.
+            logger.exception(
+                "Failed to re-seed entities from scripts after resetting %s",
+                simulation_id,
+            )
+
         return state
 
     async def get_simulation_features(self, simulation_id: str) -> SimulationFeatures:
