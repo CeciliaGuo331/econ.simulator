@@ -35,9 +35,22 @@ async def lifespan(app: FastAPI):
         )
         if not skip:
             from .script_engine.test_world_seed import seed_test_world
+            from .script_engine.baseline_seed import ensure_baseline_scripts
+            from .script_engine import script_registry as module_registry
 
+            # Seed the canonical test_world first (creates simulation + entities)
             await seed_test_world(orchestrator=web_orchestrator)
             logger.info("test_world simulation seeded (auto-startup).")
+
+            # Ensure baseline scripts/users are registered and attached to the
+            # test_world simulation so scripts and entities are created together.
+            try:
+                await ensure_baseline_scripts(
+                    module_registry, attach_to_simulation="test_world"
+                )
+                logger.info("baseline scripts ensured and attached to test_world.")
+            except Exception:
+                logger.exception("Failed to ensure baseline scripts during startup")
         else:
             logger.info("Skipping test_world auto-seed (flag enabled or pytest).")
     except Exception:  # pragma: no cover - best effort logging

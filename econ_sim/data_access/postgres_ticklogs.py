@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import TickLogEntry
@@ -78,10 +79,25 @@ class PostgresTickLogStore:
         schema_ident = quote_identifier(self._schema)
         table_ident = quote_identifier(self._table)
         qualified = f"{schema_ident}.{table_ident}"
-        payload = [
-            (simulation_id, item.tick, item.day, item.message, item.context)
-            for item in logs
-        ]
+        payload = []
+        for item in logs:
+            ctx = item.context
+            # asyncpg/jsonb binding can be sensitive to input types when using
+            # executemany on some driver versions; ensure we pass a JSON string
+            # for the JSONB column to avoid 'expected str, got dict' errors.
+            if ctx is None:
+                ctx_serialized = None
+            else:
+                try:
+                    ctx_serialized = json.dumps(ctx)
+                except Exception:
+                    # Fallback to string conversion if json.dumps fails for
+                    # some non-serializable item; this keeps persistence
+                    # best-effort while avoiding a hard crash here.
+                    ctx_serialized = str(ctx)
+            payload.append(
+                (simulation_id, item.tick, item.day, item.message, ctx_serialized)
+            )
         async with pool.acquire() as conn:
             await conn.executemany(
                 f"""

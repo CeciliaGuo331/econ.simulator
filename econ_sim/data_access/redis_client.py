@@ -52,7 +52,7 @@ from ..core.entity_factory import (
     create_macro_state,
     create_simulation_features,
 )
-from .postgres_support import get_pool
+from .postgres_support import get_pool, run_with_retry
 from .postgres_failures import PostgresScriptFailureStore
 from .postgres_participants import PostgresParticipantStore
 from .postgres_ticklogs import PostgresTickLogStore
@@ -403,12 +403,64 @@ class CompositeStateStore(StateStore):
 
     async def store(self, simulation_id: str, payload: Dict) -> None:
         """写穿缓存与持久层，确保持久化成功。"""
+        # First, persist to primary persistent store if configured. This
+        # prevents updating the cache before the authoritative copy is saved.
+        if self._persistent is not None:
+            try:
+                if hasattr(self._persistent, "store_entity"):
+                    houses = payload.get("households", {})
+                    for hid, hpayload in houses.items():
+                        await self._persistent.store_entity(
+                            simulation_id, "household", str(hid), hpayload
+                        )
+                    for scope in (
+                        "firm",
+                        "bank",
+                        "government",
+                        "central_bank",
+                        "macro",
+                        "features",
+                        "household_shocks",
+                    ):
+                        if scope in payload:
+                            await self._persistent.store_entity(
+                                simulation_id, scope, None, payload[scope]
+                            )
+                else:
+                    await self._persistent.store(simulation_id, payload)
+            except Exception as exc:
+                # If primary persistent store write fails, attempt best-effort
+                # write to fallback (if configured) and raise a PersistenceError
+                if self._fallback is not None:
+                    try:
+                        await self._fallback.store(simulation_id, payload)
+                    except Exception:
+                        logger.exception(
+                            "Persistent store failed and fallback write also failed for %s",
+                            simulation_id,
+                        )
+                raise PersistenceError(
+                    "Failed to persist world state to primary store"
+                ) from exc
+        else:
+            # No persistent store configured: fall back to fallback/store order
+            if self._fallback is not None:
+                try:
+                    await self._fallback.store(simulation_id, payload)
+                except Exception as exc:
+                    raise PersistenceError(
+                        "Failed to persist to fallback store"
+                    ) from exc
+            elif self._cache is None:
+                raise PersistenceError(
+                    "No persistent store configured for simulation state"
+                )
 
-        cache_error: Optional[Exception] = None
+        # Primary persistence succeeded (or fallback used when no primary).
+        # Now update cache (best-effort). Cache failures should not cause the
+        # authoritative persistent copy to be discarded.
         if self._cache is not None:
             try:
-                # If cache supports per-entity writes, prefer those to avoid
-                # repeatedly writing the full snapshot into Redis (large payloads).
                 if hasattr(self._cache, "store_entity"):
                     houses = payload.get("households", {})
                     for hid, hpayload in houses.items():
@@ -433,53 +485,14 @@ class CompositeStateStore(StateStore):
             except (
                 Exception
             ) as exc:  # pragma: no cover - cache update failure is non-fatal
-                cache_error = exc
                 logger.warning(
                     "Failed to update cache for simulation %s",
                     simulation_id,
                     exc_info=exc,
                 )
 
-        if self._persistent is not None:
-            # persistent store may support per-entity writes as well
-            if hasattr(self._persistent, "store_entity"):
-                try:
-                    houses = payload.get("households", {})
-                    for hid, hpayload in houses.items():
-                        await self._persistent.store_entity(
-                            simulation_id, "household", str(hid), hpayload
-                        )
-                    for scope in (
-                        "firm",
-                        "bank",
-                        "government",
-                        "central_bank",
-                        "macro",
-                        "features",
-                        "household_shocks",
-                    ):
-                        if scope in payload:
-                            await self._persistent.store_entity(
-                                simulation_id, scope, None, payload[scope]
-                            )
-                except Exception as exc:
-                    raise PersistenceError(
-                        "Failed to persist world state to primary store"
-                    ) from exc
-            else:
-                try:
-                    await self._persistent.store(simulation_id, payload)
-                except Exception as exc:
-                    raise PersistenceError(
-                        "Failed to persist world state to primary store"
-                    ) from exc
-        elif self._fallback is not None:
-            await self._fallback.store(simulation_id, payload)
-        elif self._cache is None:
-            raise PersistenceError(
-                "No persistent store configured for simulation state"
-            )
-
+        # Finally, update fallback store for warming if both primary and
+        # fallback are configured (best-effort).
         if self._fallback is not None and self._persistent is not None:
             try:
                 await self._fallback.store(simulation_id, payload)
@@ -489,11 +502,6 @@ class CompositeStateStore(StateStore):
                     simulation_id,
                     exc_info=exc,
                 )
-
-        if cache_error is not None and self._persistent is None:
-            raise PersistenceError(
-                "Cache update failed without persistent backup"
-            ) from cache_error
 
     async def delete(self, simulation_id: str) -> None:
         """同时在缓存与持久层删除指定仿真。"""
@@ -594,30 +602,13 @@ class PostgresStateStore(StateStore):
         async with pool.acquire() as conn:
             if self._create_schema:
                 await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_ident}")
+            # Create a compact snapshot table for full world snapshots. Per-entity
+            # incremental persistence uses a separate entities table created below.
             await conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {qualified_table} (
                     simulation_id TEXT PRIMARY KEY,
                     tick INTEGER NOT NULL,
-
-            # Optional per-entity operations to support incremental persistence
-            async def store_entity(
-                self, simulation_id: str, scope: str, entity_id: Optional[str], payload: Dict
-            ) -> None:
-                if scope == "household":
-                    if entity_id is None:
-                        raise ValueError("household entity_id required for store_entity")
-                    await self._redis.set(self._household_key(simulation_id, str(entity_id)), json.dumps(payload))
-                else:
-                    await self._redis.set(self._entity_key(simulation_id, scope), json.dumps(payload))
-
-            async def delete_entity(self, simulation_id: str, scope: str, entity_id: Optional[str]) -> None:
-                if scope == "household":
-                    if entity_id is None:
-                        return
-                    await self._redis.delete(self._household_key(simulation_id, str(entity_id)))
-                else:
-                    await self._redis.delete(self._entity_key(simulation_id, scope))
                     day INTEGER NOT NULL,
                     payload JSONB NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
@@ -697,49 +688,42 @@ class PostgresStateStore(StateStore):
         houses = payload.get("households", {})
         tick = int(payload.get("tick", 0))
         day = int(payload.get("day", 0))
-        async with pool.acquire() as conn:
+        # prepare rows outside of connection to keep logic simple
+        rows: List[tuple] = []
+        for hid, hpayload in houses.items():
+            rows.append((simulation_id, "household", str(hid), json.dumps(hpayload)))
+
+        for scope in (
+            "firm",
+            "bank",
+            "government",
+            "central_bank",
+            "macro",
+            "features",
+            "household_shocks",
+        ):
+            if scope in payload:
+                rows.append((simulation_id, scope, "", json.dumps(payload[scope])))
+
+        if not rows:
+            return
+
+        batch_size = max(1, int(getattr(self, "_upsert_batch_size", 500)))
+
+        async def _do_upsert(conn):
             # perform all upserts within a single transaction to ensure atomic
             # commit per-tick and avoid partial state persistence
             async with conn.transaction():
-                # collect rows to upsert (simulation_id, scope, entity_id, payload_json)
-                rows: List[tuple] = []
-                for hid, hpayload in houses.items():
-                    rows.append(
-                        (simulation_id, "household", str(hid), json.dumps(hpayload))
-                    )
-
-                for scope in (
-                    "firm",
-                    "bank",
-                    "government",
-                    "central_bank",
-                    "macro",
-                    "features",
-                    "household_shocks",
-                ):
-                    if scope in payload:
-                        rows.append(
-                            (simulation_id, scope, "", json.dumps(payload[scope]))
-                        )
-
-                if not rows:
-                    return
-
-                batch_size = max(1, int(getattr(self, "_upsert_batch_size", 500)))
-
                 # execute batches of multi-row INSERT ... ON CONFLICT statements
                 for i in range(0, len(rows), batch_size):
                     batch = rows[i : i + batch_size]
                     # build parameterized VALUES clause
                     params: List[Any] = []
                     values_fragments: List[str] = []
-                    # each row uses 3 params: simulation_id, scope, entity_id, payload (payload cast to jsonb)
-                    # We'll append as ($1, $2, $3, $4::jsonb, timezone('utc', now())), ...
+                    # each row uses 4 params: simulation_id, scope, entity_id, payload (payload cast to jsonb)
                     param_index = 1
                     for r in batch:
-                        # r -> (simulation_id, scope, entity_id, payload_json)
                         params.extend([r[0], r[1], r[2], r[3]])
-                        # placeholders for this row
                         placeholders = f"${param_index}, ${param_index+1}, ${param_index+2}, ${param_index+3}::jsonb, timezone('utc', now())"
                         values_fragments.append(f"({placeholders})")
                         param_index += 4
@@ -753,6 +737,10 @@ class PostgresStateStore(StateStore):
                         DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
                     """
                     await conn.execute(sql, *params)
+
+        pool = await self._get_pool()
+        # Use retry wrapper to handle transient serialization/deadlock errors
+        await run_with_retry(pool, _do_upsert)
 
     async def list_simulation_ids(self) -> list[str]:
         pool = await self._get_pool()
@@ -783,9 +771,10 @@ class PostgresStateStore(StateStore):
         pool = await self._get_pool()
         if self._qualified_entities_table is None:
             raise RuntimeError("PostgresStateStore schema not initialized")
-        async with pool.acquire() as conn:
-            data = json.dumps(payload)
-            eid = "" if entity_id is None else str(entity_id)
+        data = json.dumps(payload)
+        eid = "" if entity_id is None else str(entity_id)
+
+        async def _do_store_entity(conn):
             await conn.execute(
                 f"""
                 INSERT INTO {self._qualified_entities_table} (simulation_id, scope, entity_id, payload, updated_at)
@@ -798,6 +787,9 @@ class PostgresStateStore(StateStore):
                 eid,
                 data,
             )
+
+        pool = await self._get_pool()
+        await run_with_retry(pool, _do_store_entity)
 
     async def delete_entity(
         self, simulation_id: str, scope: str, entity_id: Optional[str]
