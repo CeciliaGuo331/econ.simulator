@@ -90,14 +90,21 @@ class PostgresAgentSnapshotStore:
             )
             for r in batch
         ]
-        async with pool.acquire() as conn:
-            await conn.executemany(
-                f"""
-                INSERT INTO {qualified} (simulation_id, tick, day, agent_kind, entity_id, payload)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-                """,
-                rows,
-            )
+
+        async def _do_insert(conn):
+            async with conn.transaction():
+                await conn.executemany(
+                    f"""
+                    INSERT INTO {qualified} (simulation_id, tick, day, agent_kind, entity_id, payload)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                    """,
+                    rows,
+                )
+
+        # Use a small retry wrapper for transient serialization/deadlock errors
+        from .postgres_support import run_with_retry
+
+        await run_with_retry(pool, _do_insert)
         return len(rows)
 
     async def query(

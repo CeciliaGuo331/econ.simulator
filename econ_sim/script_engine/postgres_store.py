@@ -112,51 +112,55 @@ class PostgresScriptStore:
             if isinstance(metadata.created_at, datetime)
             else datetime.fromisoformat(str(metadata.created_at))
         )
+        # Ensure both the main row upsert and the versions append happen
+        # atomically. If the versions insert fails we must not leave the
+        # main table updated without a corresponding version entry.
         async with pool.acquire() as conn:
-            await conn.execute(
-                f"""
-                INSERT INTO {qualified} (script_id, simulation_id, user_id, description, created_at, code, code_version, agent_kind, entity_id, last_failure_at, last_failure_reason)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ON CONFLICT (script_id) DO UPDATE SET
-                    simulation_id = EXCLUDED.simulation_id,
-                    user_id = EXCLUDED.user_id,
-                    description = EXCLUDED.description,
-                    created_at = EXCLUDED.created_at,
-                    code = EXCLUDED.code,
-                    code_version = EXCLUDED.code_version,
-                    agent_kind = EXCLUDED.agent_kind,
-                    entity_id = EXCLUDED.entity_id,
-                    last_failure_at = EXCLUDED.last_failure_at,
-                    last_failure_reason = EXCLUDED.last_failure_reason
-                """,
-                script_id,
-                metadata.simulation_id,
-                metadata.user_id,
-                metadata.description,
-                created_at,
-                code,
-                code_version,
-                metadata.agent_kind.value,
-                metadata.entity_id,
-                metadata.last_failure_at,
-                metadata.last_failure_reason,
-            )
-            # append a version row for history
-            versions_ident = quote_identifier(self._table + "_versions")
-            qualified_versions = f"{schema_ident}.{versions_ident}"
-            await conn.execute(
-                f"""
-                INSERT INTO {qualified_versions} (script_id, code_version, created_at, user_id, simulation_id, agent_kind, entity_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                """,
-                script_id,
-                code_version,
-                created_at,
-                metadata.user_id,
-                metadata.simulation_id,
-                metadata.agent_kind.value,
-                metadata.entity_id,
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    f"""
+                    INSERT INTO {qualified} (script_id, simulation_id, user_id, description, created_at, code, code_version, agent_kind, entity_id, last_failure_at, last_failure_reason)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ON CONFLICT (script_id) DO UPDATE SET
+                        simulation_id = EXCLUDED.simulation_id,
+                        user_id = EXCLUDED.user_id,
+                        description = EXCLUDED.description,
+                        created_at = EXCLUDED.created_at,
+                        code = EXCLUDED.code,
+                        code_version = EXCLUDED.code_version,
+                        agent_kind = EXCLUDED.agent_kind,
+                        entity_id = EXCLUDED.entity_id,
+                        last_failure_at = EXCLUDED.last_failure_at,
+                        last_failure_reason = EXCLUDED.last_failure_reason
+                    """,
+                    script_id,
+                    metadata.simulation_id,
+                    metadata.user_id,
+                    metadata.description,
+                    created_at,
+                    code,
+                    code_version,
+                    metadata.agent_kind.value,
+                    metadata.entity_id,
+                    metadata.last_failure_at,
+                    metadata.last_failure_reason,
+                )
+                # append a version row for history
+                versions_ident = quote_identifier(self._table + "_versions")
+                qualified_versions = f"{schema_ident}.{versions_ident}"
+                await conn.execute(
+                    f"""
+                    INSERT INTO {qualified_versions} (script_id, code_version, created_at, user_id, simulation_id, agent_kind, entity_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    script_id,
+                    code_version,
+                    created_at,
+                    metadata.user_id,
+                    metadata.simulation_id,
+                    metadata.agent_kind.value,
+                    metadata.entity_id,
+                )
 
     async def fetch_simulation_scripts(self, simulation_id: str) -> List[StoredScript]:
         await self._ensure_schema()

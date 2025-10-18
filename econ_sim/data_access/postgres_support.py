@@ -73,3 +73,52 @@ async def close_all_pools() -> None:
             except Exception:
                 # best-effort
                 pass
+
+        async def run_with_retry(
+            pool: PoolType,
+            func,  # callable that accepts a connection and performs DB work: async def f(conn): ...
+            *,
+            retries: int = 3,
+            base_backoff: float = 0.05,
+        ) -> object:
+            """Run a DB callable with a transaction and retry on serialization/deadlock errors.
+
+            The callable receives a single acquired connection and should perform its
+            work (preferably within an explicit transaction). This helper will retry
+            on common transient Postgres errors (serialization failure / deadlock).
+
+            Returns the callable's return value or raises the last exception.
+            """
+            if asyncpg is None:  # pragma: no cover - optional dependency
+                # Fallback: just run once without retry if asyncpg missing (tests may
+                # stub out asyncpg in some environments).
+                async with pool.acquire() as conn:
+                    return await func(conn)
+
+            # common Postgres error codes for retry-worthy failures
+            RETRY_CODES = {"40001", "40P01"}  # serialization_failure, deadlock_detected
+
+            last_exc: Exception | None = None
+            for attempt in range(1, retries + 1):
+                async with pool.acquire() as conn:
+                    try:
+                        # Ensure caller uses a transaction; if not, caller's work still
+                        # happens on the connection but we can't guarantee atomicity.
+                        result = await func(conn)
+                        return result
+                    except Exception as exc:  # pragma: no cover - runtime handling
+                        last_exc = exc
+                        # If it's an asyncpg.PostgresError with a retryable SQLSTATE,
+                        # attempt backoff and retry. Otherwise re-raise.
+                        pgcode = getattr(exc, "sqlstate", None)
+                        if isinstance(exc, Exception) and pgcode in RETRY_CODES:
+                            if attempt == retries:
+                                raise
+                            backoff = base_backoff * (2 ** (attempt - 1))
+                            await asyncio.sleep(backoff)
+                            continue
+                        raise
+            # If we exhausted retries and didn't return, raise the last exception
+            if last_exc is not None:
+                raise last_exc
+            return None
