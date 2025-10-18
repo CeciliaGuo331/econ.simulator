@@ -175,7 +175,7 @@
                                                 <input type="hidden"
                                                        name="current_simulation_id"
                                                        value="{{ simulation_id }}">
-                                                <button type="submit">执行 Tick</button>
+                                                <!-- <button type="submit">执行 Tick</button> -->
                                             </form>
                                             <form method="post"
                                                   action="/web/admin/simulations/run_one_day"
@@ -189,24 +189,18 @@
                                                        name="current_simulation_id"
                                                        value="{{ simulation_id }}">
                                                 <button type="submit" class="auto-run-button">执行 1 day</button>
-                                                <label class="auto-run-input-wrap">
-                                                    <input type="number"
-                                                           name="ticks_per_day"
-                                                           min="1"
-                                                           value="{{ ticks_per_day_default }}"
-                                                           placeholder="当日 Tick 数">
+                                                <!-- <label class="auto-run-input-wrap">
+                                                    <input type="number" name="ticks_per_day" min="1" value="{{ ticks_per_day_default }}" placeholder="当日 Tick 数">
                                                     <span class="auto-run-suffix">ticks</span>
-                                                </label>
-                                                {% set remaining = remaining_ticks_by_sim.get(sid) %}
+                                                </label> -->
+                                                <!-- {% set remaining = remaining_ticks_by_sim.get(sid) %}
                                                 {% if remaining is not none and remaining > 0 %}
-                                                    <button type="button"
-                                                            class="auto-run-button"
-                                                            data-fill-remaining="{{ remaining }}">
+                                                    <button type="button" class="auto-run-button" data-fill-remaining="{{ remaining }}">
                                                         补齐当日（剩余 {{ remaining }}）
                                                     </button>
                                                 {% elif remaining == 0 %}
                                                     <span class="hint">已处于日终</span>
-                                                {% endif %}
+                                                {% endif %} -->
                                             </form>
                                             <form method="post"
                                                   action="/web/admin/simulations/reset"
