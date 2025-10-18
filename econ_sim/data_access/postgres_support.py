@@ -56,3 +56,20 @@ async def close_all_pools() -> None:
             await pool.close()
         except Exception:  # pragma: no cover - best effort cleanup
             continue
+
+    async def close_pool(dsn: str, *, min_size: int = 1, max_size: int = 5) -> None:
+        """Close and remove a specific pool identified by (dsn, min_size, max_size).
+
+        This is used by higher-level stores to deterministically close resources
+        associated with a particular configuration.
+        """
+        key = (dsn, min_size, max_size)
+        pool = None
+        async with _POOL_LOCK:
+            pool = _POOL_REGISTRY.pop(key, None)
+        if pool is not None:
+            try:
+                await pool.close()
+            except Exception:
+                # best-effort
+                pass

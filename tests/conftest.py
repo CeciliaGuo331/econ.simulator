@@ -38,11 +38,29 @@ from typing import Callable, Dict
 
 import pytest
 from fastapi.testclient import TestClient
+import os
 
 from econ_sim.main import app
 from econ_sim.web import views
 from econ_sim.script_engine import sandbox
 from econ_sim.script_engine import reset_script_registry
+
+
+@pytest.fixture(scope="session", autouse=True)
+def force_per_call_for_tests():
+    """Force per-call subprocess execution during tests to ensure isolation."""
+    # allow an override to test pool mode: set ECON_SIM_TEST_FORCE_POOL=1 to skip forcing per-call
+    original = os.environ.get("ECON_SIM_FORCE_PER_CALL")
+    if os.environ.get("ECON_SIM_TEST_FORCE_POOL") == "1":
+        # skip forcing per-call to exercise pool mode
+        yield
+        return
+    os.environ["ECON_SIM_FORCE_PER_CALL"] = "1"
+    yield
+    if original is None:
+        os.environ.pop("ECON_SIM_FORCE_PER_CALL", None)
+    else:
+        os.environ["ECON_SIM_FORCE_PER_CALL"] = original
 
 
 @pytest.fixture(scope="session")

@@ -1233,6 +1233,15 @@ class ScriptRegistry:
         }
 
         try:
+            snippet = (
+                (record.code[:200] + "...") if len(record.code) > 200 else record.code
+            )
+            logger.debug(
+                "Executing script %s (code_snippet=%r) with timeout=%s",
+                record.metadata.script_id,
+                snippet,
+                self._sandbox_timeout,
+            )
             result = execute_script(
                 record.code,
                 context,
@@ -1241,10 +1250,14 @@ class ScriptRegistry:
                 allowed_modules=self._allowed_modules,
             )
         except ScriptSandboxTimeout as exc:
+            logger.exception("Sandbox timeout for script %s", record.metadata.script_id)
             raise ScriptExecutionError(
                 f"脚本执行超时: {record.metadata.script_id}"
             ) from exc
         except ScriptSandboxError as exc:
+            logger.exception(
+                "Sandbox error for script %s: %s", record.metadata.script_id, exc
+            )
             raise ScriptExecutionError(
                 f"脚本执行失败 ({record.metadata.script_id}): {exc}"
             ) from exc

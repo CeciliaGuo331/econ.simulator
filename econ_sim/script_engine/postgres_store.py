@@ -335,6 +335,18 @@ class PostgresScriptStore:
         async with pool.acquire() as conn:
             await conn.execute(f"DELETE FROM {qualified}")
 
+    async def close(self) -> None:
+        """Close any internal pools held by this store."""
+        try:
+            from ..data_access.postgres_support import close_pool
+
+            await close_pool(
+                self._dsn, min_size=self._min_pool, max_size=self._max_pool
+            )
+        except Exception:
+            # best-effort
+            return
+
     async def update_failure_status(
         self,
         script_id: str,
@@ -359,3 +371,7 @@ class PostgresScriptStore:
                 failure_at,
                 failure_reason,
             )
+
+    # For compatibility with tests/cleanup hooks
+    async def shutdown(self) -> None:
+        await self.close()
