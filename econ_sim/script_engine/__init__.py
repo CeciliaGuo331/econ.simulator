@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+import logging
 
 from ..data_access.postgres_settings import PostgresSimulationSettingsStore
 from .postgres_store import PostgresScriptStore
@@ -66,8 +67,38 @@ def _build_registry() -> ScriptRegistry:
     )
 
 
-# 全局单例，供 API 与调度器共享。
-script_registry = _build_registry()
+# 内部持有的真实实例（可能为 None，lazy init）
+_registry_instance: Optional[ScriptRegistry] = None
+
+
+def get_script_registry() -> ScriptRegistry:
+    """Return the module-level ScriptRegistry, creating it lazily if needed."""
+    global _registry_instance
+    if _registry_instance is None:
+        _registry_instance = _build_registry()
+    return _registry_instance
+
+
+class _LazyRegistryProxy:
+    """Proxy object used so existing imports of `script_registry` keep working.
+
+    Attribute access is forwarded to the real registry produced by
+    `get_script_registry()`.
+    """
+
+    def __getattr__(self, item: str):
+        real = get_script_registry()
+        return getattr(real, item)
+
+    def __await__(self):
+        # make the proxy awaitable if underlying object is awaitable
+        return get_script_registry().__await__()
+
+
+# Backwards-compatible module-level name used across the codebase. This is a
+# proxy so imports like `from econ_sim.script_engine import script_registry`
+# remain valid while initialization is lazy.
+script_registry: _LazyRegistryProxy = _LazyRegistryProxy()
 
 
 def reset_script_registry() -> None:
@@ -88,6 +119,7 @@ def reset_script_registry() -> None:
         # First: ensure process pool is shutdown to avoid worker processes
         # holding references to DB pools or other resources.
         try:
+            # honor environment override for aggressive termination timeout
             shutdown_process_pool(wait=True, aggressive_kill=True)
         except Exception:
             # best-effort
@@ -120,10 +152,14 @@ def reset_script_registry() -> None:
 
                         if loop is None:
                             try:
+                                logging.getLogger(__name__).debug(
+                                    "_sync_close: running coroutine close synchronously (no loop)"
+                                )
                                 asyncio.run(result)
                             except Exception:
-                                # best-effort: ignore failures during close
-                                pass
+                                logging.getLogger(__name__).exception(
+                                    "_sync_close: coroutine close raised"
+                                )
                         else:
                             # If there is a running loop in this thread, we cannot
                             # call asyncio.run. Instead, run the coroutine in a
@@ -135,14 +171,18 @@ def reset_script_registry() -> None:
                                 try:
                                     asyncio.run(result)
                                 except Exception:
-                                    # swallow errors during teardown
-                                    pass
+                                    logging.getLogger(__name__).exception(
+                                        "_sync_close: coroutine close in thread raised"
+                                    )
 
                             t = threading.Thread(target=_run_coro, daemon=True)
                             t.start()
                             t.join(timeout)
-                            # If thread is still alive after timeout, we give up
-                            # (best-effort cleanup only).
+                            if t.is_alive():
+                                logging.getLogger(__name__).warning(
+                                    "_sync_close: close did not complete within %s seconds",
+                                    timeout,
+                                )
                     except Exception:
                         pass
                     except Exception:
@@ -161,7 +201,15 @@ def reset_script_registry() -> None:
         # ignore cleanup errors - reset will still proceed
         pass
 
-    script_registry = _build_registry()
+    # Recreate the registry instance and leave the module-level proxy in place
+    global _registry_instance
+    try:
+        _registry_instance = _build_registry()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "reset_script_registry: failed to rebuild registry"
+        )
+        _registry_instance = None
 
 
 __all__ = ["script_registry", "ScriptRegistry"]

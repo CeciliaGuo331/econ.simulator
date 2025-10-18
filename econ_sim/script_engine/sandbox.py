@@ -140,6 +140,31 @@ except Exception:
     _PROMETHEUS_AVAILABLE = False
 
 
+# Module-level detection: determine once whether this interpreter was started
+# from an unsafe entrypoint (heredoc / stdin / -c) where multiprocessing
+# spawn workers would attempt to re-execute a non-file main module. If so,
+# force the per-call subprocess path for all calls in this process.
+_FORCE_PER_CALL_ENV: bool = False
+try:
+    _main_path = sys.argv[0] if len(sys.argv) > 0 else ""
+    _basename = os.path.basename(_main_path)
+    if (
+        not _main_path
+        or _main_path in ("-", "-c")
+        or "<stdin>" in _main_path
+        or _basename == "<stdin>"
+    ):
+        _FORCE_PER_CALL_ENV = True
+    else:
+        try:
+            if not os.path.isfile(_main_path):
+                _FORCE_PER_CALL_ENV = True
+        except Exception:
+            _FORCE_PER_CALL_ENV = True
+except Exception:
+    _FORCE_PER_CALL_ENV = True
+
+
 def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
     global _PROCESS_POOL
     with _POOL_LOCK:
@@ -159,6 +184,7 @@ def _pool_worker(
     Installs a SIGALRM-based watchdog to self-terminate on wall-clock timeouts
     (helps with CPU-bound infinite loops). Also applies resource limits and
     performs a small per-process task count to recycle workers.
+    Returns a (status, payload) envelope where status is '__ok__' or '__err__'.
     """
     old_handler = None
     installed_timer = False
@@ -202,45 +228,42 @@ def _pool_worker(
             pass
         func = sandbox_globals.get("generate_decisions")
         if func is None or not callable(func):
-            raise ScriptSandboxError(
-                "脚本中必须定义可调用的 generate_decisions(context) 函数"
-            )
-        try:
-            print(f"_pool_worker pid={os.getpid()} calling generate_decisions")
-        except Exception:
-            pass
-        try:
-            result = func(context)
-            try:
-                print(f"_pool_worker pid={os.getpid()} function returned")
-            except Exception:
-                pass
-        except Exception:
-            # surface exceptions from user code explicitly
-            tb = traceback.format_exc()
-            try:
-                print(f"_pool_worker pid={os.getpid()} user exception:\n{tb}")
-            except Exception:
-                pass
-            raise
+            return ("__err__", "missing generate_decisions")
 
-        # worker recycle
         try:
-            global _WORKER_TASK_COUNT
-            _WORKER_TASK_COUNT += 1
-            if WORKER_MAX_TASKS > 0 and _WORKER_TASK_COUNT >= WORKER_MAX_TASKS:
+            try:
+                result = func(context)
                 try:
-                    print(
-                        f"_pool_worker pid={os.getpid()} reached max tasks ({_WORKER_TASK_COUNT}), exiting"
-                    )
+                    print(f"_pool_worker pid={os.getpid()} function returned")
                 except Exception:
                     pass
-                os._exit(0)
-        except Exception:
-            pass
-
-        return result
+                return ("__ok__", result)
+            except Exception:
+                tb = traceback.format_exc()
+                try:
+                    print(f"_pool_worker pid={os.getpid()} user exception:\n{tb}")
+                except Exception:
+                    pass
+                return ("__err__", tb)
+        finally:
+            # worker recycle counting happens regardless of user code outcome
+            try:
+                global _WORKER_TASK_COUNT
+                _WORKER_TASK_COUNT += 1
+                if WORKER_MAX_TASKS > 0 and _WORKER_TASK_COUNT >= WORKER_MAX_TASKS:
+                    try:
+                        print(
+                            f"_pool_worker pid={os.getpid()} reached max tasks ({_WORKER_TASK_COUNT}), exiting"
+                        )
+                    except Exception:
+                        pass
+                    os._exit(0)
+            except Exception:
+                pass
+        # Should not reach here; return a safe error envelope
+        return ("__err__", "worker exited unexpectedly")
     except Exception:
+        # escalate unexpected errors
         raise
     finally:
         try:
@@ -256,8 +279,6 @@ def _pool_worker(
                     pass
         except Exception:
             pass
-        except Exception:
-            pass
 
 
 def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> None:
@@ -269,6 +290,13 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
         if _PROCESS_POOL is None:
             return
         pool = _PROCESS_POOL
+
+        logger = logging.getLogger(__name__)
+        logger.debug(
+            "shutdown_process_pool: starting (wait=%s aggressive_kill=%s)",
+            wait,
+            aggressive_kill,
+        )
 
         # snapshot of internal process objects (may be mapping or list)
         try:
@@ -295,8 +323,21 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                     pid = getattr(popen, "pid", None) if popen is not None else None
                 if pid:
                     pids.add(pid)
-
-            term_timeout = 1.5
+            # configurable timeouts via environment for easier tuning in CI/production
+            try:
+                term_timeout = float(os.getenv("ECON_SIM_POOL_TERM_TIMEOUT", "1.5"))
+            except Exception:
+                term_timeout = 1.5
+            try:
+                kill_timeout = float(os.getenv("ECON_SIM_POOL_KILL_TIMEOUT", "0.5"))
+            except Exception:
+                kill_timeout = 0.5
+            logger.debug(
+                "shutdown_process_pool: term_timeout=%s kill_timeout=%s pids=%s",
+                term_timeout,
+                kill_timeout,
+                list(pids),
+            )
             try:
                 procs = []
                 for pid in list(pids):
@@ -374,6 +415,48 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                             WORKER_KILLS.inc()
                     except Exception:
                         pass
+                logger.debug("shutdown_process_pool: aggressive kill completed")
+            except Exception:
+                pass
+
+        elif aggressive_kill and not _PSUTIL_AVAILABLE:
+            # psutil not available: best-effort naive termination of procs_snapshot
+            logger.debug(
+                "shutdown_process_pool: psutil not available, falling back to naive termination"
+            )
+            try:
+                killed = 0
+                for p in procs_snapshot:
+                    try:
+                        pid = getattr(p, "pid", None)
+                        if not pid and hasattr(p, "_popen"):
+                            popen = getattr(p, "_popen", None)
+                            pid = (
+                                getattr(popen, "pid", None)
+                                if popen is not None
+                                else None
+                            )
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except Exception:
+                            try:
+                                os.kill(pid, signal.SIGKILL)
+                            except Exception:
+                                pass
+                        killed += 1
+                        if _PROMETHEUS_AVAILABLE:
+                            try:
+                                WORKER_KILLS.inc()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                logger.debug(
+                    "shutdown_process_pool: naive termination attempted, killed=%s",
+                    killed,
+                )
             except Exception:
                 pass
 
@@ -473,6 +556,74 @@ def execute_script(
         )
         return _run_in_subprocess(code, safe_context, modules, timeout)
 
+    # If we detected at import time that this interpreter was started from
+    # an unsafe entrypoint (heredoc / stdin / -c), always prefer the
+    # per-call subprocess path which doesn't rely on spawn re-executing the
+    # parent process main module in child workers.
+    if _FORCE_PER_CALL_ENV:
+        logger = logging.getLogger(__name__)
+        try:
+            start_method = multiprocessing.get_start_method(allow_none=True)
+        except Exception:
+            start_method = None
+        logger.debug(
+            "execute_script: import-time detected unsafe main (argv0=%r), forcing per-call subprocess (start_method=%r) for script_id=%s",
+            sys.argv[0] if len(sys.argv) > 0 else None,
+            start_method,
+            script_id,
+        )
+        return _run_in_subprocess(code, safe_context, modules, timeout)
+
+    # If the current Python invocation doesn't have a real main filename
+    # (for example when running via heredoc / <stdin>), multiprocessing's
+    # spawn-based workers may fail to find the main module path and crash
+    # immediately. Detect that situation and fall back to per-call
+    # subprocesses which don't rely on importing the main module.
+    try:
+        main_path = sys.argv[0] if len(sys.argv) > 0 else ""
+        # Some invocation patterns (heredoc / stdin) set argv[0] to values
+        # like "<stdin>" or "/current/dir/<stdin>" which are not actual
+        # file paths and will cause multiprocessing.spawn to attempt to
+        # import a non-existent main module. Be conservative: if argv[0]
+        # is empty, contains '<stdin>', equals '-c', or does not point
+        # to an existing regular file, always fall back to the per-call
+        # subprocess path which does not rely on importing the parent
+        # process main module.
+        try:
+            logger = logging.getLogger(__name__)
+            unsafe_main = False
+            if not main_path:
+                unsafe_main = True
+            else:
+                basename = os.path.basename(main_path)
+                if "<stdin>" in main_path or basename == "<stdin>" or main_path == "-c":
+                    unsafe_main = True
+                else:
+                    try:
+                        if not os.path.isfile(main_path):
+                            unsafe_main = True
+                    except Exception:
+                        unsafe_main = True
+
+            if unsafe_main:
+                try:
+                    start_method = multiprocessing.get_start_method(allow_none=True)
+                except Exception:
+                    start_method = None
+                logger.debug(
+                    "execute_script: unsafe main_path=%r start_method=%r; forcing per-call subprocess for script_id=%s",
+                    main_path,
+                    start_method,
+                    script_id,
+                )
+                return _run_in_subprocess(code, safe_context, modules, timeout)
+        except Exception:
+            # any unexpected issues in detection should default to safe
+            return _run_in_subprocess(code, safe_context, modules, timeout)
+    except Exception:
+        # best-effort detection only; ignore any issues and proceed to pool
+        pass
+
     pool = _get_process_pool()
     start = time.time()
     logger = logging.getLogger(__name__)
@@ -541,7 +692,20 @@ def execute_script(
     try:
         # wait for the future to complete within the configured timeout
         result = future.result(timeout=timeout)
-        logger.debug("pool result received: script_id=%s", script_id)
+        logger.debug(
+            "pool result received: script_id=%s result_type=%s", script_id, type(result)
+        )
+        # unwrap worker envelope if present
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] in ("__ok__", "__err__")
+        ):
+            status, payload = result
+            if status == "__ok__":
+                result = payload
+            else:
+                raise ScriptSandboxError(f"脚本执行失败:\n{payload}")
         success = True
     except concurrent.futures.TimeoutError as exc:
         # If the future hasn't started running yet it is likely queued by the
@@ -560,6 +724,16 @@ def execute_script(
                 logger.debug(
                     "pool result received after grace: script_id=%s", script_id
                 )
+                if (
+                    isinstance(result, tuple)
+                    and len(result) == 2
+                    and result[0] in ("__ok__", "__err__")
+                ):
+                    status, payload = result
+                    if status == "__ok__":
+                        result = payload
+                    else:
+                        raise ScriptSandboxError(f"脚本执行失败:\n{payload}")
                 success = True
             except concurrent.futures.TimeoutError:
                 try:
@@ -614,6 +788,43 @@ def execute_script(
                     SCRIPT_EXECUTIONS.inc()
                 except Exception:
                     pass
+        # If the pool appears broken (common when spawn cannot import the
+        # main module) try a last-resort fallback to a per-call subprocess
+        # which avoids ProcessPoolExecutor semantics.
+        try:
+            import concurrent.futures.process as _cfproc
+
+            BrokenPool = getattr(_cfproc, "BrokenProcessPool", None)
+        except Exception:
+            BrokenPool = None
+
+        broken_indicated = False
+        try:
+            if BrokenPool is not None and isinstance(exc, BrokenPool):
+                broken_indicated = True
+            elif "terminated abruptly" in str(exc) or "FileNotFoundError" in repr(exc):
+                broken_indicated = True
+        except Exception:
+            broken_indicated = False
+
+        if broken_indicated:
+            logger = logging.getLogger(__name__)
+            logger.debug(
+                "execute_script: detected broken process pool (exc=%r), falling back to per-call subprocess for script_id=%s",
+                exc,
+                script_id,
+            )
+            try:
+                # Try to recreate pool asynchronously to recover for future calls
+                try:
+                    _recreate_process_pool()
+                except Exception:
+                    pass
+                return _run_in_subprocess(code, safe_context, modules, timeout)
+            except Exception:
+                # if fallback failed, raise original error below
+                pass
+
         raise ScriptSandboxError(f"脚本执行失败: {exc}") from exc
     finally:
         elapsed = time.time() - start
@@ -631,7 +842,7 @@ def execute_script(
                 except Exception:
                     pass
 
-    # result may be arbitrary; treat exceptions raised in worker as failures
+    # result is returned (may be None) after unwrapping above
     return result
 
 
@@ -643,8 +854,9 @@ def _pool_worker(
     This function is intentionally top-level so it can be pickled by the
     ProcessPoolExecutor.
     """
-    # implementation provided above (kept to top of file). This duplicate
-    # definition was removed to avoid syntax errors.
+    # Implementation is defined earlier in this file. This placeholder
+    # duplicate has been removed to ensure the pool worker uses the real
+    # implementation above.
 
 
 def _noop() -> None:
@@ -724,52 +936,95 @@ def _run_in_subprocess(
     Guarantees that if the subprocess does not respond within `timeout`, it
     will be terminated and a ScriptSandboxTimeout raised.
     """
-    parent_conn, child_conn = multiprocessing.Pipe()
-    proc = multiprocessing.Process(
-        target=_subprocess_entry, args=(code, context, allowed_modules, child_conn)
-    )
-    proc.daemon = True
-    proc.start()
-    child_conn.close()
+    # Use a fresh Python interpreter via subprocess to avoid multiprocessing
+    # spawn importing the parent's main module (which can be '<stdin>' in
+    # heredoc cases). We send the code/context/allowed_modules as JSON on
+    # stdin and expect a JSON result on stdout in the shape {"ok": result}
+    # or {"err": traceback}.
+    import subprocess
+    import tempfile
+
+    payload = None
     try:
-        # wait for a result within timeout
-        if parent_conn.poll(timeout):
-            try:
-                status, payload = parent_conn.recv()
-            except EOFError:
-                # child died without sending; treat as error
-                proc.join(timeout=0.1)
-                raise ScriptSandboxError("子进程异常退出，未返回结果")
-            if status == "ok":
-                return payload
-            else:
-                # payload is traceback
-                raise ScriptSandboxError(f"脚本执行失败:\n{payload}")
-        else:
-            # not ready within timeout -> give a short grace period
-            extra = min(5.0, max(0.1, timeout * 5))
-            if parent_conn.poll(extra):
-                try:
-                    status, payload = parent_conn.recv()
-                except EOFError:
-                    proc.join(timeout=0.1)
-                    raise ScriptSandboxError("子进程异常退出，未返回结果")
-                if status == "ok":
-                    return payload
-                else:
-                    raise ScriptSandboxError(f"脚本执行失败:\n{payload}")
-            # still no result -> terminate
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            proc.join(timeout=0.5)
-            raise ScriptSandboxTimeout(f"脚本执行超时: {timeout} 秒")
-    finally:
+        payload = json.dumps(
+            {"code": code, "context": context, "allowed_modules": list(allowed_modules)}
+        )
+    except Exception:
+        # fallback: try to coerce context to primitives
         try:
-            parent_conn.close()
+            simple_ctx = json.loads(json.dumps(context, default=lambda o: repr(o)))
+            payload = json.dumps(
+                {
+                    "code": code,
+                    "context": simple_ctx,
+                    "allowed_modules": list(allowed_modules),
+                }
+            )
         except Exception:
-            pass
+            # last resort: send minimal context
+            payload = json.dumps(
+                {"code": code, "context": {}, "allowed_modules": list(allowed_modules)}
+            )
+
+    # small runner that executes the code and prints JSON result
+    runner = (
+        "import sys, json, traceback\n"
+        "from econ_sim.script_engine.sandbox import _build_safe_builtins\n"
+        "data = json.load(sys.stdin)\n"
+        "code = data.get('code', '')\n"
+        "context = data.get('context', {})\n"
+        "allowed = set(data.get('allowed_modules', []))\n"
+        "try:\n"
+        "    safe_builtins = _build_safe_builtins(allowed)\n"
+        "    g = {'__builtins__': safe_builtins}\n"
+        "    exec(code, g, g)\n"
+        "    func = g.get('generate_decisions')\n"
+        "    if func is None or not callable(func):\n"
+        "        print(json.dumps({'err': 'missing generate_decisions'}))\n"
+        "        sys.exit(0)\n"
+        "    res = func(context)\n"
+        "    try:\n"
+        "        print(json.dumps({'ok': res}))\n"
+        "    except Exception:\n"
+        "        print(json.dumps({'ok': repr(res)}))\n"
+        "except Exception:\n"
+        "    tb = traceback.format_exc()\n"
+        "    print(json.dumps({'err': tb}))\n"
+    )
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", runner],
+            input=payload.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(0.1, float(timeout) + 1.0),
+        )
+    except subprocess.TimeoutExpired as e:
+        # process didn't finish in time
+        raise ScriptSandboxTimeout(f"脚本执行超时: {timeout} 秒") from e
+
+    # prefer stdout JSON, but capture stderr for diagnostics
+    out = proc.stdout.decode("utf-8", errors="replace").strip()
+    err = proc.stderr.decode("utf-8", errors="replace").strip()
+    if not out:
+        # no stdout: treat stderr as failure
+        if err:
+            raise ScriptSandboxError(f"子进程错误:\n{err}")
+        raise ScriptSandboxError("子进程未返回结果")
+
+    try:
+        parsed = json.loads(out)
+    except Exception:
+        # couldn't parse JSON; include stderr for debugging
+        raise ScriptSandboxError(f"无法解析子进程输出: {out}\nstderr: {err}")
+
+    if "ok" in parsed:
+        return parsed["ok"]
+    elif "err" in parsed:
+        raise ScriptSandboxError(f"脚本执行失败:\n{parsed['err']}")
+    else:
+        raise ScriptSandboxError(f"子进程返回未知结果: {parsed}")
 
 
 def _build_safe_builtins(allowed_modules: Set[str]) -> MappingProxyType:

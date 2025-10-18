@@ -793,6 +793,142 @@ class ScriptRegistry:
             raise ScriptExecutionError("Script not found")
         return True
 
+    async def replace_script_for_entity(
+        self,
+        *,
+        old_script_id: Optional[str],
+        user_id: str,
+        simulation_id: str,
+        agent_kind: AgentKind,
+        entity_id: str,
+        new_code: str,
+        new_description: Optional[str] = None,
+        when: str = "immediate",
+    ) -> ScriptMetadata:
+        """原子地为指定实体替换脚本实现（当前仅支持 when='immediate'）。
+
+        语义：在同一仿真实例/实体上将旧脚本替换为新脚本，但保留实体标识与执行顺序。
+
+        实现策略：
+        - 校验新脚本语法。
+        - 若存在持久化存储，先在持久层写入新脚本记录（以避免窗口期丢失）。
+        - 在 registry lock 内：检查可用性、把新记录加入内存索引，并将旧脚本从仿真中解绑（但保留历史）。
+        - 若任一步失败，尝试回滚内存与持久层到原始状态。
+        """
+
+        if when != "immediate":
+            raise ScriptExecutionError("目前仅支持 immediate 替换模式")
+
+        # 基本校验
+        entity_id = self._normalize_entity_id(entity_id)
+        self._validate_entity_binding(agent_kind, entity_id)
+        self._validate_script(new_code)
+
+        # If old_script_id is provided and belongs to same user, prefer in-place
+        # update to preserve script_id and any associated state.
+        if old_script_id is not None:
+            async with self._registry_lock:
+                existing = self._records.get(old_script_id)
+            if existing is not None and existing.metadata.user_id == user_id:
+                # perform in-place code update which preserves script_id/entity binding
+                updated = await self.update_script_code(
+                    script_id=old_script_id,
+                    user_id=user_id,
+                    new_code=new_code,
+                    new_description=new_description,
+                )
+                return updated
+
+        # new metadata
+        new_meta = ScriptMetadata(
+            script_id=str(uuid.uuid4()),
+            simulation_id=simulation_id,
+            user_id=user_id,
+            description=new_description,
+            created_at=datetime.now(timezone.utc),
+            code_version=str(uuid.uuid4()),
+            agent_kind=agent_kind,
+            entity_id=entity_id,
+        )
+
+        # persist early if we have a store to reduce window where new script is lost
+        if self._store is not None:
+            try:
+                await self._store.save_script(new_meta, new_code)
+            except Exception as exc:
+                raise ScriptExecutionError(f"无法持久化新脚本: {exc}") from exc
+
+        # perform in-memory swap under lock, with rollback support
+        old_record_snapshot: Optional[_ScriptRecord] = None
+        try:
+            async with self._registry_lock:
+                # ensure simulation/user loaded
+                await self._ensure_simulation_loaded(simulation_id)
+                await self._ensure_user_loaded(user_id)
+
+                # ensure entity availability (ignore old_script_id if provided)
+                self._ensure_entity_available_unlocked(
+                    simulation_id, agent_kind, entity_id, ignore_script_id=old_script_id
+                )
+
+                # insert new record
+                self._records[new_meta.script_id] = _ScriptRecord(
+                    metadata=new_meta, code=new_code
+                )
+                self._update_indexes(new_meta.script_id, None, new_meta)
+                self._loaded_simulations.add(simulation_id)
+
+                # if old script provided, detach it from simulation (keep record)
+                if old_script_id is not None:
+                    old_rec = self._records.get(old_script_id)
+                    if old_rec is not None:
+                        old_record_snapshot = _ScriptRecord(
+                            metadata=old_rec.metadata, code=old_rec.code
+                        )
+                        old_meta = old_rec.metadata
+                        # mark old as detached in-memory
+                        detached_meta = old_meta.model_copy(
+                            update={"simulation_id": None}
+                        )
+                        old_rec.metadata = detached_meta
+                        self._update_indexes(old_script_id, old_meta, detached_meta)
+
+        except Exception:
+            # attempt to rollback persisted new script if store exists
+            if self._store is not None:
+                try:
+                    await self._store.delete_script(new_meta.script_id)
+                except Exception:
+                    logger.exception("回滚持久化新脚本失败：%s", new_meta.script_id)
+            raise
+
+        # persist detachment of old script if needed
+        if old_script_id is not None and self._store is not None:
+            try:
+                await self._store.update_simulation_binding(old_script_id, None)
+            except Exception as exc:
+                # best-effort: try to roll back in-memory changes
+                logger.exception(
+                    "无法在持久层取消旧脚本挂载 %s: %s", old_script_id, exc
+                )
+                # try to restore in-memory snapshot
+                async with self._registry_lock:
+                    if old_record_snapshot is not None:
+                        self._records[old_script_id] = old_record_snapshot
+                        self._update_indexes(
+                            old_script_id, None, old_record_snapshot.metadata
+                        )
+                # also remove the new persisted script to avoid partial state
+                try:
+                    await self._store.delete_script(new_meta.script_id)
+                except Exception:
+                    logger.exception("回滚持久化新脚本失败：%s", new_meta.script_id)
+                raise ScriptExecutionError(
+                    "替换脚本失败：无法更新持久层旧脚本绑定"
+                ) from exc
+
+        return new_meta
+
     async def update_script_code(
         self,
         *,
