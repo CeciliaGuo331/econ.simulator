@@ -577,6 +577,12 @@ class ScriptRegistry:
         await self._ensure_user_loaded(user_id)
         await self._ensure_simulation_loaded(simulation_id)
 
+        # Perform availability checks and in-memory index update under the
+        # registry lock to avoid races with concurrent attach/register calls.
+        old_metadata: Optional[ScriptMetadata] = None
+        code_snapshot: Optional[str] = None
+        new_metadata: Optional[ScriptMetadata] = None
+
         async with self._registry_lock:
             record = self._records.get(script_id)
             if record is None or record.metadata.user_id != user_id:
@@ -593,31 +599,21 @@ class ScriptRegistry:
                     self._format_limit_message(simulation_id, user_id, limit)
                 )
 
-        candidate_entity_id = entity_id or record.metadata.entity_id
-        candidate_entity_id = self._normalize_entity_id(candidate_entity_id)
-        self._validate_entity_binding(record.metadata.agent_kind, candidate_entity_id)
+            candidate_entity_id = entity_id or record.metadata.entity_id
+            candidate_entity_id = self._normalize_entity_id(candidate_entity_id)
+            self._validate_entity_binding(
+                record.metadata.agent_kind, candidate_entity_id
+            )
 
-        self._ensure_entity_available_unlocked(
-            simulation_id,
-            record.metadata.agent_kind,
-            candidate_entity_id,
-            ignore_script_id=script_id,
-        )
+            # ensure no other script currently binds the target entity
+            self._ensure_entity_available_unlocked(
+                simulation_id,
+                record.metadata.agent_kind,
+                candidate_entity_id,
+                ignore_script_id=script_id,
+            )
 
-        if self._store is not None:
-            try:
-                updated = await self._store.update_simulation_binding(
-                    script_id, simulation_id
-                )
-            except Exception as exc:  # pragma: no cover - defensive log
-                raise ScriptExecutionError(f"无法挂载脚本: {exc}") from exc
-            if not updated:
-                raise ScriptExecutionError("脚本不存在或已被移除。")
-
-        async with self._registry_lock:
-            record = self._records.get(script_id)
-            if record is None or record.metadata.user_id != user_id:
-                raise ScriptExecutionError("脚本不存在或无权限操作。")
+            # perform in-memory update first (fast, under lock)
             old_metadata = record.metadata
             new_metadata = record.metadata.model_copy(
                 update={
@@ -630,9 +626,36 @@ class ScriptRegistry:
             self._loaded_simulations.add(simulation_id)
             code_snapshot = record.code
 
-        if self._store is not None:
-            await self._store.save_script(new_metadata, code_snapshot)
+        # Persist the new binding/code. If persistence fails, roll back the
+        # in-memory update to avoid diverging registry state.
+        if (
+            self._store is not None
+            and new_metadata is not None
+            and code_snapshot is not None
+        ):
+            try:
+                # save_script upserts the main row and appends a version entry
+                await self._store.save_script(new_metadata, code_snapshot)
+            except Exception as exc:  # pragma: no cover - best effort rollback
+                logger.exception(
+                    "Failed to persist script attach %s -> %s: %s",
+                    script_id,
+                    simulation_id,
+                    exc,
+                )
+                # rollback in-memory change
+                async with self._registry_lock:
+                    rec = self._records.get(script_id)
+                    if rec is not None and old_metadata is not None:
+                        rec.metadata = old_metadata
+                        self._update_indexes(script_id, new_metadata, old_metadata)
+                        # if no other scripts remain for this simulation, we don't
+                        # remove loaded_simulations to avoid a thundering herd;
+                        # leave it as-is.
+                raise ScriptExecutionError(f"无法挂载脚本: {exc}") from exc
 
+        # new_metadata is guaranteed to be set when we reach here
+        assert new_metadata is not None
         return new_metadata
 
     async def get_user_script(self, script_id: str, user_id: str) -> ScriptMetadata:

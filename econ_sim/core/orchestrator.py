@@ -519,6 +519,19 @@ class SimulationOrchestrator:
         # world will not contain the required entities, causing subsequent
         # tick execution to fail with missing agent coverage.
         try:
+            # Ensure registry has reloaded any persisted scripts for this
+            # simulation (some registry implementations lazily load). This
+            # forces a fresh read from the underlying store.
+            if hasattr(script_registry, "_ensure_simulation_loaded"):
+                try:
+                    await script_registry._ensure_simulation_loaded(simulation_id)
+                except Exception:
+                    # best-effort: continue to listing which may still work
+                    logger.debug(
+                        "_ensure_simulation_loaded failed for %s, continuing to list_scripts",
+                        simulation_id,
+                    )
+
             scripts = await script_registry.list_scripts(simulation_id)
             for meta in scripts:
                 # _ensure_entity_seeded is a no-op for unbound/placeholder scripts

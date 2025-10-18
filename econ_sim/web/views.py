@@ -913,14 +913,27 @@ async def dashboard(
             if sim_id:
                 bucket = scripts_by_sim.setdefault(sim_id, [])
                 bucket.append(metadata)
-        for sid in all_simulations:
-            attached_scripts = scripts_by_sim.get(sid, [])
-            individual_owners = {
-                metadata.user_id.lower()
-                for metadata in attached_scripts
-                if user_type_index.get(metadata.user_id.lower(), "") == "individual"
+
+        # Compute household counts from live registry per simulation to avoid
+        # relying on potentially stale in-memory mappings built earlier.
+        async def _count_household_owners(sid: str) -> tuple[str, int]:
+            try:
+                scripts = await script_registry.list_scripts(sid)
+            except Exception:
+                return (sid, 0)
+            owners = {
+                meta.user_id.lower()
+                for meta in scripts
+                if meta.agent_kind is not None and meta.agent_kind.value == "household"
             }
-            household_counts_by_sim[sid] = len(individual_owners)
+            return (sid, len(owners))
+
+        if all_simulations:
+            pairs = await _bounded_gather(
+                [_count_household_owners(s) for s in all_simulations]
+            )
+            for sid, count in pairs:
+                household_counts_by_sim[sid] = count
 
         # compute remaining to day-end for admins (parallel)
         async def _fetch_state(sid: str):

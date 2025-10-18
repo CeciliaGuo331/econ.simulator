@@ -193,14 +193,31 @@ async def ensure_baseline_scripts(
                         latest.script_id, attach_to_simulation, user_id
                     )
                 except ScriptExecutionError as exc:
-                    message = (
-                        "Failed to attach baseline script "
-                        f"{latest.script_id} to {attach_to_simulation}: {exc}"
+                    # Some failures are expected (e.g. singleton agent kinds
+                    # where the simulation already has an attached script of
+                    # that type). Treat those as non-fatal and log at debug
+                    # level while preserving other errors.
+                    msg = str(exc)
+                    singleton_conflict = any(
+                        kw in msg
+                        for kw in ("仅支持一个", "only support one", "already")
                     )
-                    summary["errors"].append(message)
-                    logger.error(message)
-                    if strict:
-                        raise
+                    if singleton_conflict:
+                        logger.debug(
+                            "Skipping attach for baseline script %s to %s: %s",
+                            latest.script_id,
+                            attach_to_simulation,
+                            exc,
+                        )
+                    else:
+                        message = (
+                            "Failed to attach baseline script "
+                            f"{latest.script_id} to {attach_to_simulation}: {exc}"
+                        )
+                        summary["errors"].append(message)
+                        logger.error(message)
+                        if strict:
+                            raise
                 else:
                     summary["attached"].append(updated.script_id)
 
