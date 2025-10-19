@@ -114,3 +114,35 @@
 | `POST` | `/simulations/{id}/scripts/attach` | 将个人脚本挂载到仿真实例 |
 
 更多细节请参考 `econ_sim/api/endpoints.py`。
+
+## 可选：接入真实 LLM（OpenAI）
+
+本项目提供了一个可选的 OpenAI 适配器。默认情况下仓库使用内置的 Mock provider 用于测试与离线开发；要启用真实的 OpenAI 调用，请执行以下步骤：
+
+1. 安装可选依赖（在本地虚拟环境中执行）：
+
+```bash
+pip install openai
+```
+
+2. 在环境中设置 API key（例如 macOS / Linux）：
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+3. 启用 provider：设置环境变量 `ECON_SIM_LLM_PROVIDER=openai`（或使用默认配置），程序会按需导入 `openai` 包并使用 `OPENAI_API_KEY` 发起请求。示例配置文件位于 `config/llm.env.example`：
+
+```bash
+export ECON_SIM_LLM_PROVIDER=openai
+uvicorn econ_sim.main:app --reload
+```
+
+- 注意事项：
+- 如果未安装 `openai` 包或未设置 `OPENAI_API_KEY`，应用会抛出运行时错误并在启动日志中记录详细信息。请确保在生产/开发环境中正确配置 `OPENAI_API_KEY`（建议通过非提交式的 env 文件或秘密管理器注入）。
+- 为避免意外调用产生费用，脚本运行时的 LLM 调用受每次脚本执行的配额限制（环境变量控制）：
+	- ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT（默认 3）
+	- ECON_SIM_LLM_MAX_TOKENS_PER_SCRIPT（默认 1024）
+	- ECON_SIM_LLM_MAX_TOKENS_PER_CALL（默认 512）
+
+示例脚本（参考 `examples/scripts/sample_strategy.py`）展示了在沙箱中如何安全地访问全局 `llm` 对象并在配额超限时回退。

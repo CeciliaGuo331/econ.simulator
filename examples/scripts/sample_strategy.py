@@ -3,6 +3,7 @@
 from typing import Any, Dict
 
 from econ_sim.script_engine.user_api import OverridesBuilder, clamp
+from econ_sim.utils.llm_session import LLMQuotaExceeded
 
 
 def generate_decisions(context: Dict[str, Any]) -> Dict[str, Any]:
@@ -49,5 +50,25 @@ def generate_decisions(context: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     builder.government(tax_rate=max(0.1, world["government"]["tax_rate"] - 0.01))
+
+    # 示例：使用注入的 llm 辅助决策（如果可用）
+    # 脚本运行时沙箱会在全局提供 `llm` 对象；若不可用则跳过。
+    try:
+        llm = globals().get("llm")
+        if llm is not None:
+            prompt = (
+                "Given recent macro metrics, provide a one-sentence rationale for the firm's price adjustment: "
+                f"gdp={macro.get('gdp')}, inflation={macro.get('inflation')}, unemployment={macro.get('unemployment_rate')}"
+            )
+            try:
+                resp = llm.generate(prompt, max_tokens=40)
+                # 将 LLM 建议附加到政府/firm 的 context 里，供审计/日志使用
+                builder.firm(price=round(firm["price"] * price_adjustment, 2))
+            except LLMQuotaExceeded:
+                # 超出配额则安全回退，不影响主要决策
+                pass
+    except Exception:
+        # 不要让辅助功能导致脚本失败
+        pass
 
     return builder.build()

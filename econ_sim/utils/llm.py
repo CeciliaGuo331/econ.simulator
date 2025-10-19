@@ -1,29 +1,27 @@
-"""LLM provider abstraction with a safe mock implementation.
+"""Light adapter for the project's LLM provider.
 
-Default provider is a mock that echoes input. Real providers can be added by
-implementing the LLMProvider interface and wiring via environment variables.
+This module provides a small compatibility layer so code that previously
+called `resolve_llm_provider().complete(...)` continues to work. Under the
+hood we delegate to `econ_sim.utils.llm_provider.get_default_provider()`,
+which in this project is backed by OpenAI and requires `OPENAI_API_KEY`.
 """
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Optional
+
+from .llm_provider import LLMRequest, get_default_provider
 
 
-class LLMProvider(Protocol):
-    async def complete(
-        self,
-        prompt: str,
-        *,
-        model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-    ) -> str: ...
+class _Adapter:
+    """Adapter exposing async complete(prompt, model, max_tokens) -> str
 
+    It delegates to the provider.generate(LLMRequest, user_id=...) and
+    returns the response content as string.
+    """
 
-@dataclass
-class MockLLMProvider:
-    prefix: str = "Echo"
+    def __init__(self, provider):
+        self._provider = provider
 
     async def complete(
         self,
@@ -32,17 +30,15 @@ class MockLLMProvider:
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
-        text = prompt.strip()
-        if max_tokens is not None and max_tokens > 0:
-            # naive token cap by characters for mock
-            text = text[: max(8, max_tokens)]
-        return f"{self.prefix}: {text}"
+        req = LLMRequest(
+            model=model or "gpt-3.5-turbo",
+            prompt=prompt,
+            max_tokens=int(max_tokens or 256),
+        )
+        resp = await self._provider.generate(req, user_id="api")
+        return getattr(resp, "content", str(resp))
 
 
-def resolve_llm_provider() -> LLMProvider:
-    # Placeholder for future real provider, controlled by env vars
-    provider = os.getenv("ECON_SIM_LLM_PROVIDER", "mock").lower()
-    if provider == "mock":
-        return MockLLMProvider()
-    # Fallback to mock for unknown providers
-    return MockLLMProvider(prefix="LLM")
+def resolve_llm_provider() -> _Adapter:
+    provider = get_default_provider()
+    return _Adapter(provider)

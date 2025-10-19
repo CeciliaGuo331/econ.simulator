@@ -216,7 +216,18 @@ def _pool_worker(
             pass
 
         safe_builtins = _build_safe_builtins(allowed_modules)
-        sandbox_globals: Dict[str, Any] = {"__builtins__": safe_builtins}
+        # Provide a per-execution LLM session object available to user scripts
+        try:
+            from econ_sim.utils.llm_session import create_llm_session_from_env
+
+            llm_obj = create_llm_session_from_env()
+        except Exception:
+            llm_obj = None
+
+        sandbox_globals: Dict[str, Any] = {
+            "__builtins__": safe_builtins,
+            "llm": llm_obj,
+        }
         try:
             print(f"_pool_worker pid={os.getpid()} exec start")
         except Exception:
@@ -901,7 +912,16 @@ def _subprocess_entry(
             pass
 
         safe_builtins = _build_safe_builtins(allowed_modules)
-        sandbox_globals: Dict[str, Any] = {"__builtins__": safe_builtins}
+        try:
+            from econ_sim.utils.llm_session import create_llm_session_from_env
+
+            llm_obj = create_llm_session_from_env()
+        except Exception:
+            llm_obj = None
+        sandbox_globals: Dict[str, Any] = {
+            "__builtins__": safe_builtins,
+            "llm": llm_obj,
+        }
         exec(code, sandbox_globals, sandbox_globals)
         func = sandbox_globals.get("generate_decisions")
         if func is None or not callable(func):
@@ -970,13 +990,19 @@ def _run_in_subprocess(
     runner = (
         "import sys, json, traceback\n"
         "from econ_sim.script_engine.sandbox import _build_safe_builtins\n"
+        "# Attempt to create per-execution llm session; failures fall back to None\n"
+        "try:\n"
+        "    from econ_sim.utils.llm_session import create_llm_session_from_env\n"
+        "    _llm = create_llm_session_from_env()\n"
+        "except Exception:\n"
+        "    _llm = None\n"
         "data = json.load(sys.stdin)\n"
         "code = data.get('code', '')\n"
         "context = data.get('context', {})\n"
         "allowed = set(data.get('allowed_modules', []))\n"
         "try:\n"
         "    safe_builtins = _build_safe_builtins(allowed)\n"
-        "    g = {'__builtins__': safe_builtins}\n"
+        "    g = {'__builtins__': safe_builtins, 'llm': _llm}\n"
         "    exec(code, g, g)\n"
         "    func = g.get('generate_decisions')\n"
         "    if func is None or not callable(func):\n"
