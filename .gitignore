@@ -3,3 +3,4 @@ __pycache__/
 .conda/
 .pytest_cache/
 .claude/
+config/llm.env
