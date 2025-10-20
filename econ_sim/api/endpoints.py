@@ -29,7 +29,13 @@ from ..utils.agents import resolve_agent_kind
 
 router = APIRouter(prefix="/simulations", tags=["simulations"])
 scripts_router = APIRouter(prefix="/scripts", tags=["scripts"])
-_orchestrator = SimulationOrchestrator()
+"""
+The orchestrator instance is created during application startup (FastAPI lifespan)
+and injected into this module by `econ_sim.main`. We keep a module-level
+name for backwards compatibility with tests and other modules that reference
+`api.endpoints._orchestrator`.
+"""
+_orchestrator: Optional[SimulationOrchestrator] = None
 
 
 async def get_current_user(authorization: str = Header(...)) -> UserProfile:

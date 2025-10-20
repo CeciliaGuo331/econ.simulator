@@ -12,9 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from .api.auth_endpoints import router as auth_router
+from .api import endpoints as api_endpoints_module
 from .api.endpoints import router as simulation_router, scripts_router
 from .api.llm_endpoints import router as llm_router
-from .web.views import router as web_router, _orchestrator as web_orchestrator
+from .web import views as web_views_module
+from .web.views import router as web_router
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,22 @@ async def lifespan(app: FastAPI):
     """
     # startup
     try:
+        # Create shared orchestrator and background job manager and inject
+        # into modules that expect a module-level `_orchestrator` or
+        # `_background_jobs` variable.
+        from .core.orchestrator import SimulationOrchestrator
+        from .web.background import BackgroundJobManager
+
+        _shared_orchestrator = SimulationOrchestrator()
+        _shared_background = BackgroundJobManager()
+
+        # Inject into modules so existing imports continue to work
+        api_endpoints_module._orchestrator = _shared_orchestrator
+        web_views_module._orchestrator = _shared_orchestrator
+        web_views_module._background_jobs = _shared_background
+
+        logger.info("--- Orchestrator and background jobs created and injected ---")
+
         skip_flag = os.getenv("ECON_SIM_SKIP_TEST_WORLD_SEED", "").lower()
         skip = skip_flag in {"1", "true", "yes", "on"} or os.getenv(
             "PYTEST_CURRENT_TEST"
@@ -39,7 +57,7 @@ async def lifespan(app: FastAPI):
             from .script_engine import script_registry as module_registry
 
             # Seed the canonical test_world first (creates simulation + entities)
-            await seed_test_world(orchestrator=web_orchestrator)
+            await seed_test_world(orchestrator=_shared_orchestrator)
             logger.info("test_world simulation seeded (auto-startup).")
 
             # Ensure baseline scripts/users are registered and attached to the
@@ -63,7 +81,22 @@ async def lifespan(app: FastAPI):
     try:
         from .data_access.postgres_support import close_all_pools
 
+        # Attempt graceful shutdown: stop background jobs and close DB pools.
+        try:
+            if _shared_background:
+                await _shared_background.shutdown()
+        except Exception:
+            logger.exception("Error shutting down background job manager")
+
         await close_all_pools()
+
+        # Remove injected references to avoid keeping state after shutdown
+        try:
+            api_endpoints_module._orchestrator = None
+            web_views_module._orchestrator = None
+            web_views_module._background_jobs = None
+        except Exception:
+            logger.exception("Failed to clear injected module references")
     except Exception:  # pragma: no cover - best effort cleanup
         pass
 

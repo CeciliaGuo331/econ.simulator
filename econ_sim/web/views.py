@@ -52,8 +52,11 @@ logger = logging.getLogger(__name__)
 _templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
-_orchestrator = SimulationOrchestrator()
-_background_jobs = BackgroundJobManager()
+# These are created during FastAPI application startup and injected by
+# `econ_sim.main`. Keep the names here for backward compatibility with
+# code and tests that import them directly (e.g. `from econ_sim.web.views import _orchestrator`).
+_orchestrator: Optional[SimulationOrchestrator] = None
+_background_jobs: Optional[BackgroundJobManager] = None
 
 _DOCS_ROOT = Path(__file__).resolve().parents[2] / "docs" / "user_strategies"
 _STATIC_ROOT = Path(__file__).resolve().parent / "static"
