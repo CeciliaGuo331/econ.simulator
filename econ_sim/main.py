@@ -31,21 +31,16 @@ async def lifespan(app: FastAPI):
     """
     # startup
     try:
-        # Create shared orchestrator and background job manager and inject
-        # into modules that expect a module-level `_orchestrator` or
-        # `_background_jobs` variable.
-        from .core.orchestrator import SimulationOrchestrator
+        # Create background job manager and inject into views. Orchestrator
+        # instances are created per-simulation on demand by the factory so we
+        # do not create a global shared orchestrator here.
+        from .core.orchestrator_factory import get_orchestrator
         from .web.background import BackgroundJobManager
 
-        _shared_orchestrator = SimulationOrchestrator()
         _shared_background = BackgroundJobManager()
-
-        # Inject into modules so existing imports continue to work
-        api_endpoints_module._orchestrator = _shared_orchestrator
-        web_views_module._orchestrator = _shared_orchestrator
         web_views_module._background_jobs = _shared_background
 
-        logger.info("--- Orchestrator and background jobs created and injected ---")
+        logger.info("--- Background jobs created and injected ---")
 
         skip_flag = os.getenv("ECON_SIM_SKIP_TEST_WORLD_SEED", "").lower()
         skip = skip_flag in {"1", "true", "yes", "on"} or os.getenv(
@@ -56,8 +51,17 @@ async def lifespan(app: FastAPI):
             from .script_engine.baseline_seed import ensure_baseline_scripts
             from .script_engine import script_registry as module_registry
 
-            # Seed the canonical test_world first (creates simulation + entities)
-            await seed_test_world(orchestrator=_shared_orchestrator)
+            # Use the orchestrator factory to get the test_world orchestrator
+            # and seed it. This creates a per-simulation orchestrator instance
+            # keyed by "test_world".
+            orch = await get_orchestrator("test_world")
+            # Provide a module-level orchestrator reference for existing
+            # modules and tests that expect `api.endpoints._orchestrator`
+            # or `web.views._orchestrator` to be available.
+            api_endpoints_module._orchestrator = orch
+            web_views_module._orchestrator = orch
+
+            await seed_test_world(orchestrator=orch)
             logger.info("test_world simulation seeded (auto-startup).")
 
             # Ensure baseline scripts/users are registered and attached to the
@@ -92,9 +96,15 @@ async def lifespan(app: FastAPI):
 
         # Remove injected references to avoid keeping state after shutdown
         try:
-            api_endpoints_module._orchestrator = None
-            web_views_module._orchestrator = None
             web_views_module._background_jobs = None
+            # If orchestrator_factory exposes a shutdown hook, call it.
+            try:
+                from .core.orchestrator_factory import shutdown_all
+
+                await shutdown_all()
+            except Exception:
+                # best-effort: do not treat absence/failure as fatal
+                pass
         except Exception:
             logger.exception("Failed to clear injected module references")
     except Exception:  # pragma: no cover - best effort cleanup
