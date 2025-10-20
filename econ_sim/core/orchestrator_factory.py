@@ -1,20 +1,137 @@
 """轻量的 per-simulation orchestrator 工厂与映射。
 
 提供按 simulation_id 获取单例 SimulationOrchestrator 的能力，
-并保证延迟创建和基本的并发安全性。
+并保证延迟创建、进程内锁保护，以及对闲置实例的回收。
+
+行为要点：
+- 支持在应用启动时注入共享的 `DataAccessLayer`（避免为每个 orchestrator 创建独立的 DB 连接池）。
+- 为每个 simulation_id 提供协程级别的互斥锁，供 API 在变更操作时序列化调用。
+- 启动一个后台回收任务，将超过空闲 TTL 的 orchestrator 从缓存中移除以释放内存。
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Dict
+import logging
+import time
+from contextlib import asynccontextmanager
+from typing import Dict, Optional
 
+from ..data_access.redis_client import DataAccessLayer
 from .orchestrator import SimulationOrchestrator
+
+logger = logging.getLogger(__name__)
 
 # mapping: simulation_id -> SimulationOrchestrator
 _ORCH_MAP: Dict[str, SimulationOrchestrator] = {}
+# last access timestamp (monotonic seconds)
+_LAST_USED: Dict[str, float] = {}
+# per-simulation op locks to serialize mutating orchestrator usage
+_OP_LOCKS: Dict[str, asyncio.Lock] = {}
 # async lock to guard concurrent creations
-_ORCH_LOCK = asyncio.Lock()
+_FACTORY_LOCK = asyncio.Lock()
+
+# Shared DataAccessLayer injected at app startup to ensure connection pool reuse
+_SHARED_DAL: Optional[DataAccessLayer] = None
+
+# background eviction task and settings
+_EVICTOR_TASK: Optional[asyncio.Task] = None
+_EVICTOR_INTERVAL = float(
+    int(__import__("os").environ.get("ECON_SIM_ORCH_EVICT_INTERVAL", "30"))
+)
+_EVICT_TTL = float(int(__import__("os").environ.get("ECON_SIM_ORCH_IDLE_TTL", "600")))
+
+
+def init_shared_data_access(dal: DataAccessLayer) -> None:
+    """Inject a shared DataAccessLayer to be reused by all created orchestrators.
+
+    Must be called during application startup (lifespan) before orchestrators
+    are created to avoid per-orchestrator pools.
+    """
+    global _SHARED_DAL
+    _SHARED_DAL = dal
+    # start evictor when DAL initialized
+    _start_evictor()
+
+
+def _start_evictor() -> None:
+    global _EVICTOR_TASK
+    if _EVICTOR_TASK is not None and not _EVICTOR_TASK.done():
+        return
+
+    loop = None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # caller may start evictor later when loop available
+        return
+
+    _EVICTOR_TASK = loop.create_task(_evictor_loop())
+
+
+def _stop_evictor() -> None:
+    global _EVICTOR_TASK
+    if _EVICTOR_TASK is not None:
+        try:
+            _EVICTOR_TASK.cancel()
+        except Exception:
+            pass
+        _EVICTOR_TASK = None
+
+
+async def _evictor_loop() -> None:
+    """Background task that evicts idle orchestrators to free memory.
+
+    Eviction is best-effort: only removes cached references. Underlying world
+    state stays in configured stores (Redis/Postgres) and will be re-loaded on
+    next get_orchestrator call.
+    """
+    try:
+        while True:
+            now = time.monotonic()
+            to_remove = []
+            for sim_id, last in list(_LAST_USED.items()):
+                if now - last > _EVICT_TTL:
+                    to_remove.append(sim_id)
+            if to_remove:
+                async with _FACTORY_LOCK:
+                    for sim_id in to_remove:
+                        inst = _ORCH_MAP.pop(sim_id, None)
+                        _LAST_USED.pop(sim_id, None)
+                        _OP_LOCKS.pop(sim_id, None)
+                        if inst is not None:
+                            logger.info("Evicted idle orchestrator for %s", sim_id)
+            await asyncio.sleep(_EVICTOR_INTERVAL)
+    except asyncio.CancelledError:
+        return
+
+
+@asynccontextmanager
+async def get_orchestrator_locked(simulation_id: str):
+    """Async context manager that acquires a per-simulation lock and yields an orchestrator.
+
+    Use this in API handlers that perform mutating operations to serialize calls
+    for a given simulation_id. Example:
+
+        async with get_orchestrator_locked(sim_id) as orch:
+            await orch.run_tick(sim_id)
+
+    """
+    sim_id = simulation_id or "default"
+    # ensure orchestrator exists
+    orch = await get_orchestrator(sim_id)
+    lock = _OP_LOCKS.get(sim_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _OP_LOCKS[sim_id] = lock
+    await lock.acquire()
+    try:
+        yield orch
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            pass
 
 
 async def get_orchestrator(simulation_id: str) -> SimulationOrchestrator:
@@ -27,14 +144,19 @@ async def get_orchestrator(simulation_id: str) -> SimulationOrchestrator:
     # Fast path: avoid acquiring lock if already created.
     inst = _ORCH_MAP.get(key)
     if inst is not None:
+        _LAST_USED[key] = time.monotonic()
         return inst
 
-    async with _ORCH_LOCK:
+    async with _FACTORY_LOCK:
         inst = _ORCH_MAP.get(key)
         if inst is None:
-            # Create a new orchestrator with default config/store.
-            inst = SimulationOrchestrator()
+            # Create a new orchestrator with shared data access when available.
+            if _SHARED_DAL is not None:
+                inst = SimulationOrchestrator(data_access=_SHARED_DAL)
+            else:
+                inst = SimulationOrchestrator()
             _ORCH_MAP[key] = inst
+            _LAST_USED[key] = time.monotonic()
     return inst
 
 
@@ -47,6 +169,10 @@ async def list_known_simulations() -> list[str]:
 
 
 async def shutdown_all() -> None:
-    """若未来需要清理 orchestrator 资源，可在此实现。当前为占位函数。"""
-    # SimulationOrchestrator 目前没有异步关闭方法；保留占位以便未来扩展。
+    """停止回收任务并清空缓存的 orchestrator 引用（best-effort）。"""
+    _stop_evictor()
+    async with _FACTORY_LOCK:
+        _ORCH_MAP.clear()
+        _LAST_USED.clear()
+        _OP_LOCKS.clear()
     return None

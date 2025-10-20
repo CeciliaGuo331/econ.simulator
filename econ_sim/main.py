@@ -31,16 +31,24 @@ async def lifespan(app: FastAPI):
     """
     # startup
     try:
-        # Create background job manager and inject into views. Orchestrator
-        # instances are created per-simulation on demand by the factory so we
-        # do not create a global shared orchestrator here.
-        from .core.orchestrator_factory import get_orchestrator
+        # Create background job manager and inject into views. Also create
+        # a shared DataAccessLayer and inject it into the orchestrator factory
+        # so all per-simulation orchestrators reuse DB/Redis pools.
+        from .core.orchestrator_factory import get_orchestrator, init_shared_data_access
         from .web.background import BackgroundJobManager
+        from .data_access.redis_client import DataAccessLayer
 
         _shared_background = BackgroundJobManager()
         web_views_module._background_jobs = _shared_background
 
-        logger.info("--- Background jobs created and injected ---")
+        # Create shared DAL (will pick up env-configured Redis/Postgres)
+        _shared_dal = DataAccessLayer.with_default_store()
+        # start sampler for monitoring
+        _shared_dal.start_sampler()
+        # inject into factory so orchestrators reuse its pools/stores
+        init_shared_data_access(_shared_dal)
+
+        logger.info("--- Background jobs and shared DAL created and injected ---")
 
         skip_flag = os.getenv("ECON_SIM_SKIP_TEST_WORLD_SEED", "").lower()
         skip = skip_flag in {"1", "true", "yes", "on"} or os.getenv(
@@ -85,12 +93,28 @@ async def lifespan(app: FastAPI):
     try:
         from .data_access.postgres_support import close_all_pools
 
-        # Attempt graceful shutdown: stop background jobs and close DB pools.
+        # Attempt graceful shutdown: stop background jobs, stop DAL sampler and
+        # close DB pools.
         try:
             if _shared_background:
                 await _shared_background.shutdown()
         except Exception:
             logger.exception("Error shutting down background job manager")
+
+        # Stop shared DAL sampler if present and close pools
+        try:
+            # Try to access the DAL via the orchestrator factory to avoid storing
+            # another global reference here.
+            from .core.orchestrator_factory import shutdown_all
+            from .core.orchestrator_factory import _SHARED_DAL as _factory_dal
+
+            if _factory_dal is not None:
+                try:
+                    _factory_dal.stop_sampler()
+                except Exception:
+                    logger.exception("Failed to stop DAL sampler")
+        except Exception:
+            logger.debug("Unable to stop shared DAL sampler via factory reference")
 
         await close_all_pools()
 

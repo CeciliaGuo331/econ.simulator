@@ -24,7 +24,7 @@ from ..data_access.models import (
     WorldState,
 )
 from ..script_engine import script_registry
-from ..core.orchestrator_factory import get_orchestrator
+from ..core.orchestrator_factory import get_orchestrator, get_orchestrator_locked
 from ..script_engine.registry import ScriptExecutionError, ScriptMetadata
 from ..utils.agents import resolve_agent_kind
 
@@ -270,10 +270,10 @@ async def create_simulation(
     """新建仿真实例并返回初始世界状态的关键信息。"""
     simulation_id = payload.simulation_id or str(uuid.uuid4())
     try:
-        orch = await get_orchestrator(simulation_id)
-        state = await orch.create_simulation(simulation_id)
-        if payload.user_id:
-            await orch.register_participant(simulation_id, payload.user_id)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            state = await orch.create_simulation(simulation_id)
+            if payload.user_id:
+                await orch.register_participant(simulation_id, payload.user_id)
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -310,8 +310,8 @@ async def delete_simulation(
     """删除指定仿真实例，并解除与参与者和脚本的关联。"""
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        result = await orch.delete_simulation(simulation_id)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            result = await orch.delete_simulation(simulation_id)
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -333,8 +333,8 @@ async def run_tick(
     """执行指定仿真实例的单个 Tick，并返回更新后的摘要。"""
     overrides = payload.decisions if payload and payload.decisions else None
     try:
-        orch = await get_orchestrator(simulation_id)
-        result = await orch.run_tick(simulation_id, overrides=overrides)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            result = await orch.run_tick(simulation_id, overrides=overrides)
     except MissingAgentScriptsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -361,8 +361,8 @@ async def run_days(
     """按照指定天数自动执行多个 Tick。"""
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        result = await orch.run_until_day(simulation_id, payload.days)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            result = await orch.run_until_day(simulation_id, payload.days)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except MissingAgentScriptsError as exc:
@@ -393,8 +393,8 @@ async def run_day(
 
     ticks_per_day = payload.ticks_per_day if payload else None
     try:
-        orch = await get_orchestrator(simulation_id)
-        result = await orch.run_day(simulation_id, ticks_per_day=ticks_per_day)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            result = await orch.run_day(simulation_id, ticks_per_day=ticks_per_day)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except MissingAgentScriptsError as exc:
@@ -491,8 +491,10 @@ async def register_participant(
     """登记共享仿真实例的参与者信息。"""
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        participants = await orch.register_participant(simulation_id, payload.user_id)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            participants = await orch.register_participant(
+                simulation_id, payload.user_id
+            )
     except SimulationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:  # pragma: no cover - defensive
@@ -526,10 +528,10 @@ async def update_script_limit(
     """为指定仿真实例设置每位用户的脚本数量上限。"""
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        applied = await orch.set_script_limit(
-            simulation_id, payload.max_scripts_per_user
-        )
+        async with get_orchestrator_locked(simulation_id) as orch:
+            applied = await orch.set_script_limit(
+                simulation_id, payload.max_scripts_per_user
+            )
     except SimulationStateError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -581,8 +583,8 @@ async def update_simulation_features(
     updates = payload.model_dump(exclude_none=True)
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        state = await orch.update_simulation_features(simulation_id, **updates)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            state = await orch.update_simulation_features(simulation_id, **updates)
     except SimulationStateError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -706,15 +708,15 @@ async def upload_script(
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        metadata = await orch.register_script_for_simulation(
-            simulation_id=simulation_id,
-            user_id=user.email,
-            script_code=payload.code,
-            description=payload.description,
-            agent_kind=resolved_kind,
-        )
-        await orch.register_participant(simulation_id, user.email)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            metadata = await orch.register_script_for_simulation(
+                simulation_id=simulation_id,
+                user_id=user.email,
+                script_code=payload.code,
+                description=payload.description,
+                agent_kind=resolved_kind,
+            )
+            await orch.register_participant(simulation_id, user.email)
     except SimulationStateError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -755,13 +757,13 @@ async def attach_script(
     """将既有脚本挂载到指定仿真实例。"""
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        metadata = await orch.attach_script_to_simulation(
-            simulation_id=simulation_id,
-            script_id=payload.script_id,
-            user_id=user.email,
-        )
-        await orch.register_participant(simulation_id, user.email)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            metadata = await orch.attach_script_to_simulation(
+                simulation_id=simulation_id,
+                script_id=payload.script_id,
+                user_id=user.email,
+            )
+            await orch.register_participant(simulation_id, user.email)
     except SimulationStateError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -796,8 +798,8 @@ async def delete_script(
     """从指定仿真实例中移除脚本。"""
 
     try:
-        orch = await get_orchestrator(simulation_id)
-        await orch.remove_script_from_simulation(simulation_id, script_id)
+        async with get_orchestrator_locked(simulation_id) as orch:
+            await orch.remove_script_from_simulation(simulation_id, script_id)
     except SimulationStateError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
