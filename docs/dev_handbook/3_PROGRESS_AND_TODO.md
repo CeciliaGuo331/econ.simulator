@@ -59,7 +59,7 @@
 - 并发性能优化（Web 层）：
 	- 引入有上限的 `_bounded_gather`，在多仿真/多用户聚合时并行获取 state/features/failures，显著降低页面等待时间。
 - LLM API 封装与调用限制：
-	- 新增 `/llm/completions` 路由，提供安全的模型接口（默认 Mock Provider），并对每用户进行速率限制；错误处理与配额返回信息完善。
+	- 新增 `/llm/completions` 路由，提供安全的模型接口（基于 OpenAI 兼容 provider），并对每用户进行速率限制；错误处理与配额返回信息完善。
 - 交易与运行时数据（基础设施）：
 	- 新增模型：`MarketRuntime`、`TradeRecord`、`LedgerEntry`、`AgentSnapshotRecord`。
 	- Redis 增加 runtime 存储（`market_runtime`、`trades`、`ledger`），DataAccessLayer 提供写入/读取接口。
@@ -87,7 +87,7 @@
 - **经济模型重构**：当前市场和各种主体的设计未遵循文档中的经济设计，仅作平台测试用，需要重构。
 
 ### 用户
-- [已完成] LLM API 封装与配额限制：提供 `/llm/completions`，默认 Mock Provider，支持每用户速率限制与用量回报。
+- [已完成] LLM API 封装与配额限制：提供 `/llm/completions`（OpenAI 兼容 provider），支持每用户速率限制与用量回报。
 - **经济模型重构后平台策略脚本相关api需要相应修改，以及更新网站文档页**
 
 ### 网页

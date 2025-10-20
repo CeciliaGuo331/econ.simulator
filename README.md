@@ -117,7 +117,7 @@
 
 ## 可选：接入真实 LLM（OpenAI）
 
-本项目提供了一个可选的 OpenAI 适配器。默认情况下仓库使用内置的 Mock provider 用于测试与离线开发；要启用真实的 OpenAI 调用，请执行以下步骤：
+本项目提供了与 OpenAI 兼容的 LLM 适配器。仓库和默认文档均以 `openai` provider 为目标；要启用真实的 OpenAI 调用，请按下列步骤操作：
 
 1. 安装可选依赖（在本地虚拟环境中执行）：
 
@@ -131,18 +131,31 @@ pip install openai
 export OPENAI_API_KEY="sk-..."
 ```
 
-3. 启用 provider：设置环境变量 `ECON_SIM_LLM_PROVIDER=openai`（或使用默认配置），程序会按需导入 `openai` 包并使用 `OPENAI_API_KEY` 发起请求。示例配置文件位于 `config/llm.env.example`：
+3. 启用 provider：设置环境变量 `ECON_SIM_LLM_PROVIDER=openai`，然后按常规启动应用：
 
 ```bash
 export ECON_SIM_LLM_PROVIDER=openai
 uvicorn econ_sim.main:app --reload
 ```
 
-- 注意事项：
-- 如果未安装 `openai` 包或未设置 `OPENAI_API_KEY`，应用会抛出运行时错误并在启动日志中记录详细信息。请确保在生产/开发环境中正确配置 `OPENAI_API_KEY`（建议通过非提交式的 env 文件或秘密管理器注入）。
-- 为避免意外调用产生费用，脚本运行时的 LLM 调用受每次脚本执行的配额限制（环境变量控制）：
-	- ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT（默认 3）
-	- ECON_SIM_LLM_MAX_TOKENS_PER_SCRIPT（默认 1024）
-	- ECON_SIM_LLM_MAX_TOKENS_PER_CALL（默认 512）
+重要说明与环境变量
 
-示例脚本（参考 `examples/scripts/sample_strategy.py`）展示了在沙箱中如何安全地访问全局 `llm` 对象并在配额超限时回退。
+ - 如果未安装 `openai` 包或未设置 `OPENAI_API_KEY`，应用在尝试使用该 provider 时会抛出运行时错误，请在生产环境通过安全的 secret 管理器注入密钥。
+ - 本仓库对脚本内的 LLM 调用只保留最小且可配置的保护策略（在 `econ_sim/utils/llm_session.py` 中实现）。当前生效的环境变量如下：
+
+	- `ECON_SIM_LLM_PROVIDER`：要使用的 LLM provider 名称（默认使用 openai）。
+	- `ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT`：每次脚本执行允许的最大 LLM 调用次数（默认：1）。这里的“脚本执行”指的是脚本在一次 Tick/运行中被执行的那次生命周期。将其设置为 0 可禁止脚本调用 LLM。
+	- `ECON_SIM_LLM_MAX_INPUT_TOKENS`：单次调用输入（prompt）的近似 token 上限（默认：1024）。当前实现使用非常粗略的估算（1 token ≈ 4 字符）来快速防护；如果需要精确计数，请在部署时用 tokenizer 进行额外校验。
+	- `ECON_SIM_LLM_MAX_TOKENS_PER_CALL`：单次调用允许生成的最大输出 token（默认：512）。该值同时作为 provider 请求的 `max_tokens` 回退值。
+
+示例（放入 `config/llm.env.example` 或 shell 环境）：
+
+```bash
+export ECON_SIM_LLM_PROVIDER=openai
+export OPENAI_API_KEY="sk-..."
+export ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT=1
+export ECON_SIM_LLM_MAX_INPUT_TOKENS=1024
+export ECON_SIM_LLM_MAX_TOKENS_PER_CALL=512
+```
+
+注意：为避免意外费用与滥用，请结合上述配额和部署时的访问控制（API key 管理、网络访问策略等）使用真实 LLM。示例脚本（参考 `examples/scripts/sample_strategy.py`）演示了如何在沙箱中访问全局 `llm` 对象并在配额超限时进行回退处理。

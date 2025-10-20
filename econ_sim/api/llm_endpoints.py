@@ -1,7 +1,8 @@
 """LLM API endpoints with per-user rate limiting.
 
-This provides a minimal completion endpoint that uses a mock provider by default
-and enforces a per-user quota via Redis/in-memory fixed window limiting.
+This provides a minimal completion endpoint that delegates to the configured
+OpenAI-compatible provider and enforces a per-user quota via Redis/in-memory
+fixed window limiting.
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ async def completions(
     usage = min(len(payload.prompt) // 4 + (payload.max_tokens or 0), 4096)
     return CompletionResponse(
         output=text,
-        model=payload.model or "mock",
+        model=payload.model or "openai",
         usage_tokens=usage,
         rate_remaining=rl.remaining,
         rate_reset_seconds=rl.reset_seconds,

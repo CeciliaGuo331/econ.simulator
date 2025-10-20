@@ -2,7 +2,7 @@
 
 Provides a synchronous helper that scripts running inside the sandbox can call
 via the global name `llm`. The implementation delegates to the project's
-LLM provider (mock by default) and enforces:
+OpenAI-compatible LLM provider and enforces:
  - max_calls: maximum number of generate calls allowed per script execution
  - max_tokens_total: cumulative token usage allowed for the whole execution
  - max_tokens_per_call: token cap for a single call
@@ -20,9 +20,10 @@ from typing import Optional
 from .llm_provider import LLMRequest, get_default_provider
 
 
-DEFAULT_MAX_CALLS = int(os.getenv("ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT", "3"))
-DEFAULT_MAX_TOKENS_TOTAL = int(os.getenv("ECON_SIM_LLM_MAX_TOKENS_PER_SCRIPT", "1024"))
+DEFAULT_MAX_CALLS = int(os.getenv("ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT", "1"))
 DEFAULT_MAX_TOKENS_PER_CALL = int(os.getenv("ECON_SIM_LLM_MAX_TOKENS_PER_CALL", "512"))
+# approximate input token limit (how many tokens the prompt may contain)
+DEFAULT_MAX_INPUT_TOKENS = int(os.getenv("ECON_SIM_LLM_MAX_INPUT_TOKENS", "1024"))
 
 
 class LLMQuotaExceeded(RuntimeError):
@@ -33,13 +34,12 @@ class LLMQuotaExceeded(RuntimeError):
 class LLMSession:
     provider: object
     max_calls: int = DEFAULT_MAX_CALLS
-    max_tokens_total: int = DEFAULT_MAX_TOKENS_TOTAL
     max_tokens_per_call: int = DEFAULT_MAX_TOKENS_PER_CALL
 
     calls_made: int = 0
-    tokens_used: int = 0
 
     def _check_call_allowed(self, requested_tokens: Optional[int]) -> None:
+        # Enforce single-call-per-script (per-tick) and per-call output token cap.
         if self.max_calls is not None and self.calls_made >= self.max_calls:
             raise LLMQuotaExceeded("LLM call quota exceeded for this script execution")
         if requested_tokens is not None and self.max_tokens_per_call is not None:
@@ -47,11 +47,17 @@ class LLMSession:
                 raise LLMQuotaExceeded(
                     f"Requested max_tokens ({requested_tokens}) exceeds per-call limit ({self.max_tokens_per_call})"
                 )
-        if self.max_tokens_total is not None and requested_tokens is not None:
-            if self.tokens_used + requested_tokens > self.max_tokens_total:
-                raise LLMQuotaExceeded(
-                    "LLM token quota exceeded for this script execution"
-                )
+
+    def _check_input_tokens(self, prompt: str) -> None:
+        """Approximate prompt token count and enforce an input token cap."""
+        if not prompt:
+            return
+        # Very simple heuristic: 1 token ~= 4 chars; use conservative ceil
+        approx = max(1, int(len(prompt) / 4))
+        if approx > DEFAULT_MAX_INPUT_TOKENS:
+            raise LLMQuotaExceeded(
+                f"Prompt too long (approx tokens={approx}) exceeds input limit ({DEFAULT_MAX_INPUT_TOKENS})"
+            )
 
     def generate(
         self,
@@ -65,7 +71,7 @@ class LLMSession:
 
         Raises LLMQuotaExceeded on quota violations, or propagates provider errors.
         """
-        # Normalize requested token amounts
+        # Normalize requested token amounts and check input size
         requested = None
         if max_tokens is not None:
             try:
@@ -73,6 +79,10 @@ class LLMSession:
             except Exception:
                 requested = None
 
+        # input token check (approximation)
+        self._check_input_tokens(prompt)
+
+        # enforce call count and per-call output token cap
         self._check_call_allowed(requested)
 
         # construct request object compatible with provider
@@ -98,13 +108,12 @@ class LLMSession:
                 except Exception:
                     pass
 
-        # update counters
+        # update call counter; we do not track cumulative tokens per script
         self.calls_made += 1
         try:
             usage = int(getattr(resp, "usage_tokens", 0) or 0)
         except Exception:
             usage = 0
-        self.tokens_used += usage
 
         # Return a simple dict that scripts can inspect
         return {
@@ -123,15 +132,6 @@ def create_llm_session_from_env() -> LLMSession:
         )
     except Exception:
         pass
-    max_tokens_total = DEFAULT_MAX_TOKENS_TOTAL
-    try:
-        max_tokens_total = int(
-            os.getenv(
-                "ECON_SIM_LLM_MAX_TOKENS_PER_SCRIPT", str(DEFAULT_MAX_TOKENS_TOTAL)
-            )
-        )
-    except Exception:
-        pass
     max_tokens_per_call = DEFAULT_MAX_TOKENS_PER_CALL
     try:
         max_tokens_per_call = int(
@@ -145,7 +145,6 @@ def create_llm_session_from_env() -> LLMSession:
     return LLMSession(
         provider=provider,
         max_calls=max_calls,
-        max_tokens_total=max_tokens_total,
         max_tokens_per_call=max_tokens_per_call,
     )
 
