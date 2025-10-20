@@ -1,8 +1,16 @@
-"""Simple async rate limiter with Redis backend (fallback in-memory).
+"""
+轻量级异步速率限制器（支持 Redis 后端，回退到内存实现）。
 
-Use a fixed-window counter per (key, window_sec). Suitable for coarse-grained
-API call limiting. For stricter guarantees, consider sliding windows or token
-bucket variants.
+实现说明：
+- 使用固定窗口（fixed-window）计数器对 (key, window_seconds) 进行限流，
+    适用于粗粒度的 API 调用控制，例如每分钟最大请求数的限制。
+- 若配置了 `ECON_SIM_REDIS_URL` 并安装了 `redis.asyncio`，会使用 Redis 实现以便在多进程/多实例间共享限流计数；
+    否则回退为单进程内存实现（适用于单机或测试场景）。
+
+使用建议：
+- 对于需要更平滑的速率控制或限制突发流量的场景，建议改用滑动窗口或令牌桶算法。
+- 返回的 `RateLimitResult` 包含 `allowed` (是否允许)、`remaining` (本窗口剩余可用次数)
+    与 `reset_seconds` (窗口剩余秒数) 等信息，便于前端友好提示。
 """
 
 from __future__ import annotations
@@ -10,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 
 try:  # optional dependency
     from redis.asyncio import Redis
@@ -32,7 +40,7 @@ class RateLimiter:
         self.window = int(window_seconds)
         self.max_calls = int(max_calls)
         self.prefix = prefix
-        self._redis: Optional[Redis] = None
+        self._redis: Optional[Any] = None
         self._memory: dict[str, tuple[int, int]] = {}
         self._lock = asyncio.Lock()
 
@@ -89,8 +97,4 @@ class RateLimiter:
         )
 
 
-"""Lightweight async-safe token bucket rate limiter.
-
-Per-user limiter with burst and refill rate. In-memory only; can be swapped
-to Redis later.
-"""
+# 轻量级的令牌桶限流（占位注释）。如需更精细的限流策略，可在此模块中添加实现。

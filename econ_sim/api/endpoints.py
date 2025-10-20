@@ -31,10 +31,16 @@ from ..utils.agents import resolve_agent_kind
 router = APIRouter(prefix="/simulations", tags=["simulations"])
 scripts_router = APIRouter(prefix="/scripts", tags=["scripts"])
 """
-The orchestrator instance is created during application startup (FastAPI lifespan)
-and injected into this module by `econ_sim.main`. We keep a module-level
-name for backwards compatibility with tests and other modules that reference
-`api.endpoints._orchestrator`.
+API 层：该模块定义与仿真相关的 HTTP 路由（创建仿真、运行 Tick、脚本管理等）。
+
+要点说明：
+- 模块保留一个兼容性的模块级 `_orchestrator` 引用（旧测试或模块可能直接引用），
+    但实际的 orchestrator 实例应通过 orchestrator factory 在应用启动时创建并注入。
+- 对可能修改仿真状态的操作（如创建、删除、运行 Tick、上传/挂载脚本）使用 per-simulation 锁
+    (`get_orchestrator_locked`) 以保证同一仿真实例的并发安全。
+
+本模块中的数据模型使用 Pydantic 定义以便自动生成 OpenAPI 文档。错误处理遵循 HTTP 语义
+（404：未找到仿真；409：资源冲突；401/403：鉴权/权限问题；500：服务器内部错误）。
 """
 _orchestrator: Optional[SimulationOrchestrator] = None  # deprecated; kept for tests
 

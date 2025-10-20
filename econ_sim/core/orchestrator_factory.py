@@ -22,19 +22,19 @@ from .orchestrator import SimulationOrchestrator
 
 logger = logging.getLogger(__name__)
 
-# mapping: simulation_id -> SimulationOrchestrator
+# 映射：simulation_id -> SimulationOrchestrator 实例缓存
 _ORCH_MAP: Dict[str, SimulationOrchestrator] = {}
-# last access timestamp (monotonic seconds)
+# 最近一次访问时间（monotonic 秒数）
 _LAST_USED: Dict[str, float] = {}
-# per-simulation op locks to serialize mutating orchestrator usage
+# 每个 simulation 的操作锁，用于对可变操作进行序列化
 _OP_LOCKS: Dict[str, asyncio.Lock] = {}
-# async lock to guard concurrent creations
+# 工厂级别锁，用于保护并发创建
 _FACTORY_LOCK = asyncio.Lock()
 
-# Shared DataAccessLayer injected at app startup to ensure connection pool reuse
+# 在应用启动期间注入的共享 DataAccessLayer，用于复用连接池
 _SHARED_DAL: Optional[DataAccessLayer] = None
 
-# background eviction task and settings
+# 后台回收任务与配置
 _EVICTOR_TASK: Optional[asyncio.Task] = None
 _EVICTOR_INTERVAL = float(
     int(__import__("os").environ.get("ECON_SIM_ORCH_EVICT_INTERVAL", "30"))
@@ -43,10 +43,10 @@ _EVICT_TTL = float(int(__import__("os").environ.get("ECON_SIM_ORCH_IDLE_TTL", "6
 
 
 def init_shared_data_access(dal: DataAccessLayer) -> None:
-    """Inject a shared DataAccessLayer to be reused by all created orchestrators.
+    """注入共享的 DataAccessLayer，供所有创建的 orchestrator 复用。
 
-    Must be called during application startup (lifespan) before orchestrators
-    are created to avoid per-orchestrator pools.
+    必须在应用启动（lifespan）期间调用，并且在创建任何 orchestrator 之前完成，
+    以避免为每个 orchestrator 创建独立的数据库/连接池实例。
     """
     global _SHARED_DAL
     _SHARED_DAL = dal
@@ -63,7 +63,7 @@ def _start_evictor() -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # caller may start evictor later when loop available
+        # 如果当前没有运行事件循环，调用者可以在稍后启动回收器
         return
 
     _EVICTOR_TASK = loop.create_task(_evictor_loop())
@@ -80,11 +80,10 @@ def _stop_evictor() -> None:
 
 
 async def _evictor_loop() -> None:
-    """Background task that evicts idle orchestrators to free memory.
+    """后台任务：回收闲置的 orchestrator 以释放内存。
 
-    Eviction is best-effort: only removes cached references. Underlying world
-    state stays in configured stores (Redis/Postgres) and will be re-loaded on
-    next get_orchestrator call.
+    回收为 best-effort：仅清理缓存的引用。实际的世界状态仍保存在配置的存储（Redis/Postgres），
+    下一次 get_orchestrator 会按需重新加载。
     """
     try:
         while True:
@@ -100,7 +99,7 @@ async def _evictor_loop() -> None:
                         _LAST_USED.pop(sim_id, None)
                         _OP_LOCKS.pop(sim_id, None)
                         if inst is not None:
-                            logger.info("Evicted idle orchestrator for %s", sim_id)
+                            logger.info("回收闲置 orchestrator：%s", sim_id)
             await asyncio.sleep(_EVICTOR_INTERVAL)
     except asyncio.CancelledError:
         return
@@ -118,7 +117,7 @@ async def get_orchestrator_locked(simulation_id: str):
 
     """
     sim_id = simulation_id or "default"
-    # ensure orchestrator exists
+    # 确保 orchestrator 存在
     orch = await get_orchestrator(sim_id)
     lock = _OP_LOCKS.get(sim_id)
     if lock is None:
@@ -141,7 +140,7 @@ async def get_orchestrator(simulation_id: str) -> SimulationOrchestrator:
     若传入空字符串，函数将使用字符串 "default" 作为键。
     """
     key = simulation_id or "default"
-    # Fast path: avoid acquiring lock if already created.
+    # 快速路径：如果已存在则避免获取工厂锁以提升并发性能。
     inst = _ORCH_MAP.get(key)
     if inst is not None:
         _LAST_USED[key] = time.monotonic()

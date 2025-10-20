@@ -1,4 +1,8 @@
-"""负责驱动经济仿真 Tick 执行流程的核心调度模块。"""
+"""负责驱动经济仿真 Tick 执行流程的核心调度模块。
+
+本模块组织数据访问、基线决策回退、脚本覆盖生成、市场结算以及状态持久化。
+注：对外暴露的异常类与返回类型用于在 API 层进行错误映射与类型检查。
+"""
 
 from __future__ import annotations
 
@@ -37,19 +41,19 @@ from ..script_engine.notifications import (
 )
 from ..script_engine.registry import ScriptExecutionError, ScriptFailureEvent
 
-if TYPE_CHECKING:  # pragma: no cover - type checking only
+if TYPE_CHECKING:  # pragma: no cover - 仅在类型检查时引用
     from ..script_engine.registry import ScriptMetadata
 
 
 logger = logging.getLogger(__name__)
 
-# optional prometheus histogram for orchestrator phase durations
+# 可选的 Prometheus 直方图，用于记录 orchestrator 各阶段耗时指标（若 prometheus_client 可用）
 try:
     from prometheus_client import Histogram
 
     PHASE_HISTOGRAM = Histogram(
         "econ_sim_phase_duration_seconds",
-        "Duration of orchestrator phases",
+        "记录 orchestrator 各阶段耗时（秒）",
         ["phase"],
     )
 except Exception:
@@ -66,7 +70,7 @@ class BatchRunResult:
 
 
 class SimulationStateError(RuntimeError):
-    """在仿真状态不满足操作要求时抛出的异常。"""
+    """在仿真状态不满足操作要求时抛出的异常（例如需要 tick 0 的操作）。"""
 
     def __init__(self, simulation_id: str, tick: int) -> None:
         super().__init__(
@@ -77,7 +81,7 @@ class SimulationStateError(RuntimeError):
 
 
 class MissingAgentScriptsError(RuntimeError):
-    """当核心主体缺少脚本绑定时抛出的异常。"""
+    """当必须有脚本的核心主体未绑定脚本时抛出的异常。"""
 
     def __init__(self, simulation_id: str, missing_agents: Iterable[AgentKind]) -> None:
         missing_list = ", ".join(sorted(agent.value for agent in missing_agents))
@@ -89,7 +93,7 @@ class MissingAgentScriptsError(RuntimeError):
 
 
 class DayBoundaryRequiredError(RuntimeError):
-    """在非日终边界尝试执行仅可在日终进行的操作时抛出。"""
+    """在非日终边界尝试执行仅可在日终进行的操作时抛出的异常。"""
 
     def __init__(self, simulation_id: str, tick: int, ticks_per_day: int) -> None:
         super().__init__(
@@ -101,7 +105,12 @@ class DayBoundaryRequiredError(RuntimeError):
 
 
 class SimulationOrchestrator:
-    """仿真调度器，负责组织数据访问、决策生成与市场结算。"""
+    """仿真调度器，负责组织数据访问、决策生成与市场结算。
+
+    该类封装了驱动一次 Tick 所需的完整流程，包括基线决策生成、脚本覆盖合并、
+    决策收集、市场逻辑执行与结果持久化。内部使用轻量的 in-memory 缓存来保存
+    最近的 phase timing 信息与临时日志，用于调试与监控。
+    """
 
     def __init__(
         self,
@@ -111,8 +120,8 @@ class SimulationOrchestrator:
     ) -> None:
         """初始化调度器。
 
-        若未显式传入数据访问层，将使用默认的内存存储配置；同时缓存世界配置，
-        方便后续 Tick 中的策略与逻辑模块复用。
+        若未显式传入数据访问层，将使用默认的存储配置（可能为内存或基于配置的后端）；
+        同时缓存世界配置，便于后续 Tick 中的策略与逻辑模块复用。
         """
         config = get_world_config()
         self.data_access = data_access or DataAccessLayer.with_default_store(config)
@@ -137,7 +146,7 @@ class SimulationOrchestrator:
     async def create_simulation(self, simulation_id: str) -> WorldState:
         """确保指定 ID 的仿真实例存在。
 
-        当实例尚未初始化时，会自动创建并返回首个世界状态快照。
+        若实例尚未初始化，会在存储中创建初始世界状态并返回该快照。
         """
 
         return await self.data_access.ensure_simulation(simulation_id)
@@ -187,7 +196,11 @@ class SimulationOrchestrator:
     async def set_script_limit(
         self, simulation_id: str, limit: Optional[int]
     ) -> Optional[int]:
-        """为指定仿真实例设置每位用户的脚本数量上限。"""
+        """为指定仿真实例设置每位用户的脚本数量上限。
+
+        为了保持向后兼容性，若 limit 为 None 则表示不限制。
+        在设置新上限时会校验现有脚本数量是否已超限，若超限则抛出 ValueError。
+        """
 
         if limit is not None and limit <= 0:
             raise ValueError("script limit must be positive or null")
@@ -219,7 +232,7 @@ class SimulationOrchestrator:
         return await script_registry.get_simulation_limit(simulation_id)
 
     async def list_simulations(self) -> list[str]:
-        """列出已知仿真实例 ID。"""
+        """列出进程内已知的仿真实例 ID（基于缓存）。"""
 
         return await self.data_access.list_simulations()
 
@@ -311,8 +324,13 @@ class SimulationOrchestrator:
     ) -> TickResult:
         """执行一次完整的 Tick。
 
-        主要步骤包括：确保仿真存在、生成默认策略决策、应用玩家覆盖、调用市场逻辑
-        计算状态更新，并最终写回数据存储，同时返回此次 Tick 的日志和更新详情。
+        步骤：
+        1. 确保仿真存在并加载当前世界状态；
+        2. 根据配置应用家庭冲击并生成用于决策的决策态（decision_state）；
+        3. 生成基线决策与脚本覆盖（script overrides）；
+        4. 合并并收集最终决策；
+        5. 调用市场逻辑以计算状态更新与日志；
+        6. 持久化更新并记录 Tick 日志，返回 TickResult。
         """
         world_state = await self.create_simulation(simulation_id)
         await self._require_agent_coverage(simulation_id)
@@ -323,7 +341,7 @@ class SimulationOrchestrator:
             shocks = generate_household_shocks(world_state, self.config)
             decision_state = apply_household_shocks_for_decision(world_state, shocks)
 
-        # baseline decisions (timed)
+        # 基线决策生成（计时）
         baseline_dur = None
         start = time.perf_counter()
         try:
@@ -354,7 +372,7 @@ class SimulationOrchestrator:
                 except Exception:
                     pass
 
-        # generate script overrides (timed)
+        # 生成脚本覆盖（计时）
         start = time.perf_counter()
         (
             script_overrides,
@@ -384,7 +402,7 @@ class SimulationOrchestrator:
         if failure_events:
             await self.data_access.record_script_failures(failure_events)
         combined_overrides = merge_tick_overrides(script_overrides, overrides)
-        # collect decisions (timed)
+        # 收集决策（计时）
         start = time.perf_counter()
         decisions = await asyncio.to_thread(
             collect_tick_decisions,
@@ -399,7 +417,7 @@ class SimulationOrchestrator:
             except Exception:
                 pass
 
-        # execute market logic (timed)
+        # 执行市场逻辑（计时）
         start = time.perf_counter()
         updates, logs = await asyncio.to_thread(
             execute_tick_logic,
@@ -458,7 +476,7 @@ class SimulationOrchestrator:
             )
         )
 
-        # persist updates and record tick (timed)
+        # 持久化更新并记录 Tick（计时）
         start = time.perf_counter()
         updated_state = await self.data_access.apply_updates(simulation_id, updates)
         tick_result = TickResult(world_state=updated_state, logs=logs, updates=updates)
@@ -471,7 +489,7 @@ class SimulationOrchestrator:
             except Exception:
                 pass
 
-        # store recent phase timings in memory for lightweight inspection
+        # 在内存中记录最近的分阶段耗时，供轻量级检查/监控使用
         try:
             current_tick = world_state.tick
             self._recent_phase_timings.append(
@@ -486,16 +504,17 @@ class SimulationOrchestrator:
                 }
             )
         except Exception:
-            # best-effort: do not let metrics collection break tick execution
+            # 尽最大努力：不要让指标收集中断 Tick 的执行
             logger.debug(
                 "Failed to append phase timings for simulation %s", simulation_id
             )
         return tick_result
 
     async def reset_simulation(self, simulation_id: str) -> WorldState:
-        """将仿真实例恢复到初始状态。
+        """将仿真实例恢复到初始状态（重建世界状态快照）。
 
-        该操作会重建世界状态的初始快照，但不会影响脚本注册或参与者信息。
+        注意：此操作不会删除注册在脚本注册表中的脚本或参与者信息。
+        但需要在重置后确保脚本对应的实体状态已在世界中种子化（seeded）。
         """
         previous_features: Optional[SimulationFeatures] = None
         try:
@@ -519,14 +538,13 @@ class SimulationOrchestrator:
         # world will not contain the required entities, causing subsequent
         # tick execution to fail with missing agent coverage.
         try:
-            # Ensure registry has reloaded any persisted scripts for this
-            # simulation (some registry implementations lazily load). This
-            # forces a fresh read from the underlying store.
+            # 确保 registry 已重新加载该仿真持久化的脚本（部分 registry 实现为惰性加载）。
+            # 这会强制从底层存储进行一次新的读取。
             if hasattr(script_registry, "_ensure_simulation_loaded"):
                 try:
                     await script_registry._ensure_simulation_loaded(simulation_id)
                 except Exception:
-                    # best-effort: continue to listing which may still work
+                    # 尽最大努力：在 _ensure_simulation_loaded 失败时继续调用 list_scripts
                     logger.debug(
                         "_ensure_simulation_loaded failed for %s, continuing to list_scripts",
                         simulation_id,
@@ -537,8 +555,7 @@ class SimulationOrchestrator:
                 # _ensure_entity_seeded is a no-op for unbound/placeholder scripts
                 await self._ensure_entity_seeded(meta)
         except Exception:
-            # best-effort: do not let seeding failures break the reset flow;
-            # callers can inspect logs or re-run seeding explicitly in tests.
+            # 尽最大努力：不要让重新种子化失败打断重置流程；调用方可检查日志或在测试中显式重新执行种子化。
             logger.exception(
                 "Failed to re-seed entities from scripts after resetting %s",
                 simulation_id,
@@ -595,7 +612,7 @@ class SimulationOrchestrator:
         return updated
 
     async def run_until_day(self, simulation_id: str, days: int) -> BatchRunResult:
-        """自动执行多个 Tick，直到完成指定天数的全部 Tick。"""
+        """自动执行多个 Tick，直到前进指定的完整天数。"""
 
         if days <= 0:
             raise ValueError("days must be a positive integer")
@@ -619,7 +636,7 @@ class SimulationOrchestrator:
             ticks_executed += 1
             aggregated_logs.extend(last_result.logs)
 
-            # yield to event loop each tick to improve responsiveness under load
+            # 每个 tick 之后让出事件循环，提升高负载场景下的响应性
             await asyncio.sleep(0)
 
             if ticks_executed > safety_limit:
@@ -639,7 +656,7 @@ class SimulationOrchestrator:
         *,
         ticks_per_day: Optional[int] = None,
     ) -> BatchRunResult:
-        """执行单个仿真日（按配置或指定 Tick 数量）。"""
+        """执行单个仿真日（使用配置的 ticks_per_day 或调用方提供的值）。"""
 
         state = await self.create_simulation(simulation_id)
         configured_ticks = self.config.simulation.ticks_per_day
@@ -667,7 +684,7 @@ class SimulationOrchestrator:
         )
 
     async def delete_simulation(self, simulation_id: str) -> dict[str, int]:
-        """删除仿真实例的世界状态，并解除与参与者、脚本的关联。"""
+        """删除仿真实例的世界状态，并解除与参与者、脚本的关联。返回受影响数量统计。"""
 
         participants_removed = await self.data_access.delete_simulation(simulation_id)
         scripts_removed = await script_registry.detach_simulation(simulation_id)
@@ -685,12 +702,11 @@ class SimulationOrchestrator:
         new_code: str,
         new_description: Optional[str] = None,
     ) -> "ScriptMetadata":
-        """在“日终”边界更换脚本代码而保留实体，下一交易日生效。
+        """在“日终”边界更换脚本代码而保留实体，变更在下一交易日生效。
 
         约束：
-        - 必须在日终边界调用：即当前 tick 能被 ticks_per_day 整除。
-        - 不允许在 tick 0 之前进行（需仿真已创建）。
-        - 仅替换代码与描述，不改变 script_id、entity_id、agent_kind、simulation_id。
+        - 必须在日终边界调用（当前 tick % ticks_per_day == 0）；
+        - 仅替换脚本代码与描述，不允许修改 script_id、entity_id、agent_kind 或 simulation_id。
         """
         state = await self.data_access.get_world_state(simulation_id)
         ticks_per_day = self.config.simulation.ticks_per_day

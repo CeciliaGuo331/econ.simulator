@@ -1,4 +1,8 @@
-"""PostgreSQL-backed script storage."""
+"""基于 PostgreSQL 的脚本存储实现。
+
+该模块提供脚本的持久化（主表 upsert + 追加式版本表）以及按仿真或按用户的查询接口，
+并保证在事务内同时写入主表与版本表以维持历史一致性。
+"""
 
 from __future__ import annotations
 
@@ -39,6 +43,7 @@ class PostgresScriptStore:
         self._init_lock = asyncio.Lock()
 
     async def _ensure_schema(self) -> None:
+        """幂等地创建脚本主表与版本表，以及必要索引与约束。"""
         if self._initialized:
             return
         async with self._init_lock:
@@ -69,7 +74,7 @@ class PostgresScriptStore:
                     )
                     """
                 )
-                # versions table to track every code_version (append-only)
+                # 版本表用于以追加方式记录每次 code_version 的历史
                 versions_ident = quote_identifier(self._table + "_versions")
                 qualified_versions = f"{schema_ident}.{versions_ident}"
                 await conn.execute(
@@ -112,9 +117,8 @@ class PostgresScriptStore:
             if isinstance(metadata.created_at, datetime)
             else datetime.fromisoformat(str(metadata.created_at))
         )
-        # Ensure both the main row upsert and the versions append happen
-        # atomically. If the versions insert fails we must not leave the
-        # main table updated without a corresponding version entry.
+        # 保证主表的 upsert 与版本表的追加在同一事务内原子执行。
+        # 如果版本表插入失败，不应只留下已更新但没有对应版本记录的主表行。
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -145,7 +149,7 @@ class PostgresScriptStore:
                     metadata.last_failure_at,
                     metadata.last_failure_reason,
                 )
-                # append a version row for history
+                # 为历史记录追加一条版本行
                 versions_ident = quote_identifier(self._table + "_versions")
                 qualified_versions = f"{schema_ident}.{versions_ident}"
                 await conn.execute(
@@ -376,6 +380,6 @@ class PostgresScriptStore:
                 failure_reason,
             )
 
-    # For compatibility with tests/cleanup hooks
+    # 为兼容测试/清理钩子提供的兼容接口
     async def shutdown(self) -> None:
         await self.close()

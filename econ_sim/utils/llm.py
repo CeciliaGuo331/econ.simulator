@@ -1,9 +1,11 @@
-"""Light adapter for the project's LLM provider.
+"""
+LLM 适配层：为上层代码提供简单的一致接口（complete）以调用底层 provider 的生成能力。
 
-This module provides a small compatibility layer so code that previously
-called `resolve_llm_provider().complete(...)` continues to work. Under the
-hood we delegate to `econ_sim.utils.llm_provider.get_default_provider()`,
-which in this project is backed by OpenAI and requires `OPENAI_API_KEY`.
+说明：
+- 该模块把底层的 `LLMProvider.generate(LLMRequest, user_id=...)` 封装为 `complete(prompt, model, max_tokens)`，
+    返回字符串结果，便于 API 层或脚本直接使用而不暴露底层数据结构。
+- 运行时会调用 `econ_sim.utils.llm_provider.get_default_provider()` 来获得实际 provider 实例，
+    因此部署时需确保 `openai` SDK 与 `OPENAI_API_KEY` 已正确配置（默认 provider 为 openai）。
 """
 
 from __future__ import annotations

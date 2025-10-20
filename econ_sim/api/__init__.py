@@ -1,1 +1,6 @@
-"""API layer for econ simulator."""
+"""
+econ_sim 项目的 API 入口包。
+
+该包汇总不同的路由子模块（仿真、脚本、认证、LLM 接口等），
+并由主应用在启动阶段将这些路由注册到 FastAPI 实例中。
+"""

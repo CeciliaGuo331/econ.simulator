@@ -1,4 +1,9 @@
-"""Factory helpers for constructing default entity states on demand."""
+"""用于按需构造默认实体状态的工厂辅助函数模块。
+
+本模块提供 deterministic 的随机数生成和一组 create_* 函数，用来根据世界配置
+生成家庭、公司、银行、政府和央行等实体的初始状态。这些函数应保持幂等性，
+以便在重置或补种实体时得到可重复的结果。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +28,11 @@ from ..utils.settings import WorldConfig
 def _rng_for(
     config: WorldConfig, kind: AgentKind, entity_id: Optional[int | str]
 ) -> np.random.Generator:
+    """基于世界配置、主体类型与实体 ID 生成一个确定性的 RNG。
+
+    使用配置中的基本种子与 (agent_kind, entity_id) 的散列作为盐，保证不同
+    实体获得不同但可重复的随机序列，从而在测试/重置场景下复现结果。
+    """
     base_seed = int(config.simulation.seed or 0)
     salt = hash((kind.value, entity_id)) & ((1 << 63) - 1)
     seed = (base_seed + salt) % (1 << 63)

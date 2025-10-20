@@ -1,4 +1,4 @@
-"""Utility helpers to seed baseline strategy scripts for default users."""
+"""用于为默认用户准备基线策略脚本的工具函数。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .registry import ScriptExecutionError, ScriptMetadata, ScriptRegistry
 logger = logging.getLogger(__name__)
 
 BASELINE_DIR = Path(__file__).resolve().parents[2] / "deploy" / "baseline_scripts"
-# 使用纯数字 ID 以满足校验要求，同时选取远离常规种子范围的值避免冲突。
+# 使用纯数字 ID 以满足校验要求，同时选取远离常规种子范围的值以避免冲突。
 BASELINE_HOUSEHOLD_ENTITY_ID = "900000"
 
 
@@ -97,26 +97,24 @@ async def ensure_baseline_scripts(
     overwrite: bool = False,
     strict: bool = False,
 ) -> Dict[str, List[str]]:
-    """Ensure all baseline strategy scripts exist for their default users.
+    """确保为默认用户创建并（可选）挂载基线策略脚本。
 
-    Parameters
-    ----------
+    参数
+    -----
     registry:
-        Target script registry instance.
+        目标脚本注册表实例。
     attach_to_simulation:
-        When provided, baseline scripts (existing or newly created) are attached
-        to the given simulation identifier.
+        如果提供，则会将基线脚本（无论是已有还是新建）挂载到该仿真实例。
     overwrite:
-        When True, any existing scripts owned by the baseline users are removed
-        before seeding new copies.
+        若为 True，会删除基线用户已有脚本再重新创建基线脚本副本。
+    strict:
+        若为 True，在遇到文件缺失或注册失败时会抛出异常；否则记录错误并继续。
 
-    Returns
-    -------
+    返回
+    ----
     Dict[str, List[str]]
-        Summary dictionary containing IDs of created scripts (``created``),
-        scripts that were attached to the provided simulation (``attached``),
-        and baseline users whose existing scripts were left untouched
-        (``skipped_users``).
+        汇总字典：包含已创建脚本 ID（``created``），已挂载脚本 ID（``attached``），
+        被跳过的用户（``skipped_users``）以及遇到的错误（``errors``）。
     """
 
     summary: Dict[str, List[str]] = {
@@ -186,17 +184,15 @@ async def ensure_baseline_scripts(
                 script.simulation_id == attach_to_simulation for script in existing
             )
             if not already_attached:
-                # Prefer attaching the most recent script (last item in sorted list).
+                # 优先挂载最新的脚本（已按时间排序，取最后一项）。
                 latest = existing[-1]
                 try:
                     updated = await registry.attach_script(
                         latest.script_id, attach_to_simulation, user_id
                     )
                 except ScriptExecutionError as exc:
-                    # Some failures are expected (e.g. singleton agent kinds
-                    # where the simulation already has an attached script of
-                    # that type). Treat those as non-fatal and log at debug
-                    # level while preserving other errors.
+                    # 某些失败是可预期的（例如单例类型在仿真中已存在相同类型脚本），
+                    # 将其视为非致命错误并记录为 debug，其他错误则记录并在 strict 模式下抛出。
                     msg = str(exc)
                     singleton_conflict = any(
                         kw in msg

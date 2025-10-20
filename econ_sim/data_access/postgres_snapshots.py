@@ -1,8 +1,8 @@
-"""PostgreSQL-backed agent snapshots (draft).
+"""基于 PostgreSQL 的 agent 快照存储（草案）。
 
-This module defines a minimal store for per-agent snapshots to support future
-state persistence beyond the monolithic world_state snapshot. It is opt-in and
-not yet wired into DataAccessLayer.
+此模块定义了一个用于按主体保存快照的最小存储实现，旨在支持未来的
+按实体持久化能力（补充当前的 monolithic world_state 快照）。该实现为
+可选项，尚未在 DataAccessLayer 中默认启用。
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ class PostgresAgentSnapshotStore:
         self._init_lock = asyncio.Lock()
 
     async def _ensure_schema(self) -> None:
+        """幂等地确保用于存储 agent 快照的表与索引存在。"""
         if self._initialized:
             return
         async with self._init_lock:

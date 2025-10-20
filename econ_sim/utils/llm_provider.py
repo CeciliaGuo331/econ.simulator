@@ -1,10 +1,17 @@
-"""LLM provider abstraction.
+"""
+LLM Provider 抽象与运行时绑定（OpenAI 兼容）。
 
-This module provides a thin adapter to an OpenAI-compatible provider. The
-implementation intentionally avoids importing any external SDK at module load
-time (the OpenAI SDK is imported only when the provider is requested). If you
-need a local mock for testing, add one in tests or replace the provider via
-dependency injection; the project no longer assumes a built-in mock provider.
+该模块定义了用于与外部 LLM（当前以 OpenAI 兼容接口为主）交互的简单抽象：
+
+- `LLMRequest` / `LLMResponse`：用于在模块内部标准化请求/响应的数据结构。
+- `LLMProvider`：接口定义，具体 provider 应实现 `generate` 异步方法以返回 `LLMResponse`。
+- `get_default_provider()`：按需在运行时导入 `openai` SDK 并返回一个 OpenAIProvider 实例，
+    若 SDK 缺失或 `OPENAI_API_KEY` 未设置，会抛出明确的运行时错误以提示部署者配置环境。
+
+设计原则：
+- 避免在模块导入时立即依赖第三方 SDK；仅在需要 provider 时动态导入，从而降低导入侧副作用与测试难度。
+- 若需要在测试中使用 mock，请在测试目录中实现并注入一个满足 `LLMProvider` 接口的模拟实现，
+    或在测试 fixture 中替换 `get_default_provider` 的行为。
 """
 
 from __future__ import annotations

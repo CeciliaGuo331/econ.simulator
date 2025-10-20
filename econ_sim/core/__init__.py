@@ -1,1 +1,5 @@
-"""Core orchestration components."""
+"""核心调度组件。
+
+该包包含仿真调度与辅助构件，用于构造初始实体状态、基线回退管理以及
+其他 orchestrator 所需的核心逻辑模块。
+"""

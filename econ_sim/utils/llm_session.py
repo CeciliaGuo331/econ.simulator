@@ -1,13 +1,25 @@
-"""Per-execution LLM session with simple quota enforcement.
+"""
+每次脚本执行可用的 LLM 会话封装（含配额检查）。
 
-Provides a synchronous helper that scripts running inside the sandbox can call
-via the global name `llm`. The implementation delegates to the project's
-OpenAI-compatible LLM provider and enforces:
- - max_calls: maximum number of generate calls allowed per script execution
- - max_tokens_total: cumulative token usage allowed for the whole execution
- - max_tokens_per_call: token cap for a single call
+该模块提供一个同步风格的帮助器，对外暴露给沙箱内脚本的全局对象 `llm`。
+实现细节：
+- 会话将调用项目配置的 OpenAI 兼容 provider（通过 `econ_sim.utils.llm_provider.get_default_provider()` 获取），
+    并在本进程/本次脚本执行范围内执行简单的配额与输入长度校验。
+- 当前强制性校验包括：
+    - `max_calls`：单次脚本执行允许的最大 LLM 调用次数（可通过环境变量配置，默认 1）。
+    - `max_tokens_per_call`：单次调用允许生成的最大输出 token（默认 512），也是请求 provider 时的回退值。
+    - `max_input_tokens`：对 prompt 长度的粗略近似（1 token ≈ 4 字符）检测，超限则拒绝。
 
-Configuration is via environment variables (sane defaults provided).
+用法说明：脚本在沙箱内可直接使用全局 `llm.generate(prompt, ...)` 来发起同步请求，
+该方法会在内部创建或使用 provider 并在同一线程/进程上下文中同步等待结果返回。
+
+配置项（环境变量）:
+- `ECON_SIM_LLM_MAX_CALLS_PER_SCRIPT`（默认：1）
+- `ECON_SIM_LLM_MAX_INPUT_TOKENS`（默认：1024，近似值）
+- `ECON_SIM_LLM_MAX_TOKENS_PER_CALL`（默认：512）
+
+注意：此模块仅负责本地、轻量级的配额与输入校验；若需精确 token 计数或更复杂的配额策略
+（例如按用户计费、跨请求累计等），请在部署时结合 tokenizer 或外部计量服务实现。
 """
 
 from __future__ import annotations

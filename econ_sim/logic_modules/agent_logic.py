@@ -1,4 +1,9 @@
-"""Tools for merging baseline decisions with player overrides."""
+"""用于将基线决策与玩家/脚本覆盖合并的工具函数集合。
+
+本模块负责在数据层面合并决策：将 fallback/baseline 决策与来自用户脚本的
+overrides 做局部覆盖（partial updates），并保证合并结果满足后续市场逻辑的
+数据结构约定。模块仅处理决策合并，不涉及 IO 或持久化。
+"""
 
 from __future__ import annotations
 
@@ -23,8 +28,8 @@ from ..data_access.models import (
 def _apply_override(default_decision, override) -> object:
     """根据玩家覆盖内容更新默认决策。
 
-    该函数会读取可选的覆盖对象，仅对实际给定的字段做替换，确保策略默认行为
-    可按需被微调，而未提供的字段保持原始值。
+    仅对覆盖对象中明确提供的字段进行替换；未提供的字段保持默认值，
+    这样可以做到局部覆盖而非整体替换。
     """
     if override is None:
         return default_decision

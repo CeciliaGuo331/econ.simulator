@@ -1,4 +1,25 @@
-"""宏观经济仿真服务的 FastAPI 入口模块。"""
+"""
+Econ Simulator 应用的入口模块（FastAPI）。
+
+此模块负责应用级别的生命周期管理（lifespan）、路由挂载与
+全局资源的启动/关闭。主要职责包括：
+
+- 在应用启动时创建并注入共享的 DataAccessLayer（用于复用 Postgres/Redis 连接池），
+    并将其传递给 orchestrator factory 以避免每个仿真实例重复创建连接池。
+- 可选地在启动时自动播种教学世界（`test_world`），并确保基线脚本注册与附加。
+- 在应用关闭时，优雅地停止后台任务、关闭采样器并尝试关闭所有数据库连接池。
+
+重要环境变量（常用）：
+- ECON_SIM_SESSION_SECRET：Session 中间件的 secret（用于 Cookie 等签名）。
+- ECON_SIM_SKIP_TEST_WORLD_SEED：若设为 1/true/yes/on 则跳过自动播种流程（适用于 CI/某些生产场景）。
+
+技术要点：
+- 使用 FastAPI 的 lifespan 语义来集中管理启动/关闭逻辑，避免模块导入时产生副作用。
+- 将共享后台任务管理器与 DAL 注入到 web 视图和 orchestrator factory，以使运行时组件能共享相同的资源句柄。
+
+注意事项：
+- 本 docstring 仅为模块说明；具体实现仍保留在函数体内，修改时请保持对生命周期流程的幂等性与可重试性。
+"""
 
 from __future__ import annotations
 

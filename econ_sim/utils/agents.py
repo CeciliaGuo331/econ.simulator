@@ -1,4 +1,18 @@
-"""Utilities for mapping user roles to agent kinds."""
+"""
+用户类型到代理（AgentKind）映射工具。
+
+该模块提供将系统中表示用户角色的字符串（如 'individual', 'firm' 等）
+映射为内部使用的 AgentKind 枚举值的工具函数。主要用于在脚本或 API 层
+根据用户身份自动确定其可创建/操作的代理类型。
+
+函数说明：
+- `resolve_agent_kind(user_type, requested, allow_override)`：在绝大多数场景下返回
+    与 user_type 对应的默认 AgentKind；当允许覆盖（管理员场景）时，可接受显式请求。
+- `get_default_agent_kind(user_type)`：便捷函数，返回默认映射或 None。
+
+该模块对输入进行规范化与基本校验，若用户类型无法识别会抛出 ValueError，
+调用方应在上层将其转换为合适的 HTTP 400/403 响应。
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,15 @@
-"""Utilities to provision the "test_world" simulation with scripts and users."""
+"""用于为 "test_world" 仿真环境准备脚本和用户的实用工具。
+
+此模块提供函数来在测试仿真（默认标识符为 ``test_world``）中创建
+一组用于自动化测试和开发的用户账户及脚本。主要功能包括：
+
+- 创建若干 household 脚本（默认 400 个），以及四个单例(agent)脚本：
+    firm、bank、government 与 central_bank。
+- 在需要时可复用已有的 orchestrator、script registry 与 user manager，
+    并支持选择性覆盖已存在的脚本以便重新种子化。
+
+所有修改仅限于注释与文档翻译，函数逻辑保持不变。
+"""
 
 from __future__ import annotations
 
@@ -71,26 +82,24 @@ async def seed_test_world(
     user_manager: Optional[UserManager] = None,
     overwrite_existing: bool = False,
 ) -> SeedSummary:
-    """Ensure the canonical ``test_world`` simulation is fully seeded.
+    """确保标准的 ``test_world`` 仿真已被完整种子化。
 
-    Parameters
-    ----------
+    参数
+    -----
     simulation_id:
-        Target simulation identifier. Defaults to ``"test_world"``.
+        目标仿真标识，默认 ``"test_world"``。
     household_count:
-        Number of household agents to create scripts for. The default (400)
-        ensures 404 total scripts when combined with the four singleton agents.
+        要为其创建脚本的 household 数量。默认 400（与四个单例代理合计
+        将产生 404 个脚本）。当传入 ``None`` 时，使用配置或默认值。
     orchestrator:
-        Optional orchestrator to reuse. A new instance is created when omitted.
+        可选的 orchestrator 实例以供复用；若未提供则创建新实例。
     registry:
-        Optional script registry to target; the process-global registry is used
-        by default.
+        可选的脚本注册表；默认使用进程内的全局注册表实例。
     user_manager:
-        Optional user manager to seed accounts. The default global manager is
-        used when not supplied.
+        可选的用户管理器用于创建账户；缺省使用全局 user manager。
     overwrite_existing:
-        When ``True``, existing scripts for the targeted users are deleted
-        before seeding new copies. The operation remains idempotent either way.
+        若为 ``True``，会先删除目标用户已有的脚本再创建新脚本；无论为
+        True 还是 False，操作都保持幂等性。
     """
 
     orchestrator = orchestrator or SimulationOrchestrator()
@@ -147,14 +156,14 @@ async def seed_test_world(
             simulation_id, agent_kind, entity_id
         )
 
-    # Ensure admin and baseline defaults are ready so subsequent registration
-    # replicates production behaviour (consistent passwords, baseline scripts).
-    # Seed singleton agents first.
+    # 确保管理员和基线默认项已准备妥当，以便后续的注册行为能复现
+    # 生产环境的行为（如一致的默认密码与基线脚本）。先为四个单例
+    # 代理(sequential singletons)创建用户与脚本。
     for email, agent_kind, entity_id, user_type in _SINGLETON_AGENTS:
         await ensure_user(email, user_type)
         await ensure_script(email, agent_kind, entity_id, _SINGLETON_SCRIPT)
 
-    # Seed households with deterministic naming.
+    # 使用确定性命名规则为 households 生成脚本与账户。
     config_households = get_world_config().simulation.num_households
     base_target = max(TEST_WORLD_DEFAULT_HOUSEHOLDS, config_households)
     target_households = (

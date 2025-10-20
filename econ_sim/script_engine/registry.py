@@ -1,4 +1,14 @@
-"""管理用户上传脚本并在仿真过程中执行的注册中心。"""
+"""管理用户上传脚本并在仿真过程中执行的注册中心。
+
+该模块负责：
+- 验证用户上传脚本的语法与允许的导入；
+- 在内存中维护脚本索引（按仿真、按用户、按实体）以支持快速查询；
+- 在需要时从持久化存储拉取脚本并注入内存索引；
+- 在仿真每个 tick 中安全地执行注册脚本并合并其返回的决策覆盖；
+- 管理脚本的挂载/解绑、替换、版本化与删除操作。
+
+注：本更改仅对注释与文档进行中文化说明，不改变代码行为。
+"""
 
 from __future__ import annotations
 
@@ -37,7 +47,7 @@ from .sandbox import (
     execute_script,
 )
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型检查
     from .postgres_store import StoredScript
 
 
@@ -403,7 +413,7 @@ class ScriptRegistry:
     @classmethod
     def _validate_entity_binding(cls, agent_kind: AgentKind, entity_id: str) -> None:
         if cls.is_placeholder_entity_id(entity_id):
-            raise ScriptExecutionError("entity_id must be finalized before binding")
+            raise ScriptExecutionError("entity_id 必须在绑定前完成最终化")
         if agent_kind is AgentKind.HOUSEHOLD and not str(entity_id).isdigit():
             raise ScriptExecutionError("Household 脚本必须使用纯数字的 entity_id")
 
@@ -468,6 +478,7 @@ class ScriptRegistry:
             entity_id=entity_id,
         )
 
+        # 若配置了持久化存储，先将新脚本保存到存储中以降低数据丢失窗口。
         if self._store is not None:
             await self._store.save_script(metadata, script_code)
 
@@ -502,6 +513,7 @@ class ScriptRegistry:
                 self._update_indexes(metadata.script_id, None, metadata)
                 self._loaded_users.add(user_id)
 
+        # 如果达到脚本数量上限，尝试回滚已持久化的脚本并抛出错误。
         if limit_violation is not None:
             if self._store is not None:
                 try:
@@ -577,8 +589,8 @@ class ScriptRegistry:
         await self._ensure_user_loaded(user_id)
         await self._ensure_simulation_loaded(simulation_id)
 
-        # Perform availability checks and in-memory index update under the
-        # registry lock to avoid races with concurrent attach/register calls.
+        # 在 registry lock 保护下执行可用性检查与内存索引更新，避免与并发的 attach/register
+        # 调用发生竞态条件。
         old_metadata: Optional[ScriptMetadata] = None
         code_snapshot: Optional[str] = None
         new_metadata: Optional[ScriptMetadata] = None
@@ -626,8 +638,7 @@ class ScriptRegistry:
             self._loaded_simulations.add(simulation_id)
             code_snapshot = record.code
 
-        # Persist the new binding/code. If persistence fails, roll back the
-        # in-memory update to avoid diverging registry state.
+        # 将新的绑定/代码持久化；若持久化失败，回滚内存中的更新以避免注册中心状态不一致。
         if (
             self._store is not None
             and new_metadata is not None
@@ -643,7 +654,7 @@ class ScriptRegistry:
                     simulation_id,
                     exc,
                 )
-                # rollback in-memory change
+                # 回滚内存变更（最佳努力）
                 async with self._registry_lock:
                     rec = self._records.get(script_id)
                     if rec is not None and old_metadata is not None:
@@ -881,7 +892,7 @@ class ScriptRegistry:
             except Exception as exc:
                 raise ScriptExecutionError(f"无法持久化新脚本: {exc}") from exc
 
-        # perform in-memory swap under lock, with rollback support
+        # 在锁保护下执行内存替换操作，并提供回滚支持
         old_record_snapshot: Optional[_ScriptRecord] = None
         try:
             async with self._registry_lock:
@@ -917,7 +928,7 @@ class ScriptRegistry:
                         self._update_indexes(old_script_id, old_meta, detached_meta)
 
         except Exception:
-            # attempt to rollback persisted new script if store exists
+            # 如果持久化已写入，则尝试回滚新持久化的脚本记录
             if self._store is not None:
                 try:
                     await self._store.delete_script(new_meta.script_id)
@@ -930,7 +941,7 @@ class ScriptRegistry:
             try:
                 await self._store.update_simulation_binding(old_script_id, None)
             except Exception as exc:
-                # best-effort: try to roll back in-memory changes
+                # 尽最大努力：尝试回滚内存中的变更以恢复一致性
                 logger.exception(
                     "无法在持久层取消旧脚本挂载 %s: %s", old_script_id, exc
                 )
@@ -1108,7 +1119,7 @@ class ScriptRegistry:
 
         records.sort(key=lambda record: record.metadata.created_at)
 
-        # bounded concurrency: run blocking _execute_script off the event loop
+        # 有界并发：将阻塞型的 _execute_script 在事件循环外执行以避免阻塞
         try:
             concurrency = int(
                 get_world_config().simulation.script_execution_concurrency
@@ -1117,7 +1128,7 @@ class ScriptRegistry:
             concurrency = 8
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
-        # serialize world_state and config once to avoid repeated pydantic model_dump calls
+        # 对 world_state 和 config 做一次序列化以避免重复调用 pydantic 的 model_dump
         try:
             world_state_json = world_state.model_dump(mode="json")
         except Exception:
@@ -1127,7 +1138,7 @@ class ScriptRegistry:
         except Exception:
             config_json = None
 
-        # warm the process pool to reduce first-task latency (avoid false timeouts)
+        # 预热进程池以降低首个任务延迟（避免因延迟导致的假性超时）
         try:
             from .sandbox import warm_process_pool
 
@@ -1138,7 +1149,7 @@ class ScriptRegistry:
         async def _run_record(rec: _ScriptRecord):
             async with semaphore:
                 try:
-                    # run blocking call in default thread pool to avoid blocking event loop
+                    # 将阻塞调用在默认线程池中执行，以避免阻塞事件循环
                     return await asyncio.to_thread(
                         self._execute_script,
                         rec,
@@ -1155,10 +1166,9 @@ class ScriptRegistry:
         failure_events: List[ScriptFailureEvent] = []
         status_updates: List[tuple[str, Optional[datetime], Optional[str]]] = []
 
-        # execute records in deterministic order; running sequentially avoids
-        # flooding the ProcessPoolExecutor queue when very small timeouts are
-        # used (which can cause unrelated queued tasks to time out while
-        # waiting for a worker). This preserves deterministic merge order.
+        # 以确定性的顺序执行记录；顺序执行可以避免在超时时间非常短时
+        # 将过多任务推入进程池队列，从而导致一些无关任务在等待工作线程时超时。
+        # 这种方式可以保持合并顺序的确定性。
         for rec in records:
             try:
                 overrides = await _run_record(rec)
@@ -1240,6 +1250,7 @@ class ScriptRegistry:
         metadata: ScriptMetadata,
         world_state: any,
     ) -> Optional[dict[str, object]]:
+        """根据脚本元数据从 world_state 中提取并返回对应实体的序列化字典（若存在）。"""
         kind = metadata.agent_kind
         if kind is AgentKind.HOUSEHOLD:
             try:
@@ -1315,14 +1326,14 @@ class ScriptRegistry:
         """调用脚本并解析返回的决策覆盖。"""
 
         entity_state = self._serialize_entity_state(record.metadata, world_state)
-        # use pre-serialized JSON dicts if available to avoid repeated serialization
+        # 优先使用预先序列化的 JSON 字典以避免重复序列化
         ws_full = (
             world_state_json
             if world_state_json is not None
             else world_state.model_dump(mode="json")
         )
         cfg = config_json if config_json is not None else config.model_dump(mode="json")
-        # prune world state for per-entity scripts to minimize serialization/pickling costs
+        # 为按实体脚本裁剪世界状态，从而最小化序列化/打包开销
         pruned_ws = ws_full
         if isinstance(ws_full, dict):
             meta_keys = {

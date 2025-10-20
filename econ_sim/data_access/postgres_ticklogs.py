@@ -1,4 +1,4 @@
-"""PostgreSQL-backed storage for per-tick logs (trade/history)."""
+"""基于 PostgreSQL 的每步 Tick 日志持久化存储（交易/历史）。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .postgres_utils import quote_identifier
 
 
 class PostgresTickLogStore:
-    """Persist TickLogEntry items for historical queries."""
+    """用于持久化 TickLogEntry 项以供历史查询。"""
 
     def __init__(
         self,
@@ -32,6 +32,7 @@ class PostgresTickLogStore:
         self._init_lock = asyncio.Lock()
 
     async def _ensure_schema(self) -> None:
+        """幂等地创建 Tick 日志表与必要索引。"""
         if self._initialized:
             return
         async with self._init_lock:
@@ -82,18 +83,16 @@ class PostgresTickLogStore:
         payload = []
         for item in logs:
             ctx = item.context
-            # asyncpg/jsonb binding can be sensitive to input types when using
-            # executemany on some driver versions; ensure we pass a JSON string
-            # for the JSONB column to avoid 'expected str, got dict' errors.
+            # 某些 asyncpg 驱动版本在 executemany 时对 JSONB 类型绑定对输入类型较为敏感；
+            # 为了避免出现 "expected str, got dict" 之类的错误，尽量为 JSONB 列传入 JSON 字符串。
             if ctx is None:
                 ctx_serialized = None
             else:
                 try:
                     ctx_serialized = json.dumps(ctx)
                 except Exception:
-                    # Fallback to string conversion if json.dumps fails for
-                    # some non-serializable item; this keeps persistence
-                    # best-effort while avoiding a hard crash here.
+                    # 如果 json.dumps 无法序列化（例如包含不可序列化对象），
+                    # 降级为字符串转换以保证尽力持久化而不抛出致命错误。
                     ctx_serialized = str(ctx)
             payload.append(
                 (simulation_id, item.tick, item.day, item.message, ctx_serialized)

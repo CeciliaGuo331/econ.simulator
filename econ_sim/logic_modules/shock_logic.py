@@ -1,4 +1,10 @@
-"""生成并应用家户层面的异质性外生冲击。"""
+"""生成并应用家户层面的异质性外生冲击。
+
+本模块负责为每个 household 在每个 tick 生成可配置的能力乘数（ability_multiplier）
+与资产变动（asset_delta）。实现保障了：总体无净冲击（总 asset_delta 近似为 0），
+且单户冲击被裁剪到配置允许的最大比例范围内。生成使用基于仿真 id 与 tick 的稳定
+种子以保证可重现性。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,7 @@ from ..utils.settings import WorldConfig
 def _stable_seed(simulation_id: str, base_seed: int, tick: int) -> int:
     """根据仿真实例与 Tick 构造稳定的随机种子。"""
 
-    # 使用 32 位掩码避免平台差异，同时让 tick 推进时产生不同序列。
+    # 使用 32 位掩码避免平台差异，同时让 tick 推进时产生不同的伪随机序列。
     return ((hash(simulation_id) & 0xFFFFFFFF) ^ (base_seed + tick * 9973)) & 0xFFFFFFFF
 
 
@@ -42,7 +48,8 @@ def generate_household_shocks(
         )
     )
 
-    # 能力冲击：均值为 1，方差由配置控制，并确保无总体冲击。
+    # 能力冲击：以 1 为基准乘数，扰动项由配置的标准差控制，并在样本上去均值以
+    # 保证整体没有系统性偏移。
     ability_raw = rng.normal(loc=0.0, scale=ability_std, size=count)
     ability_raw -= ability_raw.mean()
     ability_multiplier = 1.0 + ability_raw
@@ -50,7 +57,7 @@ def generate_household_shocks(
     upper_bound = 1.0 + max_fraction
     ability_multiplier = np.clip(ability_multiplier, lower_bound, upper_bound)
 
-    # 资产冲击：按现金头寸的比例分配，并保证总和为 0。
+    # 资产冲击：基于家庭现金头寸加权扰动，随后进行均值校正，最终裁剪到每户允许的最大比例。
     asset_raw = rng.normal(loc=0.0, scale=asset_std, size=count)
     asset_raw -= asset_raw.mean()
     asset_deltas = cash_values * asset_raw

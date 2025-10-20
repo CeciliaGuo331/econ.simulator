@@ -1,4 +1,8 @@
-"""PostgreSQL-backed participant registry."""
+"""基于 PostgreSQL 的参与者注册表。
+
+该模块提供对仿真参与者（simulation participants）的持久化管理，封装了
+表结构初始化、注册、查询与清理等操作，作为 DataAccess 层的可插拔实现。
+"""
 
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ class PostgresParticipantStore:
         self._init_lock = asyncio.Lock()
 
     async def _ensure_schema(self) -> None:
+        """确保所需的 schema 与 participants 表存在（幂等操作）。"""
         if self._initialized:
             return
         async with self._init_lock:

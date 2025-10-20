@@ -13,20 +13,20 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol, Set, TYPE_CHEC
 from collections import deque
 import time
 
-try:  # pragma: no cover - optional dependency at runtime
+try:  # pragma: no cover - 运行时可选依赖
     from redis.asyncio import Redis
-except Exception:  # pragma: no cover - fallback when redis isn't installed yet
+except Exception:  # pragma: no cover - 当 redis 未安装时的回退
     Redis = None  # type: ignore
 
-try:  # pragma: no cover - optional dependency
+try:  # pragma: no cover - 可选依赖
     import asyncpg  # type: ignore
-except Exception:  # pragma: no cover - optional dependency may be absent
+except Exception:  # pragma: no cover - 可选依赖可能不存在
     asyncpg = None  # type: ignore
 
-if TYPE_CHECKING:  # pragma: no cover - typing hints only
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型提示
     from asyncpg.pool import Pool as AsyncpgPool  # type: ignore
     from ..script_engine.registry import ScriptFailureEvent
-else:  # pragma: no cover - runtime fallback when asyncpg is unavailable
+else:  # pragma: no cover - 当 asyncpg 不可用时的运行时回退
     AsyncpgPool = Any  # type: ignore
 
 from .models import (
@@ -138,27 +138,26 @@ class InMemoryStateStore:
         """从内存字典中读取仿真状态并返回深拷贝。"""
         async with self._lock:
             snapshot = self._storage.get(simulation_id)
-            # Use deepcopy to avoid the overhead of JSON round-trip while
-            # still returning an independent copy.
+            # 使用 deepcopy 避免 JSON 往返序列化的开销，同时返回独立副本以防外部修改影响内部存储。
             return copy.deepcopy(snapshot) if snapshot is not None else None
 
     async def store_entity(
         self, simulation_id: str, scope: str, entity_id: Optional[str], payload: Dict
     ) -> None:
-        """Store a single-entity fragment into the in-memory store.
+        """将单个实体片段存入内存存储。
 
-        This enables per-entity incremental writes for long-running simulations.
+        该方法支持对长时间运行仿真实例进行按实体的增量写入，便于分块持久化。
         """
         async with self._lock:
             bucket = self._storage.setdefault(simulation_id, {})
             if scope == "household":
                 houses = bucket.setdefault("households", {})
-                # normalize household id as string
+                # 将 household id 规范化为字符串形式存储
                 houses[str(entity_id)] = copy.deepcopy(payload)
             elif scope in {"firm", "bank", "government", "central_bank"}:
                 bucket[scope] = copy.deepcopy(payload)
             else:
-                # world-level or meta
+                # 世界级别或元信息字段
                 meta = bucket.setdefault("_meta", {})
                 meta.update(copy.deepcopy(payload))
 
@@ -181,7 +180,7 @@ class InMemoryStateStore:
     async def store(self, simulation_id: str, payload: Dict) -> None:
         """将仿真状态深拷贝后写入内存字典。"""
         async with self._lock:
-            # Use deepcopy instead of JSON round-trip to improve perf.
+            # 使用 deepcopy 替代 JSON 来回序列化以提升性能并保持独立副本
             self._storage[simulation_id] = copy.deepcopy(payload)
 
     async def delete(self, simulation_id: str) -> None:
@@ -195,22 +194,23 @@ class RedisStateStore:
 
     def __init__(self, redis: Redis, prefix: str = "econ_sim") -> None:  # type: ignore[valid-type]
         """注入 Redis 客户端及键前缀，构造存储实例。"""
-        if redis is None:  # pragma: no cover - defensive guard when redis import failed
-            raise RuntimeError(
-                "Redis client is not available; ensure redis-py is installed."
-            )
+        if redis is None:  # pragma: no cover - 当 redis 未导入时的防御性保护
+            raise RuntimeError("Redis 客户端不可用；请确保已安装 redis-py。")
         self._redis = redis
         self._prefix = prefix
 
-    def _key(self, simulation_id: str) -> str:
-        """按照统一前缀拼接 Redis 键名称。"""
-        return f"{self._prefix}:sim:{simulation_id}:world_state"
+    # 首先在配置了持久化存储时写入主持久层。
+    # 这样可以避免在权威副本保存之前就更新缓存。
 
     def _household_key(self, simulation_id: str, household_id: str) -> str:
         return f"{self._prefix}:sim:{simulation_id}:household:{household_id}"
 
     def _entity_key(self, simulation_id: str, scope: str) -> str:
         return f"{self._prefix}:sim:{simulation_id}:entity:{scope}"
+
+    def _key(self, simulation_id: str) -> str:
+        """返回用于存储整个世界状态的 Redis 键名。"""
+        return f"{self._prefix}:sim:{simulation_id}:world_state"
 
     async def load(self, simulation_id: str) -> Optional[Dict]:
         """从 Redis 获取指定仿真状态的 JSON 快照。"""
@@ -429,8 +429,7 @@ class CompositeStateStore(StateStore):
                 else:
                     await self._persistent.store(simulation_id, payload)
             except Exception as exc:
-                # If primary persistent store write fails, attempt best-effort
-                # write to fallback (if configured) and raise a PersistenceError
+                # 如果主持久化写入失败，则尝试向 fallback 做最佳努力写入（若配置）并抛出 PersistenceError
                 if self._fallback is not None:
                     try:
                         await self._fallback.store(simulation_id, payload)
@@ -443,7 +442,7 @@ class CompositeStateStore(StateStore):
                     "Failed to persist world state to primary store"
                 ) from exc
         else:
-            # No persistent store configured: fall back to fallback/store order
+            # 未配置主持久化存储时：按 fallback -> store 的顺序回退
             if self._fallback is not None:
                 try:
                     await self._fallback.store(simulation_id, payload)
@@ -456,9 +455,8 @@ class CompositeStateStore(StateStore):
                     "No persistent store configured for simulation state"
                 )
 
-        # Primary persistence succeeded (or fallback used when no primary).
-        # Now update cache (best-effort). Cache failures should not cause the
-        # authoritative persistent copy to be discarded.
+        # 主持久化写入成功（或在无主存时使用 fallback）。
+        # 现在以最佳努力更新缓存。缓存更新失败不应影响权威持久化副本。
         if self._cache is not None:
             try:
                 if hasattr(self._cache, "store_entity"):
@@ -482,17 +480,14 @@ class CompositeStateStore(StateStore):
                             )
                 else:
                     await self._cache.store(simulation_id, payload)
-            except (
-                Exception
-            ) as exc:  # pragma: no cover - cache update failure is non-fatal
+            except Exception as exc:  # pragma: no cover - 缓存更新失败为非致命错误
                 logger.warning(
                     "Failed to update cache for simulation %s",
                     simulation_id,
                     exc_info=exc,
                 )
 
-        # Finally, update fallback store for warming if both primary and
-        # fallback are configured (best-effort).
+        # 最后，当既配置了 primary 又配置了 fallback 时，尝试以最佳努力更新 fallback 以做到“预热”。
         if self._fallback is not None and self._persistent is not None:
             try:
                 await self._fallback.store(simulation_id, payload)

@@ -1,4 +1,4 @@
-"""PostgreSQL-backed storage for script failure events."""
+"""基于 PostgreSQL 的脚本失败事件持久化存储。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .postgres_utils import quote_identifier
 
 
 class PostgresScriptFailureStore:
-    """Persist script execution failures using PostgreSQL."""
+    """使用 PostgreSQL 持久化脚本执行失败信息。"""
 
     def __init__(
         self,

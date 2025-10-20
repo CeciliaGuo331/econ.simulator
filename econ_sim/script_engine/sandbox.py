@@ -1,4 +1,26 @@
-"""隔离执行用户策略脚本的轻量沙箱。"""
+"""脚本沙箱与执行器：为用户上传的策略脚本提供受控、可监控的执行环境。
+
+功能与设计要点：
+- 支持两种执行模式：
+    1. 进程池模式（ProcessPoolExecutor）：重用工作进程以降低反复创建子进程的开销；
+    2. 每次调用子进程模式（per-call subprocess）：在某些不安全的启动环境（如 heredoc 或 -c）或测试场景中使用，避免 spawn 导入主模块的问题。
+- 在工作进程中安装时间监控与资源限制（如 SIGALRM watchdog、CPU/内存 rlimit），
+    以防止脚本的无限循环或资源耗尽影响主进程。
+- 提供安全的执行沙箱：
+    - 只允许有限的内置函数与白名单模块导入；
+    - 使用受控的内置字典与自定义 `__import__` 函数来阻止未授权模块导入；
+    - 在沙箱中注入 `llm` 对象（若可用）供脚本在受限范围内调用。
+- 提供度量与自愈机制：
+    - 统计脚本执行延迟、超时次数与执行次数；
+    - 当进程池损坏或工作进程异常退出时，尝试重建进程池或回退到 per-call subprocess。
+- 安全与可配置点：
+    - `ALLOWED_MODULES`、`_ALLOWED_BUILTINS`：控制脚本可使用的模块与内置函数；
+    - `DEFAULT_SANDBOX_TIMEOUT`、`WORKER_MAX_TASKS` 等均可通过环境变量调优；
+    - `ECON_SIM_FORCE_PER_CALL` 环境变量可强制使用 per-call subprocess，以便在 CI/特殊环境中提高隔离性。
+
+推荐做法：将复杂或需要外部网络访问的逻辑移出用户脚本，
+通过受控的 provider（如项目提供的 LLM 适配器）以最小化安全风险。
+"""
 
 from __future__ import annotations
 
@@ -35,9 +57,8 @@ except Exception:
 DEFAULT_SANDBOX_TIMEOUT = 0.75
 CPU_TIME_LIMIT_SECONDS = 1
 MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
-# After this many tasks executed by a single worker process, force it to exit so
-# the pool can replace it. This mitigates memory leaks / module-state pollution
-# in long-lived worker processes.
+# 当单个工作进程执行到达此任务数量时，强制其退出以便进程池替换它。
+# 这有助于缓解长期运行工作进程中的内存泄漏或模块状态污染问题。
 WORKER_MAX_TASKS = int(os.getenv("ECON_SIM_WORKER_MAX_TASKS", "200"))
 
 # per-process counter — this lives in the worker process and is incremented by
@@ -170,6 +191,7 @@ def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
     with _POOL_LOCK:
         if _PROCESS_POOL is not None:
             return _PROCESS_POOL
+        # 根据可用 CPU 数量确定池大小（在 2 到 8 之间），避免在资源受限环境中创建过多子进程。
         cpu = os.cpu_count() or 2
         max_workers = max(2, min(8, cpu))
         _PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
@@ -179,12 +201,13 @@ def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
 def _pool_worker(
     code: str, context: Dict[str, Any], allowed_modules: Set[str], timeout: float = 0.0
 ) -> Any:
-    """Top-level worker function executed inside pool worker process.
+    """在池中工作进程内执行的顶层 worker 函数。
 
-    Installs a SIGALRM-based watchdog to self-terminate on wall-clock timeouts
-    (helps with CPU-bound infinite loops). Also applies resource limits and
-    performs a small per-process task count to recycle workers.
-    Returns a (status, payload) envelope where status is '__ok__' or '__err__'.
+    行为说明：
+    - 安装基于 SIGALRM 的看门狗用于在真实时间超时时自我终止（对 CPU 密集型无限循环有帮助）；
+    - 应用资源限制（CPU/内存）；
+    - 使用每进程任务计数，当达到阈值时回收工作进程以减少内存污染。
+    返回一个 (status, payload) 的封包，status 为 '__ok__' 或 '__err__'。
     """
     old_handler = None
     installed_timer = False
@@ -216,7 +239,7 @@ def _pool_worker(
             pass
 
         safe_builtins = _build_safe_builtins(allowed_modules)
-        # Provide a per-execution LLM session object available to user scripts
+        # 为每次执行提供一个 LLM 会话对象供用户脚本调用（若可用）。
         try:
             from econ_sim.utils.llm_session import create_llm_session_from_env
 
@@ -226,6 +249,7 @@ def _pool_worker(
 
         sandbox_globals: Dict[str, Any] = {
             "__builtins__": safe_builtins,
+            # 注入受控的 llm 对象（可能为 None），脚本内可调用 llm.perform(...) 等受限接口
             "llm": llm_obj,
         }
         try:
@@ -237,6 +261,7 @@ def _pool_worker(
             print(f"_pool_worker pid={os.getpid()} exec done, looking up function")
         except Exception:
             pass
+        # 从沙箱全局命名空间中查找 generate_decisions 函数并调用它
         func = sandbox_globals.get("generate_decisions")
         if func is None or not callable(func):
             return ("__err__", "missing generate_decisions")
@@ -257,7 +282,7 @@ def _pool_worker(
                     pass
                 return ("__err__", tb)
         finally:
-            # worker recycle counting happens regardless of user code outcome
+            # 无论用户代码结果如何，均进行工作进程回收计数
             try:
                 global _WORKER_TASK_COUNT
                 _WORKER_TASK_COUNT += 1
@@ -293,8 +318,11 @@ def _pool_worker(
 
 
 def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> None:
-    """Shut down the global process pool and (optionally) aggressively kill
-    any remaining worker processes and their descendants.
+    """关闭全局进程池，并可选择强制终止剩余的工作进程及其子进程。
+
+    参数说明：
+    - wait: 是否等待池内任务完成后再返回；
+    - aggressive_kill: 若为 True，则尝试强制终止所有残留子进程（优先使用 psutil）以避免僵尸或挂起子进程。
     """
     global _PROCESS_POOL
     with _POOL_LOCK:
@@ -324,7 +352,7 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
             except Exception:
                 pass
 
-        # aggressive kill: use psutil if available for reliable termination
+        # 激进终止逻辑：优先使用 psutil 进行可靠的进程和子进程遍历与终止
         if aggressive_kill and _PSUTIL_AVAILABLE:
             pids = set()
             for p in procs_snapshot:
@@ -431,7 +459,7 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                 pass
 
         elif aggressive_kill and not _PSUTIL_AVAILABLE:
-            # psutil not available: best-effort naive termination of procs_snapshot
+            # psutil 不可用：采用尽力而为的朴素终止策略，尝试向每个进程发送 SIGTERM/SIGKILL。
             logger.debug(
                 "shutdown_process_pool: psutil not available, falling back to naive termination"
             )
@@ -475,10 +503,9 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
 
 
 def _recreate_process_pool() -> concurrent.futures.ProcessPoolExecutor:
-    """Best-effort recreate of the global process pool.
+    """尽最大努力重建全局进程池。
 
-    Shutdowns any existing pool (aggressively) and returns a fresh pool
-    instance.
+    如果存在正在运行的池，先尝试（激进地）关闭它，然后返回一个新的进程池实例。
     """
     global _PROCESS_POOL
     with _POOL_LOCK:
@@ -498,9 +525,9 @@ def _recreate_process_pool() -> concurrent.futures.ProcessPoolExecutor:
 
 
 def get_sandbox_metrics() -> Dict[str, object]:
-    """Return simple execution metrics for monitoring and alerts.
+    """返回用于监控和告警的简要执行指标。
 
-    Returns: dict with avg/p95 durations, total executions and timeouts.
+    返回值：包含平均/95% 延迟、样本数、执行总次数与超时次数的字典。
     """
     with _metrics_lock:
         durations = list(_script_durations)
@@ -530,11 +557,10 @@ def execute_script(
     allowed_modules: Optional[Iterable[str]] = None,
     force_per_call: bool = False,
 ) -> Any:
-    """Execute script in a reusable process pool and return the result.
+    """在可复用的进程池中执行脚本并返回结果。
 
-    This implementation submits a callable to a ProcessPoolExecutor so worker
-    processes are reused instead of spawning per-call. The call waits for up to
-    `timeout` seconds and raises ScriptSandboxTimeout on timeout.
+    实现细节：向 ProcessPoolExecutor 提交任务以重用工作进程，避免每次调用都 spawn 子进程。
+    调用会阻塞最多 `timeout` 秒；如果超时则抛出 ScriptSandboxTimeout。
     """
 
     global _exec_count, _timeout_count
@@ -542,9 +568,8 @@ def execute_script(
     if timeout <= 0:
         raise ValueError("timeout must be positive")
 
-    # Avoid an unconditional JSON round-trip which is expensive for large contexts.
-    # If the context is already JSON-serializable, use it directly; otherwise
-    # fall back to the json round-trip to coerce types to primitives.
+    # 避免对大型 context 不必要的 JSON 序列化开销：若 context 已可 JSON 序列化则直接使用，
+    # 否则回退到 deepcopy（或 JSON 回合）以将复杂对象转换为原语类型以保证安全传递。
     try:
         # If context is JSON-serializable, use it directly to avoid copies.
         json.dumps(context)
@@ -558,7 +583,7 @@ def execute_script(
         set(allowed_modules) if allowed_modules is not None else set(ALLOWED_MODULES)
     )
 
-    # allow tests/CI to force per-call subprocess execution to ensure isolation
+    # 允许在测试/CI 中通过环境变量强制使用每调用单独子进程，以提高隔离性
     force = force_per_call or os.getenv("ECON_SIM_FORCE_PER_CALL") == "1"
     if force:
         logger = logging.getLogger(__name__)
@@ -567,10 +592,9 @@ def execute_script(
         )
         return _run_in_subprocess(code, safe_context, modules, timeout)
 
-    # If we detected at import time that this interpreter was started from
-    # an unsafe entrypoint (heredoc / stdin / -c), always prefer the
-    # per-call subprocess path which doesn't rely on spawn re-executing the
-    # parent process main module in child workers.
+    # 如果在导入时检测到该解释器是通过不安全的入口点启动（例如 heredoc / stdin / -c），
+    # 则优先使用每次调用的独立子进程路径，因为 spawn 在子进程中重执行父进程 main 模块时
+    # 可能找不到正确的模块路径而导致失败。
     if _FORCE_PER_CALL_ENV:
         logger = logging.getLogger(__name__)
         try:
@@ -585,11 +609,9 @@ def execute_script(
         )
         return _run_in_subprocess(code, safe_context, modules, timeout)
 
-    # If the current Python invocation doesn't have a real main filename
-    # (for example when running via heredoc / <stdin>), multiprocessing's
-    # spawn-based workers may fail to find the main module path and crash
-    # immediately. Detect that situation and fall back to per-call
-    # subprocesses which don't rely on importing the main module.
+    # 检测当前 Python 启动是否缺失真实的 main 文件名（例如通过 heredoc / <stdin> 运行），
+    # 在这种情况下 multiprocessing.spawn 的子进程可能会尝试导入不存在的主模块而崩溃，
+    # 因此回退到不依赖导入主模块的每次调用子进程路径。
     try:
         main_path = sys.argv[0] if len(sys.argv) > 0 else ""
         # Some invocation patterns (heredoc / stdin) set argv[0] to values
@@ -656,12 +678,11 @@ def execute_script(
         except Exception:
             pass
 
-        # submit timeout to worker so it can self-terminate on CPU-bound loops
+        # 将 timeout 提交给 worker，以便 worker 在 CPU 密集型循环中能自我终止
         future = pool.submit(_pool_worker, code, safe_context, modules, float(timeout))
     except Exception as exc:
-        # If the process pool is broken (child crashed), try to reset it once
-        # and recreate a fresh pool. If that still fails, fall back to
-        # executing the worker inline to avoid crashing the caller.
+        # 如果进程池出现故障（例如子进程崩溃），尝试重置并重建一次进程池；
+        # 若仍然失败，退回为在当前线程内执行 worker（无隔离）以避免使调用方崩溃。
         try:
             with _POOL_LOCK:
                 global _PROCESS_POOL
@@ -676,8 +697,7 @@ def execute_script(
                 _pool_worker, code, safe_context, modules, float(timeout)
             )
         except Exception:
-            # Last-resort fallback: run worker inline (no isolation) but keep
-            # exception semantics consistent for the caller.
+            # 最后手段回退：在当前进程内直接运行 worker（无隔离），但保持对外的异常语义一致。
             try:
                 logger.debug(
                     "falling back to inline worker for script_id=%s", script_id
@@ -719,10 +739,8 @@ def execute_script(
                 raise ScriptSandboxError(f"脚本执行失败:\n{payload}")
         success = True
     except concurrent.futures.TimeoutError as exc:
-        # If the future hasn't started running yet it is likely queued by the
-        # ProcessPoolExecutor; give it a short grace period to start and run
-        # before declaring a hard timeout. This reduces false positives when
-        # the configured sandbox timeout is very small.
+        # 如果 future 还未开始运行，它可能仍在 ProcessPoolExecutor 的队列中；
+        # 在宣布超时之前给予短暂宽限期以降低在极短 sandbox timeout 配置下出现误判的概率。
         try:
             running = future.running()
         except Exception:
@@ -769,7 +787,7 @@ def execute_script(
                     + (f" (id={script_id})" if script_id else "")
                 ) from exc
         else:
-            # task started but exceeded provided timeout
+            # 任务已启动但超出提供的超时时间
             try:
                 future.cancel()
             except Exception:
@@ -799,9 +817,8 @@ def execute_script(
                     SCRIPT_EXECUTIONS.inc()
                 except Exception:
                     pass
-        # If the pool appears broken (common when spawn cannot import the
-        # main module) try a last-resort fallback to a per-call subprocess
-        # which avoids ProcessPoolExecutor semantics.
+        # 如果检测到进程池已损坏（常见于 spawn 无法导入 main 模块的情况），
+        # 则尝试回退到 per-call 子进程路径以规避 ProcessPoolExecutor 的语义问题。
         try:
             import concurrent.futures.process as _cfproc
 
@@ -853,7 +870,7 @@ def execute_script(
                 except Exception:
                     pass
 
-    # result is returned (may be None) after unwrapping above
+    # 结果在上文被解包后返回（可能为 None）
     return result
 
 
@@ -871,15 +888,15 @@ def _pool_worker(
 
 
 def _noop() -> None:
-    """Simple noop used to warm up worker processes."""
+    """用于预热工作进程的简单空操作函数。"""
     return None
 
 
 def warm_process_pool(timeout: float = 1.0) -> None:
-    """Ensure the process pool has spawned workers by submitting a noop and waiting.
+    """通过提交 noop 并等待来确保进程池已生成工作进程。
 
-    This reduces the chance that the first real task will be delayed by worker
-    process startup, which can cause short timeouts to trigger incorrectly.
+    这样可以降低首次真实任务因工作进程启动而被延迟的概率，从而减少在超时配置较短时
+    触发误判的可能性。
     """
     try:
         pool = _get_process_pool()
@@ -897,11 +914,10 @@ def warm_process_pool(timeout: float = 1.0) -> None:
 def _subprocess_entry(
     code: str, context: Dict[str, Any], allowed_modules: Set[str], conn: Connection
 ) -> None:
-    """Entry point run inside a dedicated subprocess.
+    """在独立子进程中运行的入口函数。
 
-    Sends back a tuple via the provided connection: ("ok", result) on success
-    or ("err", traceback_string) on error. The connection is closed before
-    exit to ensure the parent receives EOF if the process dies unexpectedly.
+    通过提供的连接发送回一个二元组：成功时为 ("ok", result)，失败时发送 ("err", traceback_string)。
+    在退出前关闭连接以确保父进程在子进程意外终止时能收到 EOF。
     """
     try:
         _apply_resource_limits()
@@ -951,10 +967,9 @@ def _subprocess_entry(
 def _run_in_subprocess(
     code: str, context: Dict[str, Any], allowed_modules: Set[str], timeout: float
 ) -> Any:
-    """Run code in a dedicated subprocess with a timeout.
+    """在独立子进程中运行代码并提供超时保证。
 
-    Guarantees that if the subprocess does not respond within `timeout`, it
-    will be terminated and a ScriptSandboxTimeout raised.
+    若子进程在 `timeout` 内未返回结果，确保其被终止并抛出 ScriptSandboxTimeout。
     """
     # Use a fresh Python interpreter via subprocess to avoid multiprocessing
     # spawn importing the parent's main module (which can be '<stdin>' in
@@ -986,7 +1001,7 @@ def _run_in_subprocess(
                 {"code": code, "context": {}, "allowed_modules": list(allowed_modules)}
             )
 
-    # small runner that executes the code and prints JSON result
+    # 运行小型 runner：在子进程内执行代码并将结果以 JSON 输出
     runner = (
         "import sys, json, traceback\n"
         "from econ_sim.script_engine.sandbox import _build_safe_builtins\n"

@@ -1,8 +1,13 @@
-"""LLM API endpoints with per-user rate limiting.
+"""
+LLM 相关的 HTTP 接口（用于对外暴露模型补全服务）。
 
-This provides a minimal completion endpoint that delegates to the configured
-OpenAI-compatible provider and enforces a per-user quota via Redis/in-memory
-fixed window limiting.
+功能说明：
+- 提供 `/llm/completions` 端点，接受 prompt、模型名与 max_tokens 等参数，
+    并将请求转发到项目配置的 OpenAI 兼容 provider 执行生成。
+- 使用 `RateLimiter` 对每个用户（基于用户邮箱）施加粗粒度的固定窗口限流，
+    以减缓滥用与并发风暴。
+
+鉴权：该端点通过 Bearer Token（用户令牌）进行访问控制，仅允许已注册用户调用。
 """
 
 from __future__ import annotations

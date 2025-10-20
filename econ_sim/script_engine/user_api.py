@@ -1,4 +1,9 @@
-"""为用户策略脚本提供的轻量级 API。"""
+"""为用户策略脚本提供的轻量级 API。
+
+此模块定义了脚本可用的便捷构建器与常用工具函数，供用户在
+generate_decisions(context) 中调用以生成 TickDecisionOverrides。
+API 设计强调最小权限与易用性：仅暴露必要的字段与数值工具。
+"""
 
 from __future__ import annotations
 
@@ -69,7 +74,11 @@ class OverridesBuilder:
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
-    """在脚本中常用的数值裁剪函数。"""
+    """在脚本中常用的数值裁剪函数。
+
+    当 lower > upper 时抛出 ValueError；否则返回截断到 [lower, upper]
+    区间内的值。
+    """
 
     if lower > upper:
         raise ValueError("lower must not exceed upper")
@@ -77,7 +86,10 @@ def clamp(value: float, lower: float, upper: float) -> float:
 
 
 def fraction(numerator: float, denominator: float) -> float:
-    """安全地计算比例，自动处理除零。"""
+    """安全地计算比例，自动处理除零。
+
+    若分母为零则返回 0.0，避免抛出 ZeroDivisionError。
+    """
 
     if denominator == 0:
         return 0.0
@@ -85,7 +97,10 @@ def fraction(numerator: float, denominator: float) -> float:
 
 
 def moving_average(series: Iterable[float], window: int) -> Optional[float]:
-    """计算滑动平均值，若样本不足则返回 None。"""
+    """计算滑动平均值，若样本不足则返回 None。
+
+    参数 window 必须为正整数；当序列长度小于 window 时返回 None。
+    """
 
     data = list(series)
     if window <= 0 or len(data) < window:

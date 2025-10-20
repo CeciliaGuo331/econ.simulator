@@ -1,4 +1,8 @@
-"""Generate baseline decisions using built-in fallback scripts."""
+"""使用内置基线脚本生成默认决策（fallback）。
+
+该管理器为每类主体调用部署目录下的 baseline 脚本，用于在用户脚本缺失时
+提供合理的默认决策。脚本返回结构应遵循约定（见代码中的调用处）。
+"""
 
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ from ..utils.settings import WorldConfig
 
 
 class FallbackExecutionError(RuntimeError):
-    """Raised when baseline fallback generation fails for any entity."""
+    """当基线回退为任一实体生成决策失败时抛出。"""
 
     def __init__(
         self, agent_kind: AgentKind, entity_id: str | int, reason: str
@@ -35,7 +39,11 @@ class FallbackExecutionError(RuntimeError):
 
 
 class BaselineFallbackManager:
-    """Executes built-in baseline scripts to produce fallback decisions."""
+    """执行内置基线脚本以生成 fallback 决策的管理类。
+
+    它按实体类型加载相应模块并调用约定的 generate_decisions(context) 接口，
+    将返回值转换为项目内部用于后续市场逻辑的决策模型对象。
+    """
 
     _HOUSEHOLD_MODULE = "deploy.baseline_scripts.household_baseline"
     _AGENT_MODULES: Dict[AgentKind, str] = {
