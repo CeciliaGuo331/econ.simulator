@@ -39,6 +39,7 @@ from collections import deque
 from multiprocessing.connection import Connection
 from types import MappingProxyType
 from typing import Any, Dict, Iterable, Optional, Set
+import importlib
 
 try:  # pragma: no cover - platform compatibility
     import resource
@@ -104,6 +105,8 @@ _ALLOWED_BUILTINS: Set[str] = {
     "set",
     "sorted",
     "str",
+    "getattr",
+    "hasattr",
     "sum",
     "tuple",
     "type",
@@ -199,7 +202,12 @@ def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
 
 
 def _pool_worker(
-    code: str, context: Dict[str, Any], allowed_modules: Set[str], timeout: float = 0.0
+    code: str,
+    context: Dict[str, Any],
+    allowed_modules: Set[str],
+    timeout: float = 0.0,
+    llm_factory_path: Optional[str] = None,
+    llm_session: Optional[Any] = None,
 ) -> Any:
     """在池中工作进程内执行的顶层 worker 函数。
 
@@ -239,17 +247,30 @@ def _pool_worker(
             pass
 
         safe_builtins = _build_safe_builtins(allowed_modules)
-        # 为每次执行提供一个 LLM 会话对象供用户脚本调用（若可用）。
-        try:
-            from econ_sim.utils.llm_session import create_llm_session_from_env
 
-            llm_obj = create_llm_session_from_env()
+        # LLM 注入优先级：显式传入的实例 -> 工厂路径（在 worker 进程内 import 并调用）
+        # -> 回退到环境创建函数（向后兼容）
+        llm_obj = None
+        try:
+            if llm_session is not None:
+                llm_obj = llm_session
+            elif llm_factory_path:
+                try:
+                    mod_name, attr = llm_factory_path.rsplit(".", 1)
+                    mod = importlib.import_module(mod_name)
+                    factory = getattr(mod, attr)
+                    llm_obj = factory()
+                except Exception:
+                    llm_obj = None
+            else:
+                from econ_sim.utils.llm_session import create_llm_session_from_env
+
+                llm_obj = create_llm_session_from_env()
         except Exception:
             llm_obj = None
 
         sandbox_globals: Dict[str, Any] = {
             "__builtins__": safe_builtins,
-            # 注入受控的 llm 对象（可能为 None），脚本内可调用 llm.perform(...) 等受限接口
             "llm": llm_obj,
         }
         try:
@@ -556,6 +577,8 @@ def execute_script(
     script_id: Optional[str] = None,
     allowed_modules: Optional[Iterable[str]] = None,
     force_per_call: bool = False,
+    llm_factory_path: Optional[str] = None,
+    llm_session: Optional[Any] = None,
 ) -> Any:
     """在可复用的进程池中执行脚本并返回结果。
 
@@ -590,7 +613,9 @@ def execute_script(
         logger.debug(
             "execute_script: using per-call subprocess for script_id=%s", script_id
         )
-        return _run_in_subprocess(code, safe_context, modules, timeout)
+        return _run_in_subprocess(
+            code, safe_context, modules, timeout, llm_factory_path
+        )
 
     # 如果在导入时检测到该解释器是通过不安全的入口点启动（例如 heredoc / stdin / -c），
     # 则优先使用每次调用的独立子进程路径，因为 spawn 在子进程中重执行父进程 main 模块时
@@ -679,7 +704,16 @@ def execute_script(
             pass
 
         # 将 timeout 提交给 worker，以便 worker 在 CPU 密集型循环中能自我终止
-        future = pool.submit(_pool_worker, code, safe_context, modules, float(timeout))
+        # pass llm args to worker (factory path is a dotted import string safe to pickle)
+        future = pool.submit(
+            _pool_worker,
+            code,
+            safe_context,
+            modules,
+            float(timeout),
+            llm_factory_path=llm_factory_path,
+            llm_session=llm_session,
+        )
     except Exception as exc:
         # 如果进程池出现故障（例如子进程崩溃），尝试重置并重建一次进程池；
         # 若仍然失败，退回为在当前线程内执行 worker（无隔离）以避免使调用方崩溃。
@@ -694,7 +728,13 @@ def execute_script(
                 _PROCESS_POOL = None
                 pool = _get_process_pool()
             future = pool.submit(
-                _pool_worker, code, safe_context, modules, float(timeout)
+                _pool_worker,
+                code,
+                safe_context,
+                modules,
+                float(timeout),
+                llm_factory_path=llm_factory_path,
+                llm_session=llm_session,
             )
         except Exception:
             # 最后手段回退：在当前进程内直接运行 worker（无隔离），但保持对外的异常语义一致。
@@ -848,7 +888,9 @@ def execute_script(
                     _recreate_process_pool()
                 except Exception:
                     pass
-                return _run_in_subprocess(code, safe_context, modules, timeout)
+                return _run_in_subprocess(
+                    code, safe_context, modules, timeout, llm_factory_path
+                )
             except Exception:
                 # if fallback failed, raise original error below
                 pass
@@ -874,17 +916,8 @@ def execute_script(
     return result
 
 
-def _pool_worker(
-    code: str, context: Dict[str, Any], allowed_modules: Set[str], timeout: float = 0.0
-) -> Any:
-    """Worker function executed inside pool worker process.
-
-    This function is intentionally top-level so it can be pickled by the
-    ProcessPoolExecutor.
-    """
-    # Implementation is defined earlier in this file. This placeholder
-    # duplicate has been removed to ensure the pool worker uses the real
-    # implementation above.
+# Note: _pool_worker implementation is defined above (it must be top-level
+# so ProcessPoolExecutor can pickle it). Removed duplicate placeholder.
 
 
 def _noop() -> None:
@@ -965,7 +998,11 @@ def _subprocess_entry(
 
 
 def _run_in_subprocess(
-    code: str, context: Dict[str, Any], allowed_modules: Set[str], timeout: float
+    code: str,
+    context: Dict[str, Any],
+    allowed_modules: Set[str],
+    timeout: float,
+    llm_factory_path: Optional[str] = None,
 ) -> Any:
     """在独立子进程中运行代码并提供超时保证。
 
@@ -1002,13 +1039,28 @@ def _run_in_subprocess(
             )
 
     # 运行小型 runner：在子进程内执行代码并将结果以 JSON 输出
+    # Runner will attempt to construct LLM via factory path from env var
     runner = (
-        "import sys, json, traceback\n"
+        "import sys, os, json, traceback\n"
         "from econ_sim.script_engine.sandbox import _build_safe_builtins\n"
-        "# Attempt to create per-execution llm session; failures fall back to None\n"
+        "# Attempt to create per-execution llm session; prefer factory from env then fallback to env creator\n"
+        "_llm = None\n"
         "try:\n"
-        "    from econ_sim.utils.llm_session import create_llm_session_from_env\n"
-        "    _llm = create_llm_session_from_env()\n"
+        "    _factory_path = os.environ.get('ECON_SIM_LLM_FACTORY')\n"
+        "    if _factory_path:\n"
+        "        mod_name, attr = _factory_path.rsplit('.', 1)\n"
+        "        mod = __import__(mod_name, fromlist=[attr])\n"
+        "        factory = getattr(mod, attr)\n"
+        "        try:\n"
+        "            _llm = factory()\n"
+        "        except Exception:\n"
+        "            _llm = None\n"
+        "    else:\n"
+        "        from econ_sim.utils.llm_session import create_llm_session_from_env\n"
+        "        try:\n"
+        "            _llm = create_llm_session_from_env()\n"
+        "        except Exception:\n"
+        "            _llm = None\n"
         "except Exception:\n"
         "    _llm = None\n"
         "data = json.load(sys.stdin)\n"
@@ -1033,6 +1085,10 @@ def _run_in_subprocess(
         "    print(json.dumps({'err': tb}))\n"
     )
 
+    # Pass factory path via environment for subprocess to import and call
+    env = os.environ.copy()
+    if llm_factory_path:
+        env["ECON_SIM_LLM_FACTORY"] = llm_factory_path
     try:
         proc = subprocess.run(
             [sys.executable, "-c", runner],
@@ -1040,6 +1096,7 @@ def _run_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=max(0.1, float(timeout) + 1.0),
+            env=env,
         )
     except subprocess.TimeoutExpired as e:
         # process didn't finish in time
