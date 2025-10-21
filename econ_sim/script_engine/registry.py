@@ -146,6 +146,7 @@ class ScriptRegistry:
         sandbox_timeout: float = DEFAULT_SANDBOX_TIMEOUT,
         max_scripts_per_user: Optional[int] = None,
         limit_store: Optional[SimulationLimitStore] = None,
+        llm_factory_path: Optional[str] = None,
     ) -> None:
         self._store = store
         self._records: Dict[str, _ScriptRecord] = {}
@@ -158,6 +159,10 @@ class ScriptRegistry:
         self._registry_lock = asyncio.Lock()
         self._sandbox_timeout = sandbox_timeout
         self._allowed_modules = set(ALLOWED_MODULES)
+        # dotted import path for a factory that constructs per-execution LLM sessions
+        # e.g. 'tests.mocks.llm_factories.get_test_llm_session' or a production factory
+        # can be provided via environment or set at runtime via set_llm_factory_path().
+        self._llm_factory_path: Optional[str] = llm_factory_path
         self._default_script_limit = self._normalize_limit(max_scripts_per_user)
         self._simulation_limits: Dict[str, int] = {}
         self._limit_missing: Set[str] = set()
@@ -170,6 +175,10 @@ class ScriptRegistry:
         if limit <= 0:
             return None
         return int(limit)
+
+    def set_llm_factory_path(self, path: Optional[str]) -> None:
+        """At runtime allow changing the dotted factory path used for LLM injection."""
+        self._llm_factory_path = path
 
     def _get_effective_limit_unlocked(self, simulation_id: str) -> Optional[int]:
         if simulation_id in self._simulation_limits:
@@ -1418,6 +1427,7 @@ class ScriptRegistry:
                 timeout=self._sandbox_timeout,
                 script_id=record.metadata.script_id,
                 allowed_modules=self._allowed_modules,
+                llm_factory_path=self._llm_factory_path,
             )
         except ScriptSandboxTimeout as exc:
             logger.exception("Sandbox timeout for script %s", record.metadata.script_id)

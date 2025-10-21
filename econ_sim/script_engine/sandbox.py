@@ -70,6 +70,7 @@ ALLOWED_MODULES: Set[str] = {
     "math",
     "statistics",
     "random",
+    "time",
     "econ_sim",
     "econ_sim.script_engine",
     "econ_sim.script_engine.user_api",
@@ -198,6 +199,13 @@ def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
         cpu = os.cpu_count() or 2
         max_workers = max(2, min(8, cpu))
         _PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+        # best-effort debug info for pool creation
+        try:
+            logger = logging.getLogger(__name__)
+            logger.info("created process pool (max_workers=%s)", max_workers)
+            print(f"_get_process_pool: created pool max_workers={max_workers}")
+        except Exception:
+            pass
         return _PROCESS_POOL
 
 
@@ -249,7 +257,7 @@ def _pool_worker(
         safe_builtins = _build_safe_builtins(allowed_modules)
 
         # LLM 注入优先级：显式传入的实例 -> 工厂路径（在 worker 进程内 import 并调用）
-        # -> 回退到环境创建函数（向后兼容）
+        # 如果两者都不存在或工厂创建失败，则不再回退到基于环境的默认构造（避免全局耦合）。
         llm_obj = None
         try:
             if llm_session is not None:
@@ -263,9 +271,8 @@ def _pool_worker(
                 except Exception:
                     llm_obj = None
             else:
-                from econ_sim.utils.llm_session import create_llm_session_from_env
-
-                llm_obj = create_llm_session_from_env()
+                # explicitly do NOT construct from environment here
+                llm_obj = None
         except Exception:
             llm_obj = None
 
@@ -366,11 +373,23 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
 
         # call shutdown; prefer the requested wait behavior but don't raise
         try:
+            logger.debug("shutdown_process_pool: calling pool.shutdown(wait=%s)", wait)
+            print(f"shutdown_process_pool: calling pool.shutdown(wait={wait})")
             pool.shutdown(wait=wait)
+            logger.debug("shutdown_process_pool: pool.shutdown returned")
+            print("shutdown_process_pool: pool.shutdown returned")
         except Exception:
+            logger.exception(
+                "shutdown_process_pool: pool.shutdown raised, retrying with wait=False"
+            )
             try:
+                print("shutdown_process_pool: retrying pool.shutdown(wait=False)")
                 pool.shutdown(wait=False)
+                print("shutdown_process_pool: retry pool.shutdown returned")
             except Exception:
+                logger.exception(
+                    "shutdown_process_pool: retry pool.shutdown(wait=False) failed"
+                )
                 pass
 
         # 激进终止逻辑：优先使用 psutil 进行可靠的进程和子进程遍历与终止
@@ -398,6 +417,9 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                 kill_timeout,
                 list(pids),
             )
+            print(
+                f"shutdown_process_pool: aggressive_kill pids={list(pids)} term_timeout={term_timeout} kill_timeout={kill_timeout}"
+            )
             try:
                 procs = []
                 for pid in list(pids):
@@ -412,6 +434,8 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                     procs.append((proc, descendants))
 
                 # terminate then kill if necessary
+                logger.debug("shutdown_process_pool: terminating procs")
+                print("shutdown_process_pool: terminating procs")
                 for proc, descendants in procs:
                     try:
                         proc.terminate()
@@ -424,6 +448,8 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                             pass
 
                 end = time.time() + term_timeout
+                logger.debug("shutdown_process_pool: enter wait loop until %s", end)
+                print(f"shutdown_process_pool: enter wait loop until {end}")
                 while time.time() < end:
                     still_alive = []
                     for proc, descendants in procs:
@@ -452,6 +478,9 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                         break
                     time.sleep(0.05)
 
+                logger.debug("shutdown_process_pool: wait loop exited")
+                print("shutdown_process_pool: wait loop exited")
+
                 for proc, descendants in procs:
                     try:
                         if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
@@ -476,6 +505,7 @@ def shutdown_process_pool(wait: bool = True, aggressive_kill: bool = True) -> No
                     except Exception:
                         pass
                 logger.debug("shutdown_process_pool: aggressive kill completed")
+                print("shutdown_process_pool: aggressive kill completed")
             except Exception:
                 pass
 
@@ -527,22 +557,93 @@ def _recreate_process_pool() -> concurrent.futures.ProcessPoolExecutor:
     """尽最大努力重建全局进程池。
 
     如果存在正在运行的池，先尝试（激进地）关闭它，然后返回一个新的进程池实例。
+    注意：不要在持有 `_POOL_LOCK` 时调用会再次获取该锁的函数（比如
+    `shutdown_process_pool`），以避免自锁死。目前实现先在无锁状态下
+    调用关闭函数，然后在短锁段内将 `_PROCESS_POOL` 设为 None 并创建
+    新的池。
     """
     global _PROCESS_POOL
-    with _POOL_LOCK:
-        try:
-            if _PROCESS_POOL is not None:
+    logger = logging.getLogger(__name__)
+    try:
+        if _PROCESS_POOL is not None:
+            logger.info("_recreate_process_pool: shutting down existing pool")
+            print(f"_recreate_process_pool: shutting down existing pool")
+            # Call shutdown_process_pool without holding _POOL_LOCK to avoid deadlock
+            try:
                 shutdown_process_pool(wait=False, aggressive_kill=True)
-        except Exception:
-            pass
-        # create a fresh pool
+            except Exception:
+                logger.exception(
+                    "_recreate_process_pool: error shutting down existing pool"
+                )
+    except Exception:
+        logger.exception("_recreate_process_pool: unexpected error during shutdown")
+
+    # Safely clear the global pool reference under the lock
+    with _POOL_LOCK:
         _PROCESS_POOL = None
-        try:
-            if _PROMETHEUS_AVAILABLE:
-                POOL_RESTARTS.inc()
-        except Exception:
-            pass
-        return _get_process_pool()
+
+    try:
+        if _PROMETHEUS_AVAILABLE:
+            POOL_RESTARTS.inc()
+    except Exception:
+        pass
+    logger.info("_recreate_process_pool: creating new pool")
+    print(f"_recreate_process_pool: creating new pool")
+    return _get_process_pool()
+
+
+def _ensure_pool_health(
+    pool: concurrent.futures.ProcessPoolExecutor,
+) -> concurrent.futures.ProcessPoolExecutor:
+    """Check pool worker pids and recreate pool if any worker process is dead.
+
+    This is a best-effort health check: on POSIX we probe pids with os.kill(pid, 0).
+    If any pid is missing or not runnable, we call _recreate_process_pool() to
+    ensure future submissions have enough workers.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        proc_map = getattr(pool, "_processes", None)
+        logger.debug("_ensure_pool_health: proc_map=%s", bool(proc_map))
+        if not proc_map:
+            return pool
+        dead = False
+        pids = []
+        for p in list(proc_map.values()):
+            pid = getattr(p, "pid", None)
+            if not pid:
+                # try to get from _popen
+                popen = getattr(p, "_popen", None)
+                pid = getattr(popen, "pid", None) if popen is not None else None
+            pids.append(pid)
+            if not pid:
+                dead = True
+                logger.debug("_ensure_pool_health: missing pid for worker object %r", p)
+                break
+            try:
+                # os.kill(pid, 0) will raise OSError if process does not exist
+                os.kill(pid, 0)
+            except Exception:
+                dead = True
+                logger.warning("_ensure_pool_health: detected dead pid=%s", pid)
+                break
+        logger.debug("_ensure_pool_health: observed pids=%s dead=%s", pids, dead)
+        if dead:
+            try:
+                print(
+                    f"_ensure_pool_health: detected dead worker, pids={pids}, recreating pool"
+                )
+                logger.info(
+                    "_ensure_pool_health: detected dead worker, recreating pool"
+                )
+                return _recreate_process_pool()
+            except Exception:
+                logger.exception("_ensure_pool_health: failed to recreate pool")
+                return pool
+        return pool
+    except Exception:
+        logger.exception("_ensure_pool_health: unexpected error")
+        return pool
 
 
 def get_sandbox_metrics() -> Dict[str, object]:
@@ -586,7 +687,7 @@ def execute_script(
     调用会阻塞最多 `timeout` 秒；如果超时则抛出 ScriptSandboxTimeout。
     """
 
-    global _exec_count, _timeout_count
+    global _exec_count, _timeout_count, _PROCESS_POOL
 
     if timeout <= 0:
         raise ValueError("timeout must be positive")
@@ -705,21 +806,58 @@ def execute_script(
 
         # 将 timeout 提交给 worker，以便 worker 在 CPU 密集型循环中能自我终止
         # pass llm args to worker (factory path is a dotted import string safe to pickle)
-        future = pool.submit(
-            _pool_worker,
-            code,
-            safe_context,
-            modules,
-            float(timeout),
-            llm_factory_path=llm_factory_path,
-            llm_session=llm_session,
-        )
+        # Ensure pool health before submitting: if worker processes are dead,
+        # _ensure_pool_health will attempt to recreate the pool.
+        try:
+            pool = _ensure_pool_health(pool)
+        except Exception:
+            logger.exception("execute_script: _ensure_pool_health failed")
+        try:
+            print(
+                f"execute_script: submitting to pool pid={os.getpid()} timeout={timeout}"
+            )
+            logger.debug("execute_script: submitting to pool (script_id=%s)", script_id)
+            future = pool.submit(
+                _pool_worker,
+                code,
+                safe_context,
+                modules,
+                float(timeout),
+                llm_factory_path=llm_factory_path,
+                llm_session=llm_session,
+            )
+            print(f"execute_script: submitted future={future}")
+        except Exception:
+            logger.exception(
+                "execute_script: pool.submit failed, will attempt pool rebuild and retry"
+            )
+            try:
+                with _POOL_LOCK:
+                    try:
+                        if _PROCESS_POOL is not None:
+                            _PROCESS_POOL.shutdown(wait=False)
+                    except Exception:
+                        pass
+                    _PROCESS_POOL = None
+                    pool = _get_process_pool()
+                print("execute_script: retrying submit after pool rebuild")
+                future = pool.submit(
+                    _pool_worker,
+                    code,
+                    safe_context,
+                    modules,
+                    float(timeout),
+                    llm_factory_path=llm_factory_path,
+                    llm_session=llm_session,
+                )
+            except Exception:
+                logger.exception("execute_script: retry submit failed")
+                raise
     except Exception as exc:
         # 如果进程池出现故障（例如子进程崩溃），尝试重置并重建一次进程池；
         # 若仍然失败，退回为在当前线程内执行 worker（无隔离）以避免使调用方崩溃。
         try:
             with _POOL_LOCK:
-                global _PROCESS_POOL
                 try:
                     if _PROCESS_POOL is not None:
                         _PROCESS_POOL.shutdown(wait=False)
@@ -961,12 +1099,9 @@ def _subprocess_entry(
             pass
 
         safe_builtins = _build_safe_builtins(allowed_modules)
-        try:
-            from econ_sim.utils.llm_session import create_llm_session_from_env
-
-            llm_obj = create_llm_session_from_env()
-        except Exception:
-            llm_obj = None
+        # Do not construct llm from environment in subprocess entry; rely on
+        # explicit environment passing of factory path by the parent if needed.
+        llm_obj = None
         sandbox_globals: Dict[str, Any] = {
             "__builtins__": safe_builtins,
             "llm": llm_obj,
@@ -1043,7 +1178,7 @@ def _run_in_subprocess(
     runner = (
         "import sys, os, json, traceback\n"
         "from econ_sim.script_engine.sandbox import _build_safe_builtins\n"
-        "# Attempt to create per-execution llm session; prefer factory from env then fallback to env creator\n"
+        "# Attempt to create per-execution llm session using factory from env.\n"
         "_llm = None\n"
         "try:\n"
         "    _factory_path = os.environ.get('ECON_SIM_LLM_FACTORY')\n"
@@ -1056,11 +1191,7 @@ def _run_in_subprocess(
         "        except Exception:\n"
         "            _llm = None\n"
         "    else:\n"
-        "        from econ_sim.utils.llm_session import create_llm_session_from_env\n"
-        "        try:\n"
-        "            _llm = create_llm_session_from_env()\n"
-        "        except Exception:\n"
-        "            _llm = None\n"
+        "        _llm = None\n"
         "except Exception:\n"
         "    _llm = None\n"
         "data = json.load(sys.stdin)\n"

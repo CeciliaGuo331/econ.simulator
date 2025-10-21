@@ -35,10 +35,17 @@ def _build_registry() -> ScriptRegistry:
         except ValueError:
             default_limit = None
 
+    # Read optional LLM factory path from environment so the registry can
+    # propagate it down to the sandbox when executing scripts. This allows
+    # per-deployment injection of a factory (dotted import path) or tests to
+    # override it programmatically.
+    llm_factory = os.getenv("ECON_SIM_LLM_FACTORY")
+
     if not dsn:
         return ScriptRegistry(
             sandbox_timeout=sandbox_timeout,
             max_scripts_per_user=default_limit,
+            llm_factory_path=llm_factory,
         )
 
     schema = os.getenv("ECON_SIM_POSTGRES_SCHEMA", "public")
@@ -64,6 +71,7 @@ def _build_registry() -> ScriptRegistry:
         sandbox_timeout=sandbox_timeout,
         max_scripts_per_user=default_limit,
         limit_store=settings_store,
+        llm_factory_path=llm_factory,
     )
 
 
