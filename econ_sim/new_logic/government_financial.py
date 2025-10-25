@@ -310,70 +310,112 @@ def process_bond_maturities(world_state, tick: int, day: int):
     # iterate over a copy since we'll modify debt_instruments
     for bond_id, bond in list(government.debt_instruments.items()):
         if bond.maturity_tick <= tick:
-            payment_per_unit = bond.face_value * (1.0 + bond.coupon_rate)
-            total_payment = 0.0
+            # Determine accrued coupon ticks since last periodic coupon (if any).
+            accrued_ticks = 0
+            if bond.coupon_frequency_ticks and bond.coupon_frequency_ticks > 0:
+                # if next_coupon_tick is set, assume last coupon was at next_coupon_tick - freq
+                if bond.next_coupon_tick is not None:
+                    last_coupon_tick = (
+                        bond.next_coupon_tick - bond.coupon_frequency_ticks
+                    )
+                else:
+                    # no payments yet; assume whole life accrual equals coupon_frequency_ticks
+                    last_coupon_tick = bond.maturity_tick - bond.coupon_frequency_ticks
 
-            # pay bank holders
+                accrued_ticks = max(0, bond.maturity_tick - last_coupon_tick)
+            else:
+                # no periodic coupons scheduled: treat coupon_rate as a single maturity coupon
+                accrued_ticks = 1
+
+            # coupon per unit = face_value * coupon_rate * accrued_ticks
+            coupon_accrued_per_unit = bond.face_value * bond.coupon_rate * accrued_ticks
+            payment_per_unit = bond.face_value + coupon_accrued_per_unit
+
+            total_payment = 0.0
+            holder_amounts = {}
+
+            # collect bank holders
             bank = getattr(world_state, "bank", None)
             if bank is not None:
                 qty = bank.bond_holdings.get(bond_id, 0.0)
                 if qty > 0:
-                    amount = qty * payment_per_unit
-                    bank.balance_sheet.cash += amount
-                    total_payment += amount
-                    bank.bond_holdings[bond_id] = 0.0
-                    ledgers.append(
-                        models.LedgerEntry(
-                            tick=tick,
-                            day=day,
-                            account_kind=models.AgentKind.BANK,
-                            entity_id=bank.id,
-                            entry_type="bond_maturity_receipt",
-                            amount=amount,
-                            balance_after=bank.balance_sheet.cash,
-                            reference=bond_id,
-                        )
-                    )
-                    updates.append(
-                        models.StateUpdateCommand.assign(
-                            scope=models.AgentKind.BANK,
-                            agent_id=bank.id,
-                            balance_sheet=bank.balance_sheet.model_dump(),
-                            bond_holdings=bank.bond_holdings,
-                        )
-                    )
+                    amt = qty * payment_per_unit
+                    holder_amounts[(models.AgentKind.BANK, bank.id)] = (qty, amt)
+                    total_payment += amt
 
-            # pay household holders
+            # collect household holders
             for hid, hh in getattr(world_state, "households", {}).items():
                 qty = hh.bond_holdings.get(bond_id, 0.0)
                 if qty > 0:
-                    amount = qty * payment_per_unit
-                    hh.balance_sheet.cash += amount
-                    total_payment += amount
-                    hh.bond_holdings[bond_id] = 0.0
-                    ledgers.append(
-                        models.LedgerEntry(
-                            tick=tick,
-                            day=day,
-                            account_kind=models.AgentKind.HOUSEHOLD,
-                            entity_id=str(hid),
-                            entry_type="bond_maturity_receipt",
-                            amount=amount,
-                            balance_after=hh.balance_sheet.cash,
-                            reference=bond_id,
-                        )
-                    )
-                    updates.append(
-                        models.StateUpdateCommand.assign(
-                            scope=models.AgentKind.HOUSEHOLD,
-                            agent_id=hid,
-                            balance_sheet=hh.balance_sheet.model_dump(),
-                            bond_holdings=hh.bond_holdings,
-                        )
-                    )
+                    amt = qty * payment_per_unit
+                    holder_amounts[(models.AgentKind.HOUSEHOLD, str(hid))] = (qty, amt)
+                    total_payment += amt
 
-            # deduct payment from government
-            if total_payment > 0:
+            if total_payment <= 0:
+                # nothing to pay; just remove registry and continue
+                matured_bonds.append(bond_id)
+                del government.debt_instruments[bond_id]
+                government.debt_outstanding.pop(bond_id, None)
+                continue
+
+            gov_cash = government.balance_sheet.cash
+            if gov_cash >= total_payment:
+                # full payment
+                for (kind, eid), (qty, amt) in holder_amounts.items():
+                    if (
+                        kind == models.AgentKind.BANK
+                        and getattr(world_state, "bank", None) is not None
+                        and str(eid) == str(world_state.bank.id)
+                    ):
+                        bank.balance_sheet.cash += amt
+                        bank.bond_holdings[bond_id] = 0.0
+                        ledgers.append(
+                            models.LedgerEntry(
+                                tick=tick,
+                                day=day,
+                                account_kind=models.AgentKind.BANK,
+                                entity_id=bank.id,
+                                entry_type="bond_maturity_receipt",
+                                amount=amt,
+                                balance_after=bank.balance_sheet.cash,
+                                reference=bond_id,
+                            )
+                        )
+                        updates.append(
+                            models.StateUpdateCommand.assign(
+                                scope=models.AgentKind.BANK,
+                                agent_id=bank.id,
+                                balance_sheet=bank.balance_sheet.model_dump(),
+                                bond_holdings=bank.bond_holdings,
+                            )
+                        )
+                    else:
+                        hid = int(eid)
+                        hh = world_state.households[hid]
+                        hh.balance_sheet.cash += amt
+                        hh.bond_holdings[bond_id] = 0.0
+                        ledgers.append(
+                            models.LedgerEntry(
+                                tick=tick,
+                                day=day,
+                                account_kind=models.AgentKind.HOUSEHOLD,
+                                entity_id=str(hid),
+                                entry_type="bond_maturity_receipt",
+                                amount=amt,
+                                balance_after=hh.balance_sheet.cash,
+                                reference=bond_id,
+                            )
+                        )
+                        updates.append(
+                            models.StateUpdateCommand.assign(
+                                scope=models.AgentKind.HOUSEHOLD,
+                                agent_id=hid,
+                                balance_sheet=hh.balance_sheet.model_dump(),
+                                bond_holdings=hh.bond_holdings,
+                            )
+                        )
+
+                # deduct from government
                 government.balance_sheet.cash -= total_payment
                 ledgers.append(
                     models.LedgerEntry(
@@ -395,8 +437,90 @@ def process_bond_maturities(world_state, tick: int, day: int):
                         debt_outstanding=government.debt_outstanding,
                     )
                 )
+            else:
+                # partial pro-rata payment
+                fraction = gov_cash / total_payment if total_payment > 0 else 0.0
+                paid = 0.0
+                for (kind, eid), (qty, amt) in holder_amounts.items():
+                    pay = amt * fraction
+                    paid += pay
+                    if (
+                        kind == models.AgentKind.BANK
+                        and getattr(world_state, "bank", None) is not None
+                        and str(eid) == str(world_state.bank.id)
+                    ):
+                        bank.balance_sheet.cash += pay
+                        bank.bond_holdings[bond_id] = 0.0
+                        ledgers.append(
+                            models.LedgerEntry(
+                                tick=tick,
+                                day=day,
+                                account_kind=models.AgentKind.BANK,
+                                entity_id=bank.id,
+                                entry_type="bond_maturity_receipt_partial",
+                                amount=pay,
+                                balance_after=bank.balance_sheet.cash,
+                                reference=bond_id,
+                            )
+                        )
+                        updates.append(
+                            models.StateUpdateCommand.assign(
+                                scope=models.AgentKind.BANK,
+                                agent_id=bank.id,
+                                balance_sheet=bank.balance_sheet.model_dump(),
+                                bond_holdings=bank.bond_holdings,
+                            )
+                        )
+                    else:
+                        hid = int(eid)
+                        hh = world_state.households[hid]
+                        hh.balance_sheet.cash += pay
+                        hh.bond_holdings[bond_id] = 0.0
+                        ledgers.append(
+                            models.LedgerEntry(
+                                tick=tick,
+                                day=day,
+                                account_kind=models.AgentKind.HOUSEHOLD,
+                                entity_id=str(hid),
+                                entry_type="bond_maturity_receipt_partial",
+                                amount=pay,
+                                balance_after=hh.balance_sheet.cash,
+                                reference=bond_id,
+                            )
+                        )
+                        updates.append(
+                            models.StateUpdateCommand.assign(
+                                scope=models.AgentKind.HOUSEHOLD,
+                                agent_id=hid,
+                                balance_sheet=hh.balance_sheet.model_dump(),
+                                bond_holdings=hh.bond_holdings,
+                            )
+                        )
 
-            # remove bond from registry
+                # deduct paid amount from government
+                government.balance_sheet.cash -= paid
+                ledgers.append(
+                    models.LedgerEntry(
+                        tick=tick,
+                        day=day,
+                        account_kind=models.AgentKind.GOVERNMENT,
+                        entity_id=government.id,
+                        entry_type="bond_maturity_payment_partial",
+                        amount=-paid,
+                        balance_after=government.balance_sheet.cash,
+                        reference=bond_id,
+                    )
+                )
+                updates.append(
+                    models.StateUpdateCommand.assign(
+                        scope=models.AgentKind.GOVERNMENT,
+                        agent_id=government.id,
+                        balance_sheet=government.balance_sheet.model_dump(),
+                        debt_outstanding=government.debt_outstanding,
+                    )
+                )
+
+            # remove bond from registry regardless of full/partial payment
             matured_bonds.append(bond_id)
             del government.debt_instruments[bond_id]
             government.debt_outstanding.pop(bond_id, None)
