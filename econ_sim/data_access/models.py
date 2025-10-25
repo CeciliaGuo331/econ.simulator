@@ -51,6 +51,8 @@ class HouseholdState(BaseModel):
     labor_supply: float = 1.0
     last_consumption: float = 0.0
     reservation_wage: float = 60.0
+    # bond holdings: bond_id -> quantity
+    bond_holdings: Dict[str, float] = Field(default_factory=dict)
 
 
 class HouseholdShock(BaseModel):
@@ -91,6 +93,10 @@ class GovernmentState(BaseModel):
     unemployment_benefit: float = 50.0
     spending: float = 10000.0
     employees: List[int] = Field(default_factory=list)
+    # debt outstanding per bond id
+    debt_outstanding: Dict[str, float] = Field(default_factory=dict)
+    # debt instruments registry (bond_id -> BondInstrument)
+    debt_instruments: Dict[str, "BondInstrument"] = Field(default_factory=dict)
 
 
 class BankState(BaseModel):
@@ -101,16 +107,21 @@ class BankState(BaseModel):
     deposit_rate: float = 0.01
     loan_rate: float = 0.05
     approved_loans: Dict[int, float] = Field(default_factory=dict)
+    # bond holdings: bond_id -> quantity
+    bond_holdings: Dict[str, float] = Field(default_factory=dict)
 
 
 class CentralBankState(BaseModel):
     """央行的政策参数，包括基准利率、准备金率与目标指标。"""
 
     id: str = "central_bank"
+    balance_sheet: BalanceSheet = Field(default_factory=BalanceSheet)
     base_rate: float = 0.03
     reserve_ratio: float = 0.1
     inflation_target: float = 0.02
     unemployment_target: float = 0.05
+    # bond holdings for OMO
+    bond_holdings: Dict[str, float] = Field(default_factory=dict)
 
 
 class MacroState(BaseModel):
@@ -121,6 +132,8 @@ class MacroState(BaseModel):
     unemployment_rate: float = 0.0
     price_index: float = 100.0
     wage_index: float = 100.0
+    # observable market bond yield (set after bond auctions)
+    bond_yield: Optional[float] = None
 
 
 class PublicMarketData(BaseModel):
@@ -133,6 +146,7 @@ class PublicMarketData(BaseModel):
     tax_rate: float
     unemployment_rate: float
     inflation: float
+    bond_yield: Optional[float] = None
 
 
 class WorldState(BaseModel):
@@ -167,6 +181,7 @@ class WorldState(BaseModel):
             tax_rate=self.government.tax_rate,
             unemployment_rate=self.macro.unemployment_rate,
             inflation=self.macro.inflation,
+            bond_yield=self.macro.bond_yield,
         )
 
 
@@ -235,6 +250,8 @@ class CentralBankDecision(BaseModel):
 
     policy_rate: float
     reserve_ratio: float
+    # optional OMO operations: list of {"bond_id": str, "side": "buy"|"sell", "quantity": float, "price": float}
+    omo_ops: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class TickDecisions(BaseModel):
@@ -245,6 +262,9 @@ class TickDecisions(BaseModel):
     bank: BankDecision
     government: GovernmentDecision
     central_bank: CentralBankDecision
+    # optional bond bids submitted by participants for this tick's issuance
+    # each bid: {"buyer_kind": str, "buyer_id": str|int, "price": float, "quantity": float}
+    bond_bids: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class HouseholdDecisionOverride(BaseModel):
@@ -343,6 +363,22 @@ class TradeRecord(BaseModel):
     amount: float
 
 
+class BondInstrument(BaseModel):
+    """简单的债券/国债对象模型（最小化实现）。"""
+
+    id: str
+    issuer: str
+    face_value: float
+    coupon_rate: float
+    # coupon_frequency_ticks: number of ticks between coupon payments; 0 means pay only at maturity
+    coupon_frequency_ticks: int = 0
+    # next tick at which a coupon payment is due; if None, no periodic coupons scheduled
+    next_coupon_tick: Optional[int] = None
+    maturity_tick: int
+    outstanding: float
+    holders: Dict[str, float] = Field(default_factory=dict)
+
+
 class LedgerEntry(BaseModel):
     """账户流水记录。用于主体资产的记账追踪。"""
 
@@ -386,3 +422,7 @@ class TickResult(BaseModel):
     world_state: "WorldState"  # type: ignore[name-defined]
     logs: List[TickLogEntry]
     updates: List[StateUpdateCommand]
+    # explicit market signals observed/produced during the tick (e.g. bond_yield)
+    market_signals: Dict[str, Any] = Field(default_factory=dict)
+    # full list of ledger entries produced during this tick
+    ledgers: List["LedgerEntry"] = Field(default_factory=list)

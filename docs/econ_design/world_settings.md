@@ -53,6 +53,16 @@
 | `inventory_carry_cost` | 0.01 | [0, 0.5) | 企业库存单位持有成本 |
 
 所有利率和产出默认以年化名义值给出。引擎在每个 tick 内通过 `effective_rate_per_tick = (1 + annual_rate)^(1 / (n_ticks_per_day * 365)) - 1` 将其转换为等效的 tick 利率。
+所有利率在文档与配置中均以「每 tick 利率（per-tick rate）」表示，亦即直接给出单个 tick 内的利率值（非年化）。
+引擎在内部将这些 per-tick 利率直接作为仿真步骤的利率使用，不会再做年化到 tick 的自动转换。
+
+如果需要从年化利率输入到系统，请在配置文件或加载前将年化利率转换为 per-tick。例如：
+
+```
+effective_rate_per_tick = (1 + annual_rate) ** (1 / (n_ticks_per_day * 365)) - 1
+```
+
+但建议在上游配置中直接使用 per-tick 数值以避免歧义。
 
 ---
 
