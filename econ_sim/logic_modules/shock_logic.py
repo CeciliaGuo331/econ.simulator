@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Any
 
 import numpy as np
 
 from ..data_access.models import HouseholdShock, WorldState
-from ..utils.settings import WorldConfig
 
 
 def _stable_seed(simulation_id: str, base_seed: int, tick: int) -> int:
@@ -24,7 +23,7 @@ def _stable_seed(simulation_id: str, base_seed: int, tick: int) -> int:
 
 
 def generate_household_shocks(
-    world_state: WorldState, config: WorldConfig
+    world_state: WorldState, config: Any
 ) -> Dict[int, HouseholdShock]:
     """为所有家户生成本 Tick 的能力与资产冲击。"""
 
@@ -109,3 +108,9 @@ def apply_household_shocks_for_decision(
         )
 
     return state_copy
+
+
+__all__ = [
+    "generate_household_shocks",
+    "apply_household_shocks_for_decision",
+]
