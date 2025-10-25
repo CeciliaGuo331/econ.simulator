@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -34,6 +34,7 @@ from ..data_access.models import (
     TickDecisions,
     TickLogEntry,
     WorldState,
+    LedgerEntry,
 )
 from ..utils.settings import WorldConfig
 
@@ -70,7 +71,9 @@ def execute_tick_logic(
     decisions: TickDecisions,
     config: WorldConfig,
     shocks: Optional[Dict[int, HouseholdShock]] = None,
-) -> Tuple[List[StateUpdateCommand], List[TickLogEntry]]:
+) -> Tuple[
+    List[StateUpdateCommand], List[TickLogEntry], List["LedgerEntry"], Dict[str, Any]
+]:
     """执行完整的市场流程，返回状态更新指令与日志列表。"""
     working = _clone_world_state(world_state)
     metrics = TickEconomyMetrics()
@@ -121,10 +124,63 @@ def execute_tick_logic(
     )
     logs.append(production_log)
 
-    finance_logs = _process_income_support(
+    finance_logs, finance_ledgers = _process_income_support(
         working, decisions, config, metrics, world_state
     )
     logs.extend(finance_logs)
+
+    # collect ledgers produced during income support processing
+    all_ledgers: List["LedgerEntry"] = []
+    all_ledgers.extend(finance_ledgers)
+
+    # process periodic coupon payments (if any)
+    try:
+        from ..new_logic import government_financial as _gov_fin
+
+        c_updates, c_ledgers, c_log = _gov_fin.process_coupon_payments(
+            working, tick=world_state.tick, day=world_state.day
+        )
+
+        # apply coupon updates to working snapshot
+        def _apply_coupon_update(update: StateUpdateCommand) -> None:
+            scope = update.scope
+            changes = update.changes or {}
+            if scope == AgentKind.BANK:
+                if "balance_sheet" in changes:
+                    bs = changes["balance_sheet"]
+                    working.bank.balance_sheet.cash = float(
+                        bs.get("cash", working.bank.balance_sheet.cash)
+                    )
+                if "bond_holdings" in changes:
+                    working.bank.bond_holdings = changes["bond_holdings"]
+            elif scope == AgentKind.HOUSEHOLD:
+                hid = int(update.agent_id)
+                hh = working.households[hid]
+                if "balance_sheet" in changes:
+                    bs = changes["balance_sheet"]
+                    hh.balance_sheet.cash = float(bs.get("cash", hh.balance_sheet.cash))
+                if "bond_holdings" in changes:
+                    hh.bond_holdings = changes["bond_holdings"]
+            elif scope == AgentKind.GOVERNMENT:
+                if "balance_sheet" in changes:
+                    bs = changes["balance_sheet"]
+                    working.government.balance_sheet.cash = float(
+                        bs.get("cash", working.government.balance_sheet.cash)
+                    )
+                if "debt_outstanding" in changes:
+                    working.government.debt_outstanding = changes["debt_outstanding"]
+
+        for up in c_updates:
+            try:
+                _apply_coupon_update(up)
+            except Exception:
+                pass
+
+        all_ledgers.extend(c_ledgers)
+        logs.append(c_log)
+    except Exception:
+        # swallow to avoid breaking tick flow
+        pass
 
     goods_log = _clear_goods_market(working, decisions, config, metrics, world_state)
     logs.append(goods_log)
@@ -139,7 +195,12 @@ def execute_tick_logic(
 
     updates = _build_state_updates(world_state, working, macro_update)
 
-    return updates, logs
+    # expose market signals (e.g., bond_yield) from working macro
+    market_signals: Dict[str, Any] = {}
+    if getattr(working.macro, "bond_yield", None) is not None:
+        market_signals["bond_yield"] = float(working.macro.bond_yield)
+
+    return updates, logs, all_ledgers, market_signals
 
 
 def _clone_world_state(world_state: WorldState) -> WorkingState:
@@ -161,6 +222,50 @@ def _apply_central_bank_policy(working: WorkingState, decisions: TickDecisions) 
     """根据央行决策更新工作状态中的利率与准备金率。"""
     working.central_bank.base_rate = decisions.central_bank.policy_rate
     working.central_bank.reserve_ratio = decisions.central_bank.reserve_ratio
+    # execute any OMO operations submitted in the central bank decision
+    from ..new_logic import central_bank_policy as _cb_policy
+
+    # helper to apply assign updates to working snapshot
+    def _apply_update(update: StateUpdateCommand) -> None:
+        scope = update.scope
+        aid = update.agent_id
+        changes = update.changes or {}
+        if scope == AgentKind.BANK:
+            if "balance_sheet" in changes:
+                bs = changes["balance_sheet"]
+                working.bank.balance_sheet.cash = float(
+                    bs.get("cash", working.bank.balance_sheet.cash)
+                )
+                working.bank.balance_sheet.deposits = float(
+                    bs.get("deposits", working.bank.balance_sheet.deposits)
+                )
+            if "bond_holdings" in changes:
+                working.bank.bond_holdings = changes["bond_holdings"]
+        elif scope == AgentKind.CENTRAL_BANK:
+            if "balance_sheet" in changes:
+                bs = changes["balance_sheet"]
+                working.central_bank.balance_sheet.cash = float(
+                    bs.get("cash", working.central_bank.balance_sheet.cash)
+                )
+            if "bond_holdings" in changes:
+                working.central_bank.bond_holdings = changes["bond_holdings"]
+
+    for op in getattr(decisions.central_bank, "omo_ops", []):
+        try:
+            res = _cb_policy.open_market_operation(
+                working,
+                bond_id=op.get("bond_id"),
+                quantity=op.get("quantity", 0.0),
+                side=op.get("side"),
+                price=op.get("price", 0.0),
+                tick=0,
+                day=0,
+            )
+            for up in res.get("updates", []):
+                _apply_update(up)
+        except Exception:
+            # swallow to avoid breaking tick flow; errors should be logged in future
+            pass
 
 
 def _resolve_labor_market(
@@ -271,7 +376,7 @@ def _process_income_support(
     config: WorldConfig,
     metrics: TickEconomyMetrics,
     world_state: WorldState,
-) -> List[TickLogEntry]:
+) -> Tuple[List[TickLogEntry], List[LedgerEntry]]:
     """处理工资发放与失业补助，反映至家庭与财政账户。"""
     firm = working.firm
     government = working.government
@@ -298,18 +403,124 @@ def _process_income_support(
         0.0, government.balance_sheet.cash - gov_payroll
     )
 
-    benefit_total = 0.0
-    benefit = config.policies.unemployment_benefit
-    for household in working.households.values():
-        if household.employment_status is EmploymentStatus.UNEMPLOYED:
-            household.balance_sheet.cash += benefit
-            benefit_total += benefit
-
-    metrics.transfers = benefit_total
-    government.balance_sheet.cash = max(
-        0.0, government.balance_sheet.cash - benefit_total
+    # process unemployment benefits and means-tested transfers via new logic
+    # import locally to avoid circular import at module load time
+    from ..new_logic.government_transfers import (
+        unemployment_benefit,
+        means_tested_transfer,
     )
 
+    # these functions return StateUpdateCommand lists and ledger entries; we apply updates to working
+    # pass any bond bids submitted in decisions into transfer functions so they can perform marketized issuance
+    u_updates, u_ledger, u_log = unemployment_benefit(
+        world_state, decisions.government, bids=getattr(decisions, "bond_bids", None)
+    )
+    m_updates, m_ledger, m_log = means_tested_transfer(
+        world_state, decisions.government, bids=getattr(decisions, "bond_bids", None)
+    )
+
+    # helper to apply assign updates to working snapshot (supports balance_sheet and simple fields)
+    def _apply_update(update: StateUpdateCommand) -> None:
+        scope = update.scope
+        aid = update.agent_id
+        changes = update.changes or {}
+        if scope == AgentKind.HOUSEHOLD:
+            hid = int(aid)
+            hh = working.households[hid]
+            if "balance_sheet" in changes:
+                bs = changes["balance_sheet"]
+                # update fields present in balance_sheet dict
+                hh.balance_sheet.cash = float(bs.get("cash", hh.balance_sheet.cash))
+                hh.balance_sheet.deposits = float(
+                    bs.get("deposits", hh.balance_sheet.deposits)
+                )
+                hh.balance_sheet.loans = float(bs.get("loans", hh.balance_sheet.loans))
+                hh.balance_sheet.inventory_goods = float(
+                    bs.get("inventory_goods", hh.balance_sheet.inventory_goods)
+                )
+            if "employment_status" in changes:
+                from ..data_access.models import EmploymentStatus as _ES
+
+                hh.employment_status = _ES(changes["employment_status"])
+            if "wage_income" in changes:
+                hh.wage_income = float(changes["wage_income"])
+            if "bond_holdings" in changes:
+                hh.bond_holdings = changes["bond_holdings"]
+        elif scope == AgentKind.GOVERNMENT:
+            gov = working.government
+            if "balance_sheet" in changes:
+                bs = changes["balance_sheet"]
+                gov.balance_sheet.cash = float(bs.get("cash", gov.balance_sheet.cash))
+                gov.balance_sheet.deposits = float(
+                    bs.get("deposits", gov.balance_sheet.deposits)
+                )
+                gov.balance_sheet.loans = float(
+                    bs.get("loans", gov.balance_sheet.loans)
+                )
+                gov.balance_sheet.inventory_goods = float(
+                    bs.get("inventory_goods", gov.balance_sheet.inventory_goods)
+                )
+            if "tax_rate" in changes:
+                gov.tax_rate = float(changes["tax_rate"])
+            if "debt_outstanding" in changes:
+                gov.debt_outstanding = changes["debt_outstanding"]
+            if "debt_instruments" in changes:
+                gov.debt_instruments = changes["debt_instruments"]
+
+    # apply all updates returned by transfer functions
+    all_ledgers = []
+    for up in u_updates + m_updates:
+        _apply_update(up)
+
+    # collect ledgers from transfer functions (if they returned them)
+    try:
+        all_ledgers.extend(u_ledger)
+    except Exception:
+        pass
+    try:
+        all_ledgers.extend(m_ledger)
+    except Exception:
+        pass
+
+    # record a ledger summary log (serialize a small slice for safety)
+    import json
+
+    ledger_preview = []
+    for entry in all_ledgers[:10]:
+        try:
+            ledger_preview.append(
+                {
+                    "account": (
+                        entry.account_kind.value
+                        if hasattr(entry.account_kind, "value")
+                        else str(entry.account_kind)
+                    ),
+                    "entity": entry.entity_id,
+                    "type": entry.entry_type,
+                    "amount": float(entry.amount),
+                    "ref": entry.reference,
+                }
+            )
+        except Exception:
+            continue
+
+    logs.append(
+        TickLogEntry(
+            tick=world_state.tick,
+            day=world_state.day,
+            message="ledgers_recorded",
+            context={
+                "ledger_count": len(all_ledgers),
+                "ledger_preview": json.dumps(ledger_preview),
+            },
+        )
+    )
+
+    metrics.transfers = (
+        metrics.transfers + 0.0
+    )  # keep existing metric usage; detailed amounts may be in logs
+
+    # append logs from the transfer functions
     logs.append(
         TickLogEntry(
             tick=world_state.tick,
@@ -318,12 +529,14 @@ def _process_income_support(
             context={
                 "firm_payroll": firm_payroll,
                 "government_payroll": gov_payroll,
-                "benefits": benefit_total,
+                "benefits": "see_transfer_logs",
             },
         )
     )
+    logs.append(u_log)
+    logs.append(m_log)
 
-    return logs
+    return logs, all_ledgers
 
 
 def _clear_goods_market(

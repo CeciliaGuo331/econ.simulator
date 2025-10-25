@@ -419,7 +419,7 @@ class SimulationOrchestrator:
 
         # 执行市场逻辑（计时）
         start = time.perf_counter()
-        updates, logs = await asyncio.to_thread(
+        updates, logs, ledgers, market_signals = await asyncio.to_thread(
             execute_tick_logic,
             world_state,
             decisions,
@@ -479,7 +479,13 @@ class SimulationOrchestrator:
         # 持久化更新并记录 Tick（计时）
         start = time.perf_counter()
         updated_state = await self.data_access.apply_updates(simulation_id, updates)
-        tick_result = TickResult(world_state=updated_state, logs=logs, updates=updates)
+        tick_result = TickResult(
+            world_state=updated_state,
+            logs=logs,
+            updates=updates,
+            market_signals=market_signals,
+            ledgers=ledgers,
+        )
         await self.data_access.record_tick(tick_result)
         end = time.perf_counter()
         persist_dur = end - start

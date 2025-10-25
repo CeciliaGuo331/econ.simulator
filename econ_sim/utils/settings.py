@@ -1,4 +1,11 @@
-"""提供经济仿真所需的配置模型与读取工具。"""
+"""提供经济仿真所需的配置模型与读取工具。
+
+注意：自本版本起，所有表示利率的字段（如存贷利率、央行政策利率、国债票面利率等）
+均采用「每 tick 利率（per-tick rate）」的语义，也就是说这些值直接表示单个 tick 内的利率。
+引擎内部不会再对利率做年化到 tick 的自动转换。若需要从年化利率输入，请使用外部工具
+或在配置加载前把年化利率转换为等效的 per-tick 利率（示例：若仍希望表达年化 r，
+可用 (1 + r) ** (1 / (ticks_per_year)) - 1 转换）。
+"""
 
 from __future__ import annotations
 
@@ -41,8 +48,14 @@ class LaborMarketConfig(BaseModel):
 class FinanceMarketConfig(BaseModel):
     """金融市场配置，如存贷利率等参数。"""
 
-    deposit_rate: float = Field(default=0.01)
-    loan_rate: float = Field(default=0.05)
+    deposit_rate: float = Field(
+        default=0.01,
+        description="存款利率（per-tick），即每个 tick 的利率。例如 0.01 表示每个 tick 增长 1%",
+    )
+    loan_rate: float = Field(
+        default=0.05,
+        description="贷款利率（per-tick），即每个 tick 的利率。例如 0.05 表示每个 tick 增长 5%",
+    )
 
 
 class MarketConfig(BaseModel):
@@ -58,7 +71,10 @@ class CentralBankPolicy(BaseModel):
 
     inflation_target: float = Field(default=0.02)
     unemployment_target: float = Field(default=0.05)
-    base_rate: float = Field(default=0.03)
+    base_rate: float = Field(
+        default=0.03,
+        description="央行政策利率（per-tick）。本字段表示每个 tick 的政策利率（非年化）",
+    )
     reserve_ratio: float = Field(default=0.1)
 
 
@@ -68,7 +84,19 @@ class PolicyConfig(BaseModel):
     tax_rate: float = Field(default=0.15)
     unemployment_benefit: float = Field(default=50.0)
     government_spending: float = Field(default=10000.0)
+    # 转移支付默认参数
+    means_test_amount: float = Field(default=20.0)
+    transfer_threshold: float = Field(default=50.0)
+    transfer_funding_policy: str = Field(default="allow_debt")
+    allow_partial_payment: bool = Field(default=False)
     central_bank: CentralBankPolicy = Field(default_factory=CentralBankPolicy)
+    # bond defaults for marketized issuance
+    # 表示国债票面利率（per-tick），用于默认发行时的 coupon 计算
+    default_bond_coupon_rate: float = Field(
+        default=0.03,
+        description="国债票面利率（per-tick），即每个 tick 支付的利率。若需从年化利率转换，请在配置加载前处理",
+    )
+    default_bond_maturity: int = Field(default=10)
 
 
 class WorldConfig(BaseModel):

@@ -56,6 +56,7 @@ from .postgres_support import get_pool, run_with_retry
 from .postgres_failures import PostgresScriptFailureStore
 from .postgres_participants import PostgresParticipantStore
 from .postgres_ticklogs import PostgresTickLogStore
+from .postgres_ledgers import PostgresLedgerStore
 from .postgres_utils import quote_identifier
 
 
@@ -821,6 +822,7 @@ class DataAccessLayer:
     _tick_logs: Dict[str, List[TickLogEntry]] = field(default_factory=dict)
     _log_retention: int = field(default=1000)
     _tick_log_store: Optional[PostgresTickLogStore] = None
+    _ledger_store: Optional[PostgresLedgerStore] = None
     _runtime_store: Optional[RedisRuntimeStore] = None
     # per-simulation write locks to prevent concurrent writes from clobbering each other
     _write_locks: Dict[str, asyncio.Lock] = field(default_factory=dict)
@@ -853,6 +855,7 @@ class DataAccessLayer:
         participant_store: Optional[PostgresParticipantStore] = None
         failure_store: ScriptFailureStore = InMemoryScriptFailureStore()
         tick_log_store: Optional[PostgresTickLogStore] = None
+        ledger_store: Optional[PostgresLedgerStore] = None
 
         if redis_url and Redis is not None:
             redis_client = Redis.from_url(
@@ -889,6 +892,12 @@ class DataAccessLayer:
                 min_pool_size=pg_min_pool,
                 max_pool_size=pg_max_pool,
             )
+            ledger_store = PostgresLedgerStore(
+                postgres_dsn,
+                schema=pg_schema,
+                min_pool_size=pg_min_pool,
+                max_pool_size=pg_max_pool,
+            )
 
         if cache_store or persistent_store:
             composite = CompositeStateStore(
@@ -905,6 +914,7 @@ class DataAccessLayer:
                 participant_store=participant_store,
                 failure_store=failure_store,
                 _tick_log_store=tick_log_store,
+                _ledger_store=ledger_store,
                 _runtime_store=runtime_store,
             )
             # sampler will be started explicitly via start_sampler() when desired
@@ -1143,6 +1153,23 @@ class DataAccessLayer:
             # Persist to Postgres when available for history queries
             if self._tick_log_store is not None:
                 await self._tick_log_store.record_many(simulation_id, tick_result.logs)
+        # persist ledgers to runtime store if provided
+        if getattr(tick_result, "ledgers", None):
+            try:
+                await self.append_ledger(simulation_id, tick_result.ledgers)
+            except Exception:
+                # best effort: do not fail tick persistence if ledger append fails
+                logger.exception("Failed to append ledgers for %s", simulation_id)
+            # persist ledgers to Postgres audit table when available
+            try:
+                if getattr(self, "_ledger_store", None) is not None:
+                    await self._ledger_store.record_many(
+                        simulation_id, tick_result.ledgers
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to persist ledgers to Postgres for %s", simulation_id
+                )
 
     # ---- Market runtime & ledger helpers ----
 
