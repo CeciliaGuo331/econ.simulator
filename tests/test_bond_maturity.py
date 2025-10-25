@@ -8,7 +8,7 @@ from econ_sim.data_access.models import (
     HouseholdState,
     BalanceSheet,
 )
-from econ_sim.new_logic import government_financial, government_financial as gf
+from econ_sim.logic_modules import government_financial, government_financial as gf
 
 
 def make_world_one_holder():

@@ -8,7 +8,7 @@ from econ_sim.data_access.models import (
     HouseholdState,
     BalanceSheet,
 )
-from econ_sim.new_logic import central_bank as cb
+from econ_sim.logic_modules import central_bank as cb
 
 
 def make_world_for_omo():

@@ -4,7 +4,7 @@
 最终实现将扩展或替换此目录下的内容。
 """
 
-from .orchestrator import run_tick_new
+from ..core.orchestrator import run_tick_new
 from .baseline_stub import generate_baseline_decisions
 
 __all__ = ["run_tick_new", "generate_baseline_decisions"]

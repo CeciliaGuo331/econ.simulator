@@ -14,7 +14,7 @@ from econ_sim.data_access.models import (
     SimulationFeatures,
     AgentKind,
 )
-from econ_sim.new_logic import run_tick_new
+from econ_sim.core.orchestrator import run_tick_new
 
 
 def make_minimal_world(household_count: int = 5) -> WorldState:
@@ -48,7 +48,7 @@ def make_minimal_world(household_count: int = 5) -> WorldState:
 
 def test_run_tick_new_smoke():
     ws = make_minimal_world()
-    updates, logs = run_tick_new(ws)
+    updates, logs, ledgers, market_signals = run_tick_new(ws)
     assert isinstance(updates, list)
     assert len(logs) > 0
     # expect at least one update (macro or other)

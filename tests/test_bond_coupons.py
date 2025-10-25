@@ -1,7 +1,7 @@
 import pytest
 
 from econ_sim.data_access import models
-from econ_sim.new_logic import government_financial
+from econ_sim.logic_modules import government_financial
 
 
 def make_world():

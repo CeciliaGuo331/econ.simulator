@@ -9,7 +9,7 @@ from econ_sim.data_access.models import (
     HouseholdState,
     BalanceSheet,
 )
-from econ_sim.new_logic import government_financial, central_bank_policy
+from econ_sim.logic_modules import government_financial, central_bank_policy
 
 
 def make_world():

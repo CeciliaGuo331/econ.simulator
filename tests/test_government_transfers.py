@@ -2,7 +2,7 @@
 
 from econ_sim.core import entity_factory
 from econ_sim.utils.settings import get_world_config
-from econ_sim.new_logic.government_transfers import (
+from econ_sim.logic_modules.government_transfers import (
     means_tested_transfer,
     unemployment_benefit,
 )

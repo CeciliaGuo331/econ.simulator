@@ -1,7 +1,7 @@
 import pytest
 
 from econ_sim.data_access import models
-from econ_sim.new_logic import bond_market
+from econ_sim.logic_modules import bond_market
 from econ_sim.utils.settings import get_world_config
 
 

@@ -2,7 +2,7 @@
 
 from econ_sim.core import entity_factory
 from econ_sim.utils.settings import get_world_config
-from econ_sim.new_logic.labor_market import resolve_labor_market_new
+from econ_sim.logic_modules.labor_market import resolve_labor_market_new
 from econ_sim.data_access.models import (
     TickDecisions,
     HouseholdDecision,
