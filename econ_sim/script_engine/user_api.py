@@ -11,7 +11,14 @@ from typing import Any, Dict, Iterable, Optional
 
 API_VERSION = 1
 
-_HOUSEHOLD_FIELDS = {"consumption_budget", "savings_rate", "labor_supply"}
+_HOUSEHOLD_FIELDS = {
+    "consumption_budget",
+    "savings_rate",
+    "labor_supply",
+    # education-related fields introduced to support daily education decisions
+    "is_studying",
+    "education_payment",
+}
 _FIRM_FIELDS = {"price", "planned_production", "wage_offer", "hiring_demand"}
 _BANK_FIELDS = {"deposit_rate", "loan_rate", "loan_supply"}
 _GOVERNMENT_FIELDS = {"tax_rate", "government_jobs", "transfer_budget"}

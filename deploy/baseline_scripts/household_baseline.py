@@ -28,6 +28,8 @@ def generate_decisions(context: Context) -> DecisionOverrides:
 
     world = context.get("world_state", {})
     macro = world.get("macro", {})
+    features = world.get("features", {}) or {}
+    is_daily = bool(features.get("is_daily_decision_tick"))
 
     inflation_factor = clamp(1.0 - macro.get("inflation", 0.0) * 0.5, 0.7, 1.1)
     unemployment = macro.get("unemployment_rate", 0.0)
@@ -40,14 +42,41 @@ def generate_decisions(context: Context) -> DecisionOverrides:
     discretionary = max(0.0, wage_income * (1 - precaution) + cash * 0.02)
     consumption_budget = max(subsistence, discretionary) * inflation_factor
     employment_status = str(entity_state.get("employment_status", "")).lower()
-    labor_supply = 1.0 if employment_status.startswith("unemployed") else 0.85
+    # labor / hiring decisions are only meaningful on daily decision ticks
+    labor_supply = None
+    if is_daily:
+        labor_supply = 1.0 if employment_status.startswith("unemployed") else 0.85
 
     builder = OverridesBuilder()
-    builder.household(
-        entity_id,
-        consumption_budget=round(consumption_budget, 2),
-        savings_rate=round(precaution, 3),
-        labor_supply=labor_supply,
-    )
+
+    # education decision only allowed on daily decision tick
+    edu_payment = 0.0
+    is_studying = False
+    if is_daily:
+        cfg = context.get("config", {}) or {}
+        policies = cfg.get("policies", {})
+        edu_cost = float(policies.get("education_cost_per_day", 2.0))
+
+        # simple affordability rule: pay from a small fraction of discretionary income
+        proposed = min(edu_cost, max(0.0, wage_income * 0.1 + cash * 0.03))
+        # encourage studying if household is below a target education level
+        edu_level = float(entity_state.get("education_level", 0.5))
+        if proposed >= edu_cost * 0.5 or edu_level < 0.4:
+            is_studying = True
+            edu_payment = round(proposed, 2)
+
+    # Build household override; omit labor_supply when not daily so defaults persist
+    household_fields: dict = {
+        "consumption_budget": round(consumption_budget, 2),
+        "savings_rate": round(precaution, 3),
+    }
+    if labor_supply is not None:
+        household_fields["labor_supply"] = labor_supply
+    # education overrides (only legal on daily tick)
+    if is_studying:
+        household_fields["is_studying"] = True
+        household_fields["education_payment"] = edu_payment
+
+    builder.household(entity_id, **household_fields)
 
     return builder.build()

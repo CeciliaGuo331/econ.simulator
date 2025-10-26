@@ -10,6 +10,8 @@ DecisionOverrides = dict[str, object]
 def generate_decisions(context: Context) -> DecisionOverrides:
     world = context.get("world_state", {})
     macro = world.get("macro", {})
+    features = world.get("features", {}) or {}
+    is_daily = bool(features.get("is_daily_decision_tick"))
     firm = context.get("entity_state") or world.get("firm")
     if not firm:
         return {}
@@ -35,13 +37,23 @@ def generate_decisions(context: Context) -> DecisionOverrides:
 
     productivity = max(firm.get("productivity", 0.1), 0.1)
     required_workers = int(planned_production / productivity)
-    hiring_demand = max(0, required_workers - len(firm.get("employees", [])))
+    # hiring and wage offers only updated on daily decision ticks
+    hiring_demand = None
+    wage_offer = None
+    if is_daily:
+        hiring_demand = max(0, required_workers - len(firm.get("employees", [])))
+        wage_offer = round(firm.get("wage_offer", 80.0) * wage_adjustment, 2)
 
-    builder.firm(
-        planned_production=round(planned_production, 2),
-        price=round(firm["price"] * price_adjustment, 2),
-        wage_offer=round(firm.get("wage_offer", 80.0) * wage_adjustment, 2),
-        hiring_demand=hiring_demand,
-    )
+    # price and planned production are updated each tick; hiring/wage only on daily
+    firm_fields: dict = {
+        "planned_production": round(planned_production, 2),
+        "price": round(firm["price"] * price_adjustment, 2),
+    }
+    if wage_offer is not None:
+        firm_fields["wage_offer"] = wage_offer
+    if hiring_demand is not None:
+        firm_fields["hiring_demand"] = hiring_demand
+
+    builder.firm(**firm_fields)
 
     return builder.build()
