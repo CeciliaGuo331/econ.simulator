@@ -109,6 +109,16 @@ class WorldConfig(BaseModel):
     simulation: SimulationParameters = Field(default_factory=SimulationParameters)
     markets: MarketConfig = Field(default_factory=MarketConfig)
     policies: PolicyConfig = Field(default_factory=PolicyConfig)
+    # 当为 True 时，数据访问层将在持久化前检测并自动修正商业银行记账口径中
+    # 的存款总额（将 bank.balance_sheet.deposits 校准为所有非银机构的存款之和），
+    # 以保障会计恒等式在外部写入或模块间不一致时仍能统一。可按需在配置中关闭。
+    reconcile_deposits: bool = Field(
+        default=True,
+        description=(
+            "Whether to auto-correct bank.deposits to equal the sum of non-bank deposits "
+            "when a mismatch is detected prior to persistence."
+        ),
+    )
 
 
 def _load_yaml_config(path: Path) -> dict:

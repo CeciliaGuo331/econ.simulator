@@ -37,41 +37,36 @@ def open_market_operation(
         if qty <= 0:
             return {"updates": [], "ledgers": [], "transacted_quantity": 0}
 
-        bank.balance_sheet.cash += qty * price
-        central.balance_sheet.cash -= qty * price
+        from . import finance_market
+
+        try:
+            t_updates, t_ledgers, t_log = finance_market.transfer(
+                world_state,
+                payer_kind=AgentKind.CENTRAL_BANK,
+                payer_id=central.id,
+                payee_kind=AgentKind.BANK,
+                payee_id=bank.id,
+                amount=qty * price,
+                tick=tick,
+                day=day,
+            )
+            updates.extend(t_updates)
+            ledgers.extend(t_ledgers)
+        except Exception:
+            # Do not mutate balance sheets directly here; log and continue.
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "finance_market.transfer failed during central_bank_policy buy; cash transfer skipped"
+            )
+
         bank.bond_holdings[bond_id] = available - qty
         central.bond_holdings[bond_id] = central.bond_holdings.get(bond_id, 0.0) + qty
-
-        ledgers.append(
-            LedgerEntry(
-                tick=tick,
-                day=day,
-                account_kind=AgentKind.BANK,
-                entity_id=bank.id,
-                entry_type="bond_sale_to_cb",
-                amount=qty * price,
-                balance_after=bank.balance_sheet.cash,
-                reference=bond_id,
-            )
-        )
-        ledgers.append(
-            LedgerEntry(
-                tick=tick,
-                day=day,
-                account_kind=AgentKind.CENTRAL_BANK,
-                entity_id=central.id,
-                entry_type="bond_purchase",
-                amount=-qty * price,
-                balance_after=central.balance_sheet.cash,
-                reference=bond_id,
-            )
-        )
 
         updates.append(
             StateUpdateCommand.assign(
                 scope=AgentKind.BANK,
                 agent_id=bank.id,
-                balance_sheet=bank.balance_sheet.model_dump(),
                 bond_holdings=bank.bond_holdings,
             )
         )
@@ -79,7 +74,6 @@ def open_market_operation(
             StateUpdateCommand.assign(
                 scope=AgentKind.CENTRAL_BANK,
                 agent_id=central.id,
-                balance_sheet=central.balance_sheet.model_dump(),
                 bond_holdings=central.bond_holdings,
             )
         )
@@ -93,41 +87,35 @@ def open_market_operation(
         if qty <= 0:
             return {"updates": [], "ledgers": [], "transacted_quantity": 0}
 
-        bank.balance_sheet.cash -= qty * price
-        central.balance_sheet.cash += qty * price
+        from . import finance_market
+
+        try:
+            t_updates, t_ledgers, t_log = finance_market.transfer(
+                world_state,
+                payer_kind=AgentKind.BANK,
+                payer_id=bank.id,
+                payee_kind=AgentKind.CENTRAL_BANK,
+                payee_id=central.id,
+                amount=qty * price,
+                tick=tick,
+                day=day,
+            )
+            updates.extend(t_updates)
+            ledgers.extend(t_ledgers)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "finance_market.transfer failed during central_bank_policy sell; cash transfer skipped"
+            )
+
         central.bond_holdings[bond_id] = central_hold - qty
         bank.bond_holdings[bond_id] = bank.bond_holdings.get(bond_id, 0.0) + qty
-
-        ledgers.append(
-            LedgerEntry(
-                tick=tick,
-                day=day,
-                account_kind=AgentKind.BANK,
-                entity_id=bank.id,
-                entry_type="bond_purchase_from_cb",
-                amount=-qty * price,
-                balance_after=bank.balance_sheet.cash,
-                reference=bond_id,
-            )
-        )
-        ledgers.append(
-            LedgerEntry(
-                tick=tick,
-                day=day,
-                account_kind=AgentKind.CENTRAL_BANK,
-                entity_id=central.id,
-                entry_type="bond_sale",
-                amount=qty * price,
-                balance_after=central.balance_sheet.cash,
-                reference=bond_id,
-            )
-        )
 
         updates.append(
             StateUpdateCommand.assign(
                 scope=AgentKind.BANK,
                 agent_id=bank.id,
-                balance_sheet=bank.balance_sheet.model_dump(),
                 bond_holdings=bank.bond_holdings,
             )
         )
@@ -135,7 +123,6 @@ def open_market_operation(
             StateUpdateCommand.assign(
                 scope=AgentKind.CENTRAL_BANK,
                 agent_id=central.id,
-                balance_sheet=central.balance_sheet.model_dump(),
                 bond_holdings=central.bond_holdings,
             )
         )

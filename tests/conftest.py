@@ -180,3 +180,56 @@ def ensure_clean_pool_between_modules():
         reset_script_registry()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def ensure_views_orchestrator_present(monkeypatch):
+    """Ensure `web.views._orchestrator` is set to a lightweight dummy when
+    not provided by the application startup. This reduces noise from tests
+    that expect a module-level orchestrator to exist when the app startup
+    skips auto-seeding (common under pytest). Tests that need richer
+    behaviour should still patch `views._orchestrator` explicitly.
+
+    The dummy uses an in-memory DataAccessLayer to back simple operations
+    like creating/deleting a simulation so filesystem/DB side-effects are
+    avoided.
+    """
+    # If tests or app already set an orchestrator, do nothing.
+    if getattr(views, "_orchestrator", None) is not None:
+        yield
+        return
+
+    # Lazy import to avoid heavy startup at module import time.
+    from econ_sim.data_access.redis_client import DataAccessLayer
+
+    class _DummyOrch:
+        def __init__(self):
+            self.data_access = DataAccessLayer.with_default_store()
+
+        async def create_simulation(self, simulation_id: str):
+            return await self.data_access.reset_simulation(simulation_id)
+
+        async def delete_simulation(self, simulation_id: str):
+            try:
+                return await self.data_access.delete_simulation(simulation_id)
+            except Exception:
+                # tests generally ignore deletion failures during cleanup
+                return 0
+
+        async def list_participants(self, simulation_id: str):
+            return []
+
+        async def get_state(self, simulation_id: str):
+            # return a pydantic-backed WorldState instance
+            return await self.data_access.get_world_state(simulation_id)
+
+    dummy = _DummyOrch()
+    monkeypatch.setattr(views, "_orchestrator", dummy)
+    try:
+        yield
+    finally:
+        # cleanup: remove the dummy orchestrator to avoid cross-test leakage
+        try:
+            monkeypatch.setattr(views, "_orchestrator", None)
+        except Exception:
+            pass

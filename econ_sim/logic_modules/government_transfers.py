@@ -26,6 +26,7 @@ from ..data_access.models import (
     HouseholdState,
 )
 from ..utils.settings import get_world_config
+from . import finance_market
 
 
 def means_tested_transfer(
@@ -107,58 +108,37 @@ def _means_tested_transfer(
             funding_method = "insufficient"
 
     # apply payments
+    from . import finance_market
+
     for hid in beneficiaries:
         if paid_per <= 0:
             break
-        h: HouseholdState = world_state.households[hid]
-        new_cash = float(h.balance_sheet.cash) + paid_per
-        # write back full balance_sheet as in other modules
-        new_bs = h.balance_sheet.model_dump()
-        new_bs["cash"] = new_cash
-        updates.append(
-            StateUpdateCommand.assign(
-                AgentKind.HOUSEHOLD,
-                agent_id=hid,
-                balance_sheet=new_bs,
-            )
+        # use finance_market.transfer to move funds from government to household
+        t_updates, t_ledgers, t_log = finance_market.transfer(
+            world_state,
+            payer_kind=AgentKind.GOVERNMENT,
+            payer_id=gov.id,
+            payee_kind=AgentKind.HOUSEHOLD,
+            payee_id=str(hid),
+            amount=paid_per,
+            tick=world_state.tick,
+            day=world_state.day,
         )
-        ledger.append(
-            LedgerEntry(
-                tick=world_state.tick,
-                day=world_state.day,
-                account_kind=AgentKind.GOVERNMENT,
-                entity_id=gov.id,
-                entry_type="transfer_payment",
-                amount=-paid_per,
-                balance_after=None,
-            )
-        )
-        ledger.append(
-            LedgerEntry(
-                tick=world_state.tick,
-                day=world_state.day,
-                account_kind=AgentKind.HOUSEHOLD,
-                entity_id=str(hid),
-                entry_type="transfer_receipt",
-                amount=paid_per,
-                balance_after=None,
-            )
-        )
-
-    # update government cash
+        updates.extend(t_updates)
+        ledger.extend(t_ledgers)
+    # government.balance_sheet was mutated by transfers; persist the current government balance sheet
     if total_paid > 0:
-        new_gov_cash = float(gov.balance_sheet.cash) - total_paid
-        new_gov_bs = gov.balance_sheet.model_dump()
-        new_gov_bs["cash"] = new_gov_cash
         updates.append(
             StateUpdateCommand.assign(
                 AgentKind.GOVERNMENT,
                 agent_id=gov.id,
-                balance_sheet=new_gov_bs,
+                balance_sheet=gov.balance_sheet.model_dump(),
             )
         )
 
     # record bond issuance or call marketized issuance if used debt
+    # ensure auction_trades_json is always defined for later logging
+    auction_trades_json = None
     if funding_method == "debt" and total_paid > 0 and budget < total_need:
         shortfall = total_need - budget
         # try marketized issuance: call government_financial.issue_bonds with provided bids if any
@@ -338,49 +318,27 @@ def _unemployment_benefit(
     for hid in unemployed:
         if paid_per <= 0:
             break
-        h = world_state.households[hid]
-        new_cash = float(h.balance_sheet.cash) + paid_per
-        new_bs = h.balance_sheet.model_dump()
-        new_bs["cash"] = new_cash
-        updates.append(
-            StateUpdateCommand.assign(
-                AgentKind.HOUSEHOLD,
-                agent_id=hid,
-                balance_sheet=new_bs,
-            )
+        # route payment via finance_market
+        t_updates, t_ledgers, t_log = finance_market.transfer(
+            world_state,
+            payer_kind=AgentKind.GOVERNMENT,
+            payer_id=gov.id,
+            payee_kind=AgentKind.HOUSEHOLD,
+            payee_id=str(hid),
+            amount=paid_per,
+            tick=world_state.tick,
+            day=world_state.day,
         )
-        ledger.append(
-            LedgerEntry(
-                tick=world_state.tick,
-                day=world_state.day,
-                account_kind=AgentKind.GOVERNMENT,
-                entity_id=gov.id,
-                entry_type="unemployment_payment",
-                amount=-paid_per,
-                balance_after=None,
-            )
-        )
-        ledger.append(
-            LedgerEntry(
-                tick=world_state.tick,
-                day=world_state.day,
-                account_kind=AgentKind.HOUSEHOLD,
-                entity_id=str(hid),
-                entry_type="unemployment_receipt",
-                amount=paid_per,
-                balance_after=None,
-            )
-        )
+        updates.extend(t_updates)
+        ledger.extend(t_ledgers)
 
     if total_paid > 0:
-        new_gov_cash = float(gov.balance_sheet.cash) - total_paid
-        new_gov_bs = gov.balance_sheet.model_dump()
-        new_gov_bs["cash"] = new_gov_cash
+        # persist government balance sheet (already mutated by transfers)
         updates.append(
             StateUpdateCommand.assign(
                 AgentKind.GOVERNMENT,
                 agent_id=gov.id,
-                balance_sheet=new_gov_bs,
+                balance_sheet=gov.balance_sheet.model_dump(),
             )
         )
 

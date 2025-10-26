@@ -99,6 +99,13 @@ def apply_household_shocks_for_decision(
         hid: shock.model_copy(deep=True) for hid, shock in shocks.items()
     }
 
+    # NOTE: This function operates on a deep copy of the provided
+    # `world_state` and returns that copy for decision-making only.
+    # It intentionally mutates `state_copy` so downstream decision logic
+    # can observe hypothetical post-shock balances, but callers MUST NOT
+    # persist the returned object directly into the production store.
+    # All persistent cash transfers / balance updates must go through the
+    # `finance_market` subsystem to preserve accounting invariants.
     for hid, shock in shocks.items():
         household = state_copy.households.get(hid)
         if household is None:

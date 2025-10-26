@@ -199,74 +199,63 @@ def process_coupon_payments(world_state: models.WorldState, tick: int, day: int)
 
         gov_cash = government.balance_sheet.cash
         if gov_cash >= total_due:
-            # full payment
-            for (kind, eid), amt in holder_amounts.items():
-                if (
-                    kind == AgentKind.BANK
-                    and getattr(world_state, "bank", None) is not None
-                    and str(eid) == str(world_state.bank.id)
-                ):
-                    bank.balance_sheet.cash += amt
-                    ledgers.append(
-                        models.LedgerEntry(
-                            tick=tick,
-                            day=day,
-                            account_kind=AgentKind.BANK,
-                            entity_id=bank.id,
-                            entry_type="coupon_receipt",
-                            amount=amt,
-                            balance_after=bank.balance_sheet.cash,
-                            reference=bond_id,
-                        )
-                    )
-                    updates.append(
-                        StateUpdateCommand.assign(
-                            scope=AgentKind.BANK,
-                            agent_id=bank.id,
-                            balance_sheet=bank.balance_sheet.model_dump(),
-                            bond_holdings=bank.bond_holdings,
-                        )
-                    )
-                else:
-                    # household
-                    hid = int(eid)
-                    hh = world_state.households[hid]
-                    hh.balance_sheet.cash += amt
-                    ledgers.append(
-                        models.LedgerEntry(
-                            tick=tick,
-                            day=day,
-                            account_kind=AgentKind.HOUSEHOLD,
-                            entity_id=str(hid),
-                            entry_type="coupon_receipt",
-                            amount=amt,
-                            balance_after=hh.balance_sheet.cash,
-                            reference=bond_id,
-                        )
-                    )
-                    updates.append(
-                        StateUpdateCommand.assign(
-                            scope=AgentKind.HOUSEHOLD,
-                            agent_id=hid,
-                            balance_sheet=hh.balance_sheet.model_dump(),
-                            bond_holdings=hh.bond_holdings,
-                        )
-                    )
+            # full payment: route all payments via finance_market.transfer
+            from . import finance_market
 
-            # deduct from government
-            government.balance_sheet.cash -= total_due
-            ledgers.append(
-                models.LedgerEntry(
-                    tick=tick,
-                    day=day,
-                    account_kind=AgentKind.GOVERNMENT,
-                    entity_id=government.id,
-                    entry_type="coupon_payment",
-                    amount=-total_due,
-                    balance_after=government.balance_sheet.cash,
-                    reference=bond_id,
-                )
-            )
+            for (kind, eid), amt in holder_amounts.items():
+                try:
+                    if kind == AgentKind.BANK:
+                        payee_kind = AgentKind.BANK
+                        payee_id = eid
+                    else:
+                        payee_kind = AgentKind.HOUSEHOLD
+                        payee_id = str(eid)
+
+                    t_updates, t_ledgers, t_log = finance_market.transfer(
+                        world_state,
+                        payer_kind=AgentKind.GOVERNMENT,
+                        payer_id=government.id,
+                        payee_kind=payee_kind,
+                        payee_id=payee_id,
+                        amount=amt,
+                        tick=tick,
+                        day=day,
+                    )
+                    updates.extend(t_updates)
+                    ledgers.extend(t_ledgers)
+                    # include coupon receipt ledger marker for bookkeeping
+                    try:
+                        # determine recipient balance_after best-effort
+                        if payee_kind == AgentKind.BANK:
+                            balance_after = float(
+                                world_state.bank.balance_sheet.cash or 0.0
+                            )
+                        else:
+                            hid_int = int(payee_id)
+                            balance_after = float(
+                                world_state.households[hid_int].balance_sheet.cash
+                                or 0.0
+                            )
+                    except Exception:
+                        balance_after = None
+                    try:
+                        ledgers.append(
+                            models.LedgerEntry(
+                                tick=tick,
+                                day=day,
+                                account_kind=payee_kind,
+                                entity_id=str(payee_id),
+                                entry_type="coupon_receipt",
+                                amount=amt,
+                                balance_after=balance_after,
+                            )
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+
+            # ensure government's balance sheet persisted
             updates.append(
                 StateUpdateCommand.assign(
                     scope=AgentKind.GOVERNMENT,
@@ -275,78 +264,66 @@ def process_coupon_payments(world_state: models.WorldState, tick: int, day: int)
                     debt_outstanding=government.debt_outstanding,
                 )
             )
+            # government-side coupon payment marker
+            try:
+                ledgers.append(
+                    models.LedgerEntry(
+                        tick=tick,
+                        day=day,
+                        account_kind=AgentKind.GOVERNMENT,
+                        entity_id=government.id,
+                        entry_type="coupon_payment",
+                        amount=-float(total_due),
+                        balance_after=float(government.balance_sheet.cash or 0.0),
+                    )
+                )
+            except Exception:
+                pass
+            # government-side coupon payment marker
+            try:
+                ledgers.append(
+                    models.LedgerEntry(
+                        tick=tick,
+                        day=day,
+                        account_kind=AgentKind.GOVERNMENT,
+                        entity_id=government.id,
+                        entry_type="coupon_payment",
+                        amount=-float(total_due),
+                        balance_after=float(government.balance_sheet.cash or 0.0),
+                    )
+                )
+            except Exception:
+                pass
         else:
             # partial pro-rata payment
             fraction = gov_cash / total_due if total_due > 0 else 0.0
             paid = 0.0
-            for (kind, eid), amt in holder_amounts.items():
-                pay = amt * fraction
-                paid += pay
-                if (
-                    kind == AgentKind.BANK
-                    and getattr(world_state, "bank", None) is not None
-                    and str(eid) == str(world_state.bank.id)
-                ):
-                    bank.balance_sheet.cash += pay
-                    ledgers.append(
-                        models.LedgerEntry(
-                            tick=tick,
-                            day=day,
-                            account_kind=AgentKind.BANK,
-                            entity_id=bank.id,
-                            entry_type="coupon_receipt_partial",
-                            amount=pay,
-                            balance_after=bank.balance_sheet.cash,
-                            reference=bond_id,
-                        )
-                    )
-                    updates.append(
-                        StateUpdateCommand.assign(
-                            scope=AgentKind.BANK,
-                            agent_id=bank.id,
-                            balance_sheet=bank.balance_sheet.model_dump(),
-                            bond_holdings=bank.bond_holdings,
-                        )
-                    )
-                else:
-                    hid = int(eid)
-                    hh = world_state.households[hid]
-                    hh.balance_sheet.cash += pay
-                    ledgers.append(
-                        models.LedgerEntry(
-                            tick=tick,
-                            day=day,
-                            account_kind=AgentKind.HOUSEHOLD,
-                            entity_id=str(hid),
-                            entry_type="coupon_receipt_partial",
-                            amount=pay,
-                            balance_after=hh.balance_sheet.cash,
-                            reference=bond_id,
-                        )
-                    )
-                    updates.append(
-                        StateUpdateCommand.assign(
-                            scope=AgentKind.HOUSEHOLD,
-                            agent_id=hid,
-                            balance_sheet=hh.balance_sheet.model_dump(),
-                            bond_holdings=hh.bond_holdings,
-                        )
-                    )
+            from . import finance_market
 
-            # deduct paid amount from government (set to zero)
-            government.balance_sheet.cash -= paid
-            ledgers.append(
-                models.LedgerEntry(
-                    tick=tick,
-                    day=day,
-                    account_kind=AgentKind.GOVERNMENT,
-                    entity_id=government.id,
-                    entry_type="coupon_payment_partial",
-                    amount=-paid,
-                    balance_after=government.balance_sheet.cash,
-                    reference=bond_id,
-                )
-            )
+            for (kind, eid), amt in holder_amounts.items():
+                try:
+                    if kind == AgentKind.BANK:
+                        payee_kind = AgentKind.BANK
+                        payee_id = eid
+                    else:
+                        payee_kind = AgentKind.HOUSEHOLD
+                        payee_id = str(eid)
+
+                    t_updates, t_ledgers, t_log = finance_market.transfer(
+                        world_state,
+                        payer_kind=AgentKind.GOVERNMENT,
+                        payer_id=government.id,
+                        payee_kind=payee_kind,
+                        payee_id=payee_id,
+                        amount=amt * fraction,
+                        tick=tick,
+                        day=day,
+                    )
+                    updates.extend(t_updates)
+                    ledgers.extend(t_ledgers)
+                except Exception:
+                    continue
+
             updates.append(
                 StateUpdateCommand.assign(
                     scope=AgentKind.GOVERNMENT,
@@ -355,6 +332,21 @@ def process_coupon_payments(world_state: models.WorldState, tick: int, day: int)
                     debt_outstanding=government.debt_outstanding,
                 )
             )
+            # government partial payment marker (coupon)
+            try:
+                ledgers.append(
+                    models.LedgerEntry(
+                        tick=tick,
+                        day=day,
+                        account_kind=AgentKind.GOVERNMENT,
+                        entity_id=government.id,
+                        entry_type="coupon_payment_partial",
+                        amount=-float(gov_cash),
+                        balance_after=float(government.balance_sheet.cash or 0.0),
+                    )
+                )
+            except Exception:
+                pass
 
         # advance next coupon tick
         bond.next_coupon_tick = bond.next_coupon_tick + bond.coupon_frequency_ticks
@@ -471,75 +463,82 @@ def process_bond_maturities(world_state, tick: int, day: int):
 
             gov_cash = government.balance_sheet.cash
             if gov_cash >= total_payment:
-                # full payment
-                for (kind, eid), (qty, amt) in holder_amounts.items():
-                    if (
-                        kind == models.AgentKind.BANK
-                        and getattr(world_state, "bank", None) is not None
-                        and str(eid) == str(world_state.bank.id)
-                    ):
-                        bank.balance_sheet.cash += amt
-                        bank.bond_holdings[bond_id] = 0.0
-                        ledgers.append(
-                            models.LedgerEntry(
-                                tick=tick,
-                                day=day,
-                                account_kind=models.AgentKind.BANK,
-                                entity_id=bank.id,
-                                entry_type="bond_maturity_receipt",
-                                amount=amt,
-                                balance_after=bank.balance_sheet.cash,
-                                reference=bond_id,
-                            )
-                        )
-                        updates.append(
-                            models.StateUpdateCommand.assign(
-                                scope=models.AgentKind.BANK,
-                                agent_id=bank.id,
-                                balance_sheet=bank.balance_sheet.model_dump(),
-                                bond_holdings=bank.bond_holdings,
-                            )
-                        )
-                    else:
-                        hid = int(eid)
-                        hh = world_state.households[hid]
-                        hh.balance_sheet.cash += amt
-                        hh.bond_holdings[bond_id] = 0.0
-                        ledgers.append(
-                            models.LedgerEntry(
-                                tick=tick,
-                                day=day,
-                                account_kind=models.AgentKind.HOUSEHOLD,
-                                entity_id=str(hid),
-                                entry_type="bond_maturity_receipt",
-                                amount=amt,
-                                balance_after=hh.balance_sheet.cash,
-                                reference=bond_id,
-                            )
-                        )
-                        updates.append(
-                            models.StateUpdateCommand.assign(
-                                scope=models.AgentKind.HOUSEHOLD,
-                                agent_id=hid,
-                                balance_sheet=hh.balance_sheet.model_dump(),
-                                bond_holdings=hh.bond_holdings,
-                            )
-                        )
+                # full payment: route via finance_market.transfer and clear holdings
+                from . import finance_market
 
-                # deduct from government
-                government.balance_sheet.cash -= total_payment
-                ledgers.append(
-                    models.LedgerEntry(
-                        tick=tick,
-                        day=day,
-                        account_kind=models.AgentKind.GOVERNMENT,
-                        entity_id=government.id,
-                        entry_type="bond_maturity_payment",
-                        amount=-total_payment,
-                        balance_after=government.balance_sheet.cash,
-                        reference=bond_id,
-                    )
-                )
+                for (kind, eid), (qty, amt) in holder_amounts.items():
+                    try:
+                        if kind == models.AgentKind.BANK:
+                            payee_kind = models.AgentKind.BANK
+                            payee_id = eid
+                        else:
+                            payee_kind = models.AgentKind.HOUSEHOLD
+                            payee_id = str(eid)
+
+                        t_updates, t_ledgers, t_log = finance_market.transfer(
+                            world_state,
+                            payer_kind=models.AgentKind.GOVERNMENT,
+                            payer_id=government.id,
+                            payee_kind=payee_kind,
+                            payee_id=payee_id,
+                            amount=amt,
+                            tick=tick,
+                            day=day,
+                        )
+                        updates.extend(t_updates)
+                        ledgers.extend(t_ledgers)
+                        # add a bond maturity receipt marker for bookkeeping
+                        try:
+                            if payee_kind == models.AgentKind.BANK:
+                                balance_after = float(
+                                    world_state.bank.balance_sheet.cash or 0.0
+                                )
+                            else:
+                                hid_int = int(payee_id)
+                                balance_after = float(
+                                    world_state.households[hid_int].balance_sheet.cash
+                                    or 0.0
+                                )
+                        except Exception:
+                            balance_after = None
+                        try:
+                            ledgers.append(
+                                models.LedgerEntry(
+                                    tick=tick,
+                                    day=day,
+                                    account_kind=payee_kind,
+                                    entity_id=str(payee_id),
+                                    entry_type="bond_maturity_receipt",
+                                    amount=amt,
+                                    balance_after=balance_after,
+                                )
+                            )
+                        except Exception:
+                            pass
+                        # clear bond holdings for the recipient
+                        if payee_kind == models.AgentKind.BANK:
+                            bank.bond_holdings[bond_id] = 0.0
+                            updates.append(
+                                models.StateUpdateCommand.assign(
+                                    scope=models.AgentKind.BANK,
+                                    agent_id=bank.id,
+                                    bond_holdings=bank.bond_holdings,
+                                )
+                            )
+                        else:
+                            hid = int(payee_id)
+                            hh = world_state.households[hid]
+                            hh.bond_holdings[bond_id] = 0.0
+                            updates.append(
+                                models.StateUpdateCommand.assign(
+                                    scope=models.AgentKind.HOUSEHOLD,
+                                    agent_id=hid,
+                                    bond_holdings=hh.bond_holdings,
+                                )
+                            )
+                    except Exception:
+                        continue
+
                 updates.append(
                     models.StateUpdateCommand.assign(
                         scope=models.AgentKind.GOVERNMENT,
@@ -548,80 +547,58 @@ def process_bond_maturities(world_state, tick: int, day: int):
                         debt_outstanding=government.debt_outstanding,
                     )
                 )
+                # (no additional govt partial marker here)
             else:
                 # partial pro-rata payment
                 fraction = gov_cash / total_payment if total_payment > 0 else 0.0
                 paid = 0.0
-                for (kind, eid), (qty, amt) in holder_amounts.items():
-                    pay = amt * fraction
-                    paid += pay
-                    if (
-                        kind == models.AgentKind.BANK
-                        and getattr(world_state, "bank", None) is not None
-                        and str(eid) == str(world_state.bank.id)
-                    ):
-                        bank.balance_sheet.cash += pay
-                        bank.bond_holdings[bond_id] = 0.0
-                        ledgers.append(
-                            models.LedgerEntry(
-                                tick=tick,
-                                day=day,
-                                account_kind=models.AgentKind.BANK,
-                                entity_id=bank.id,
-                                entry_type="bond_maturity_receipt_partial",
-                                amount=pay,
-                                balance_after=bank.balance_sheet.cash,
-                                reference=bond_id,
-                            )
-                        )
-                        updates.append(
-                            models.StateUpdateCommand.assign(
-                                scope=models.AgentKind.BANK,
-                                agent_id=bank.id,
-                                balance_sheet=bank.balance_sheet.model_dump(),
-                                bond_holdings=bank.bond_holdings,
-                            )
-                        )
-                    else:
-                        hid = int(eid)
-                        hh = world_state.households[hid]
-                        hh.balance_sheet.cash += pay
-                        hh.bond_holdings[bond_id] = 0.0
-                        ledgers.append(
-                            models.LedgerEntry(
-                                tick=tick,
-                                day=day,
-                                account_kind=models.AgentKind.HOUSEHOLD,
-                                entity_id=str(hid),
-                                entry_type="bond_maturity_receipt_partial",
-                                amount=pay,
-                                balance_after=hh.balance_sheet.cash,
-                                reference=bond_id,
-                            )
-                        )
-                        updates.append(
-                            models.StateUpdateCommand.assign(
-                                scope=models.AgentKind.HOUSEHOLD,
-                                agent_id=hid,
-                                balance_sheet=hh.balance_sheet.model_dump(),
-                                bond_holdings=hh.bond_holdings,
-                            )
-                        )
+                from . import finance_market
 
-                # deduct paid amount from government
-                government.balance_sheet.cash -= paid
-                ledgers.append(
-                    models.LedgerEntry(
-                        tick=tick,
-                        day=day,
-                        account_kind=models.AgentKind.GOVERNMENT,
-                        entity_id=government.id,
-                        entry_type="bond_maturity_payment_partial",
-                        amount=-paid,
-                        balance_after=government.balance_sheet.cash,
-                        reference=bond_id,
-                    )
-                )
+                for (kind, eid), (qty, amt) in holder_amounts.items():
+                    try:
+                        if kind == models.AgentKind.BANK:
+                            payee_kind = models.AgentKind.BANK
+                            payee_id = eid
+                        else:
+                            payee_kind = models.AgentKind.HOUSEHOLD
+                            payee_id = str(eid)
+
+                        t_updates, t_ledgers, t_log = finance_market.transfer(
+                            world_state,
+                            payer_kind=models.AgentKind.GOVERNMENT,
+                            payer_id=government.id,
+                            payee_kind=payee_kind,
+                            payee_id=payee_id,
+                            amount=amt * fraction,
+                            tick=tick,
+                            day=day,
+                        )
+                        updates.extend(t_updates)
+                        ledgers.extend(t_ledgers)
+                        # clear holdings
+                        if payee_kind == models.AgentKind.BANK:
+                            bank.bond_holdings[bond_id] = 0.0
+                            updates.append(
+                                models.StateUpdateCommand.assign(
+                                    scope=models.AgentKind.BANK,
+                                    agent_id=bank.id,
+                                    bond_holdings=bank.bond_holdings,
+                                )
+                            )
+                        else:
+                            hid = int(payee_id)
+                            hh = world_state.households[hid]
+                            hh.bond_holdings[bond_id] = 0.0
+                            updates.append(
+                                models.StateUpdateCommand.assign(
+                                    scope=models.AgentKind.HOUSEHOLD,
+                                    agent_id=hid,
+                                    bond_holdings=hh.bond_holdings,
+                                )
+                            )
+                    except Exception:
+                        continue
+
                 updates.append(
                     models.StateUpdateCommand.assign(
                         scope=models.AgentKind.GOVERNMENT,

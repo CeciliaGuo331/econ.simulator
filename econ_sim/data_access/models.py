@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+from ..utils.settings import get_world_config
 
 
 class EmploymentStatus(str, Enum):
@@ -55,6 +56,19 @@ class HouseholdState(BaseModel):
     reservation_wage: float = 60.0
     # bond holdings: bond_id -> quantity
     bond_holdings: Dict[str, float] = Field(default_factory=dict)
+
+    @property
+    def productivity(self) -> float:
+        """Alias for `skill` to align code (skill) with docs (productivity).
+
+        Note: this is a convenience property and is not included in serialized
+        dumps by default. Callers that need productivity for sorting/matching
+        should use this property.
+        """
+        try:
+            return float(self.skill)
+        except Exception:
+            return 1.0
 
 
 class HouseholdShock(BaseModel):
@@ -163,6 +177,9 @@ class PublicMarketData(BaseModel):
     unemployment_rate: float
     inflation: float
     bond_yield: Optional[float] = None
+    # per-tick information
+    tick_in_day: Optional[int] = None
+    is_daily_decision_tick: Optional[bool] = None
 
 
 class WorldState(BaseModel):
@@ -189,6 +206,16 @@ class WorldState(BaseModel):
             or self.central_bank is None
         ):
             raise ValueError("缺少核心主体，无法构造市场数据")
+        # compute tick_in_day & is_daily_decision_tick using config.ticks_per_day
+        try:
+            cfg = get_world_config()
+            ticks_per_day = int(cfg.simulation.ticks_per_day or 1)
+        except Exception:
+            ticks_per_day = 1
+
+        tick_in_day = (int(self.tick) % ticks_per_day) + 1
+        is_daily = tick_in_day == 1
+
         return PublicMarketData(
             goods_price=self.firm.price,
             wage_offer=self.firm.wage_offer,
@@ -198,7 +225,12 @@ class WorldState(BaseModel):
             unemployment_rate=self.macro.unemployment_rate,
             inflation=self.macro.inflation,
             bond_yield=self.macro.bond_yield,
+            tick_in_day=tick_in_day,
+            is_daily_decision_tick=is_daily,
         )
+
+    # Convenience alias: expose household productivity as an alias of skill to match docs
+    # (keeps code using `skill` and document references to `productivity` compatible)
 
 
 class StateUpdateCommand(BaseModel):

@@ -475,6 +475,50 @@ class SimulationOrchestrator:
 
         # persist updates and record tick
         start = time.perf_counter()
+        # Optional reconciliation: verify bank.deposits == sum(non-bank deposits)
+        try:
+            try:
+                nonbank_deposits = 0.0
+                if world_state.households:
+                    nonbank_deposits += float(
+                        sum(
+                            float(h.balance_sheet.deposits or 0.0)
+                            for h in world_state.households.values()
+                        )
+                    )
+                if world_state.firm is not None:
+                    nonbank_deposits += float(
+                        world_state.firm.balance_sheet.deposits or 0.0
+                    )
+                if world_state.government is not None:
+                    nonbank_deposits += float(
+                        world_state.government.balance_sheet.deposits or 0.0
+                    )
+                bank_deposits_pre = (
+                    float(world_state.bank.balance_sheet.deposits)
+                    if world_state.bank is not None
+                    else 0.0
+                )
+                diff_pre = abs(bank_deposits_pre - nonbank_deposits)
+                # if difference large, write a diagnostic log entry (non-fatal)
+                if diff_pre > 1e-6:
+                    logs.append(
+                        TickLogEntry(
+                            tick=world_state.tick,
+                            day=world_state.day,
+                            message="deposit_consistency_pre_persist",
+                            context={
+                                "bank_deposits": bank_deposits_pre,
+                                "nonbank_deposits": nonbank_deposits,
+                                "diff": diff_pre,
+                            },
+                        )
+                    )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         updated_state = await self.data_access.apply_updates(simulation_id, updates)
         tick_result = TickResult(
             world_state=updated_state,
@@ -843,73 +887,86 @@ def _execute_market_logic(
         wage_updates: List[StateUpdateCommand] = []
         firm_payroll = 0.0
         gov_payroll = 0.0
+        from ..logic_modules import finance_market
 
         if firm is not None:
             for hid in getattr(firm, "employees", []):
                 try:
-                    hh = world_state.households[hid]
                     wage = float(decisions.firm.wage_offer)
-                    hh.balance_sheet.cash = float(hh.balance_sheet.cash) + wage
-                    firm_payroll += wage
-                    wage_updates.append(
+                    t_updates, t_ledgers, t_log = finance_market.transfer(
+                        world_state,
+                        payer_kind=AgentKind.FIRM,
+                        payer_id=firm.id,
+                        payee_kind=AgentKind.HOUSEHOLD,
+                        payee_id=str(hid),
+                        amount=wage,
+                        tick=tick,
+                        day=day,
+                    )
+                    # transfer already mutated world_state; collect updates and ledgers
+                    updates.extend(t_updates)
+                    ledgers.extend(t_ledgers)
+                    logs.append(t_log)
+                    # record wage_income on household as a separate assign so it's persisted
+                    updates.append(
                         StateUpdateCommand.assign(
                             scope=AgentKind.HOUSEHOLD,
                             agent_id=hid,
-                            balance_sheet=hh.balance_sheet.model_dump(),
                             wage_income=wage,
                         )
                     )
+                    firm_payroll += wage
                 except Exception:
                     continue
-            if firm_payroll > 0:
-                try:
-                    firm.balance_sheet.cash = (
-                        float(firm.balance_sheet.cash) - firm_payroll
-                    )
-                except Exception:
-                    pass
-                wage_updates.append(
-                    StateUpdateCommand.assign(
-                        scope=AgentKind.FIRM,
-                        agent_id=firm.id,
-                        balance_sheet=firm.balance_sheet.model_dump(),
-                    )
+
+        if firm_payroll > 0 and firm is not None:
+            # ensure firm balance_sheet persisted after transfers
+            updates.append(
+                StateUpdateCommand.assign(
+                    scope=AgentKind.FIRM,
+                    agent_id=firm.id,
+                    balance_sheet=firm.balance_sheet.model_dump(),
                 )
+            )
 
         if government is not None:
             for hid in getattr(government, "employees", []):
                 try:
-                    hh = world_state.households[hid]
                     wage = float(decisions.firm.wage_offer * 0.8)
-                    hh.balance_sheet.cash = float(hh.balance_sheet.cash) + wage
-                    gov_payroll += wage
-                    wage_updates.append(
+                    t_updates, t_ledgers, t_log = finance_market.transfer(
+                        world_state,
+                        payer_kind=AgentKind.GOVERNMENT,
+                        payer_id=government.id,
+                        payee_kind=AgentKind.HOUSEHOLD,
+                        payee_id=str(hid),
+                        amount=wage,
+                        tick=tick,
+                        day=day,
+                    )
+                    updates.extend(t_updates)
+                    ledgers.extend(t_ledgers)
+                    logs.append(t_log)
+                    updates.append(
                         StateUpdateCommand.assign(
                             scope=AgentKind.HOUSEHOLD,
                             agent_id=hid,
-                            balance_sheet=hh.balance_sheet.model_dump(),
                             wage_income=wage,
                         )
                     )
+                    gov_payroll += wage
                 except Exception:
                     continue
-            if gov_payroll > 0:
-                try:
-                    government.balance_sheet.cash = (
-                        float(government.balance_sheet.cash) - gov_payroll
-                    )
-                except Exception:
-                    pass
-                wage_updates.append(
-                    StateUpdateCommand.assign(
-                        scope=AgentKind.GOVERNMENT,
-                        agent_id=government.id,
-                        balance_sheet=government.balance_sheet.model_dump(),
-                    )
-                )
 
-        if wage_updates:
-            updates.extend(wage_updates)
+        if gov_payroll > 0 and government is not None:
+            updates.append(
+                StateUpdateCommand.assign(
+                    scope=AgentKind.GOVERNMENT,
+                    agent_id=government.id,
+                    balance_sheet=government.balance_sheet.model_dump(),
+                )
+            )
+
+        if firm_payroll or gov_payroll:
             logs.append(
                 TickLogEntry(
                     tick=tick,

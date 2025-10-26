@@ -28,6 +28,7 @@ from econ_sim.data_access.models import (
 from econ_sim.utils.settings import get_world_config
 import math
 import random
+import logging
 
 
 def _apply_cash_delta(entity_balance_sheet, delta: float):
@@ -97,11 +98,23 @@ def clear_bond_auction(
             continue
 
         # route buyer object
-        buyer_kind: AgentKind = bid.get("buyer_kind")
+        buyer_kind_val = bid.get("buyer_kind")
         buyer_id = bid.get("buyer_id")
-        if buyer_kind == AgentKind.BANK and str(buyer_id) == str(world_state.bank.id):
+
+        # normalize buyer_kind to AgentKind enum when provided as string
+        if isinstance(buyer_kind_val, str):
+            try:
+                buyer_kind_enum = AgentKind(buyer_kind_val)
+            except Exception:
+                buyer_kind_enum = None
+        else:
+            buyer_kind_enum = buyer_kind_val
+
+        if buyer_kind_enum == AgentKind.BANK and str(buyer_id) == str(
+            world_state.bank.id
+        ):
             buyer = world_state.bank
-        elif buyer_kind == AgentKind.HOUSEHOLD:
+        elif buyer_kind_enum == AgentKind.HOUSEHOLD:
             buyer = world_state.households[int(buyer_id)]
         else:
             # for minimal impl, only support bank and household buyers
@@ -122,12 +135,35 @@ def clear_bond_auction(
 
         amount = qty * price
 
-        buyer_kind: AgentKind = bid["buyer_kind"]
+        # ensure we pass an AgentKind to finance_market.transfer
+        buyer_kind = buyer_kind_enum
         buyer_id = bid["buyer_id"]
 
-        # transfer cash from buyer to government
-        buyer.balance_sheet.cash -= amount
-        government.balance_sheet.cash += amount
+        # transfer cash from buyer to government via finance_market
+        from . import finance_market
+
+        try:
+            t_updates, t_ledgers, t_log = finance_market.transfer(
+                world_state,
+                payer_kind=buyer_kind,
+                payer_id=buyer_id if isinstance(buyer_id, str) else str(buyer_id),
+                payee_kind=AgentKind.GOVERNMENT,
+                payee_id=government.id,
+                amount=amount,
+                tick=tick,
+                day=day,
+            )
+        except Exception:
+            # If the finance_market.transfer fails, do NOT mutate balance sheets
+            # here directly. Mutating persistent state outside the financial
+            # subsystem breaks the accounting contract. Log and continue so
+            # the failure is observable and can be fixed or retried by the
+            # caller.
+            logger = logging.getLogger(__name__)
+            logger.exception(
+                "finance_market.transfer failed during bond auction; cash transfer skipped"
+            )
+            t_updates, t_ledgers, t_log = [], [], None
 
         # assign bond holdings (aggregate) and record purchase detail with tick
         buyer.bond_holdings[bond.id] = buyer.bond_holdings.get(bond.id, 0.0) + qty
@@ -168,39 +204,18 @@ def clear_bond_auction(
             )
         )
 
-        # ledger entries for buyer and government
-        ledgers.append(
-            LedgerEntry(
-                tick=tick,
-                day=day,
-                account_kind=buyer_kind,
-                entity_id=str(buyer_id),
-                entry_type="bond_purchase",
-                amount=-amount,
-                balance_after=buyer.balance_sheet.cash,
-                reference=bond.id,
-            )
-        )
-        ledgers.append(
-            LedgerEntry(
-                tick=tick,
-                day=day,
-                account_kind=AgentKind.GOVERNMENT,
-                entity_id=government.id,
-                entry_type="bond_sale",
-                amount=amount,
-                balance_after=government.balance_sheet.cash,
-                reference=bond.id,
-            )
-        )
+        # collect ledgers/updates produced by transfer
+        if t_updates:
+            updates.extend(t_updates)
+        if t_ledgers:
+            ledgers.extend(t_ledgers)
 
-        # create update commands for buyer and government
+        # assign bond holdings and government debt updates (persist these changes)
         if buyer_kind == AgentKind.BANK:
             updates.append(
                 StateUpdateCommand.assign(
                     scope=AgentKind.BANK,
                     agent_id=buyer.id,
-                    balance_sheet=buyer.balance_sheet.model_dump(),
                     bond_holdings=buyer.bond_holdings,
                 )
             )
@@ -209,7 +224,6 @@ def clear_bond_auction(
                 StateUpdateCommand.assign(
                     scope=AgentKind.HOUSEHOLD,
                     agent_id=buyer.id,
-                    balance_sheet=buyer.balance_sheet.model_dump(),
                     bond_holdings=buyer.bond_holdings,
                 )
             )
@@ -218,7 +232,6 @@ def clear_bond_auction(
             StateUpdateCommand.assign(
                 scope=AgentKind.GOVERNMENT,
                 agent_id=government.id,
-                balance_sheet=government.balance_sheet.model_dump(),
                 debt_outstanding=government.debt_outstanding,
             )
         )

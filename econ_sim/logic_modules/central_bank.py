@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import List, Dict, Any
 
 from econ_sim.data_access import models
+import logging
 
 
 def process_omo(
@@ -54,9 +55,30 @@ def process_omo(
             if trade_qty <= 0:
                 continue
             trade_amount = trade_qty * price
-            # transfer cash from central to bank (central may go negative)
-            central.balance_sheet.cash -= trade_amount
-            bank.balance_sheet.cash += trade_amount
+            # transfer cash from central to bank via finance_market
+            from . import finance_market
+
+            try:
+                t_updates, t_ledgers, t_log = finance_market.transfer(
+                    world_state,
+                    payer_kind=models.AgentKind.CENTRAL_BANK,
+                    payer_id=central.id,
+                    payee_kind=models.AgentKind.BANK,
+                    payee_id=bank.id,
+                    amount=trade_amount,
+                    tick=tick,
+                    day=day,
+                )
+                updates.extend(t_updates)
+                ledgers.extend(t_ledgers)
+            except Exception:
+                # Do not perform direct balance mutations here. Log the error
+                # so the issue can be diagnosed; keeping mutations confined to
+                # finance_market preserves accounting invariants.
+                logger = logging.getLogger(__name__)
+                logger.exception(
+                    "finance_market.transfer failed during OMO buy; cash transfer skipped"
+                )
             # transfer bond ownership
             bank.bond_holdings[bond_id] = (
                 bank.bond_holdings.get(bond_id, 0.0) - trade_qty
@@ -65,36 +87,10 @@ def process_omo(
                 central.bond_holdings.get(bond_id, 0.0) + trade_qty
             )
 
-            ledgers.append(
-                models.LedgerEntry(
-                    tick=tick,
-                    day=day,
-                    account_kind=models.AgentKind.CENTRAL_BANK,
-                    entity_id=central.id,
-                    entry_type="omo_buy",
-                    amount=-trade_amount,
-                    balance_after=central.balance_sheet.cash,
-                    reference=bond_id,
-                )
-            )
-            ledgers.append(
-                models.LedgerEntry(
-                    tick=tick,
-                    day=day,
-                    account_kind=models.AgentKind.BANK,
-                    entity_id=bank.id,
-                    entry_type="omo_sell_received",
-                    amount=trade_amount,
-                    balance_after=bank.balance_sheet.cash,
-                    reference=bond_id,
-                )
-            )
-
             updates.append(
                 models.StateUpdateCommand.assign(
                     scope=models.AgentKind.CENTRAL_BANK,
                     agent_id=central.id,
-                    balance_sheet=central.balance_sheet.model_dump(),
                     bond_holdings=central.bond_holdings,
                 )
             )
@@ -102,7 +98,6 @@ def process_omo(
                 models.StateUpdateCommand.assign(
                     scope=models.AgentKind.BANK,
                     agent_id=bank.id,
-                    balance_sheet=bank.balance_sheet.model_dump(),
                     bond_holdings=bank.bond_holdings,
                 )
             )
@@ -116,9 +111,27 @@ def process_omo(
             if trade_qty <= 0:
                 continue
             trade_amount = trade_qty * price
-            # transfer cash from bank to central
-            bank.balance_sheet.cash -= trade_amount
-            central.balance_sheet.cash += trade_amount
+            # transfer cash from bank to central via finance_market
+            from . import finance_market
+
+            try:
+                t_updates, t_ledgers, t_log = finance_market.transfer(
+                    world_state,
+                    payer_kind=models.AgentKind.BANK,
+                    payer_id=bank.id,
+                    payee_kind=models.AgentKind.CENTRAL_BANK,
+                    payee_id=central.id,
+                    amount=trade_amount,
+                    tick=tick,
+                    day=day,
+                )
+                updates.extend(t_updates)
+                ledgers.extend(t_ledgers)
+            except Exception:
+                logger = logging.getLogger(__name__)
+                logger.exception(
+                    "finance_market.transfer failed during OMO sell; cash transfer skipped"
+                )
             # transfer bond ownership
             central.bond_holdings[bond_id] = (
                 central.bond_holdings.get(bond_id, 0.0) - trade_qty
@@ -127,36 +140,10 @@ def process_omo(
                 bank.bond_holdings.get(bond_id, 0.0) + trade_qty
             )
 
-            ledgers.append(
-                models.LedgerEntry(
-                    tick=tick,
-                    day=day,
-                    account_kind=models.AgentKind.CENTRAL_BANK,
-                    entity_id=central.id,
-                    entry_type="omo_sell",
-                    amount=trade_amount,
-                    balance_after=central.balance_sheet.cash,
-                    reference=bond_id,
-                )
-            )
-            ledgers.append(
-                models.LedgerEntry(
-                    tick=tick,
-                    day=day,
-                    account_kind=models.AgentKind.BANK,
-                    entity_id=bank.id,
-                    entry_type="omo_buy_paid",
-                    amount=-trade_amount,
-                    balance_after=bank.balance_sheet.cash,
-                    reference=bond_id,
-                )
-            )
-
             updates.append(
                 models.StateUpdateCommand.assign(
                     scope=models.AgentKind.CENTRAL_BANK,
                     agent_id=central.id,
-                    balance_sheet=central.balance_sheet.model_dump(),
                     bond_holdings=central.bond_holdings,
                 )
             )
@@ -164,7 +151,6 @@ def process_omo(
                 models.StateUpdateCommand.assign(
                     scope=models.AgentKind.BANK,
                     agent_id=bank.id,
-                    balance_sheet=bank.balance_sheet.model_dump(),
                     bond_holdings=bank.bond_holdings,
                 )
             )

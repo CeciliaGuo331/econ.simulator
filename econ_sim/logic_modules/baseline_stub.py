@@ -16,6 +16,7 @@ from ..data_access.models import (
     CentralBankDecision,
     TickDecisions,
     WorldState,
+    AgentKind,
 )
 
 
@@ -85,29 +86,29 @@ def generate_baseline_decisions(world_state: WorldState) -> TickDecisions:
             policy_rate=float(cb.base_rate), reserve_ratio=float(cb.reserve_ratio)
         )
 
-        # baseline bond bids: let bank underwrite modest amount at par (unit price=1.0)
-        bond_bids = []
-        if world_state.bank is not None:
-            try:
-                bank_id = world_state.bank.id
-                # quantity measured in face-value units (baseline: up to bank's cash)
-                qty = float(min(world_state.bank.balance_sheet.cash, 1000.0))
-                bond_bids = [
-                    {
-                        "buyer_kind": "bank",
-                        "buyer_id": bank_id,
-                        "price": 1.0,
-                        "quantity": qty,
-                    }
-                ]
-            except Exception:
-                bond_bids = []
+    # baseline bond bids: let bank underwrite modest amount at par (unit price=1.0)
+    bond_bids = []
+    if world_state.bank is not None:
+        try:
+            bank_id = world_state.bank.id
+            # quantity measured in face-value units (baseline: up to bank's cash)
+            qty = float(min(world_state.bank.balance_sheet.cash, 1000.0))
+            bond_bids = [
+                {
+                    "buyer_kind": AgentKind.BANK,
+                    "buyer_id": bank_id,
+                    "price": 1.0,
+                    "quantity": qty,
+                }
+            ]
+        except Exception:
+            bond_bids = []
 
-        return TickDecisions(
-            households=households,
-            firm=firm_decision,
-            bank=bank_decision,
-            government=government_decision,
-            central_bank=cb_decision,
-            bond_bids=bond_bids,
-        )
+    return TickDecisions(
+        households=households,
+        firm=firm_decision,
+        bank=bank_decision,
+        government=government_decision,
+        central_bank=cb_decision,
+        bond_bids=bond_bids,
+    )

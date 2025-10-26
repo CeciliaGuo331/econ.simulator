@@ -1033,6 +1033,115 @@ class DataAccessLayer:
         for update in updates:
             self._apply_single_update(mutable, update)
 
+        # After applying updates in-memory, run optional reconciliation of deposits
+        try:
+            # compute non-bank deposits
+            nonbank = 0.0
+            houses = mutable.get("households", {}) or {}
+            for hid, hpayload in houses.items():
+                try:
+                    dep = float(
+                        hpayload.get("balance_sheet", {}).get("deposits", 0.0) or 0.0
+                    )
+                except Exception:
+                    dep = 0.0
+                nonbank += dep
+            firm_payload = mutable.get("firm") or {}
+            try:
+                firm_dep = float(
+                    firm_payload.get("balance_sheet", {}).get("deposits", 0.0) or 0.0
+                )
+            except Exception:
+                firm_dep = 0.0
+            nonbank += firm_dep
+            gov_payload = mutable.get("government") or {}
+            try:
+                gov_dep = float(
+                    gov_payload.get("balance_sheet", {}).get("deposits", 0.0) or 0.0
+                )
+            except Exception:
+                gov_dep = 0.0
+            nonbank += gov_dep
+
+            bank_payload = mutable.get("bank") or {}
+            try:
+                bank_dep = float(
+                    bank_payload.get("balance_sheet", {}).get("deposits", 0.0) or 0.0
+                )
+            except Exception:
+                bank_dep = 0.0
+
+            diff = abs(bank_dep - nonbank)
+            # if diff is above a tolerance, append a diagnostic marker to world meta
+            if diff > 1e-6:
+                meta = mutable.setdefault("_meta", {})
+                meta.setdefault("diagnostics", {})
+                meta["diagnostics"]["deposit_mismatch"] = {
+                    "bank_deposits": bank_dep,
+                    "nonbank_deposits": nonbank,
+                    "diff": diff,
+                }
+                # Optional auto-reconciliation: if configured, correct the bank's
+                # recorded deposits to match the sum of non-bank deposits. This
+                # helps guarantee balance-sheet consistency when different logic
+                # paths updated deposits/cash inconsistently.
+                try:
+                    if getattr(self.config, "reconcile_deposits", True):
+                        # write corrected value into mutable state
+                        bank_payload = mutable.setdefault("bank", {})
+                        bs = bank_payload.setdefault("balance_sheet", {})
+                        old = float(bs.get("deposits", 0.0) or 0.0)
+                        bs["deposits"] = float(nonbank)
+                        # record reconciliation diagnostic
+                        meta["diagnostics"]["deposit_reconciled"] = {
+                            "old_bank_deposits": old,
+                            "corrected_bank_deposits": float(nonbank),
+                            "diff": float(nonbank) - old,
+                        }
+                        # insert a tick log entry for observability (best-effort)
+                        try:
+                            sim_id = mutable.get("simulation_id")
+                            tick = int(mutable.get("tick", 0))
+                            day = int(mutable.get("day", 0))
+                            entry = TickLogEntry(
+                                tick=tick,
+                                day=day,
+                                message="deposit_reconciled",
+                                context={
+                                    "bank_deposits_before": old,
+                                    "bank_deposits_after": float(nonbank),
+                                },
+                            )
+                            self._tick_logs.setdefault(sim_id, []).append(entry)
+                        except Exception:
+                            pass
+                        # emit a ledger reconciliation entry when runtime ledger available
+                        try:
+                            from .models import LedgerEntry  # local import for safety
+
+                            ledger = LedgerEntry(
+                                tick=int(mutable.get("tick", 0)),
+                                day=int(mutable.get("day", 0)),
+                                account_kind=AgentKind.BANK,
+                                entity_id=str(bank_payload.get("id", "bank")),
+                                entry_type="reconciliation",
+                                amount=float(nonbank) - old,
+                                balance_after=float(nonbank),
+                                reference="auto_reconcile",
+                            )
+                            # append_ledger is best-effort; ignore failures
+                            await self.append_ledger(
+                                mutable.get("simulation_id"), [ledger]
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    # best-effort: do not block persistence if reconciliation fails
+                    pass
+        except Exception:
+            # best-effort: do not block persistence for diagnostic failures
+            pass
+
         updated_state = WorldState.model_validate(mutable)
         await self._persist_state(updated_state)
         return updated_state

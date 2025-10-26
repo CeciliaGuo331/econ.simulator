@@ -9,6 +9,9 @@
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
+import random
+
+from ..utils.settings import get_world_config
 
 from ..data_access.models import (
     WorldState,
@@ -17,6 +20,7 @@ from ..data_access.models import (
     TickLogEntry,
     AgentKind,
 )
+from . import finance_market
 
 
 def clear_goods_market_new(
@@ -53,8 +57,25 @@ def clear_goods_market_new(
             qty = 0.0
         buy_orders.append((hid, qty, float(bid_price)))
 
-    # Sort buyers by bid_price desc (price priority). Ties broken by agent id asc to be deterministic.
-    buy_orders.sort(key=lambda x: (-x[2], x[0]))
+    # Sort buyers by bid_price desc (price priority).
+    # Ties should be broken by a reproducible RNG seeded with global seed + tick
+    try:
+        cfg = get_world_config()
+        seed = int(cfg.simulation.seed or 0) + int(world_state.tick)
+    except Exception:
+        seed = int(world_state.tick)
+
+    rnd = random.Random(seed)
+    # attach a deterministic random tie-breaker to each order
+    buy_orders_with_tie = [
+        (hid, qty, bid_price, rnd.random()) for (hid, qty, bid_price) in buy_orders
+    ]
+    # sort by price desc, then tie-breaker asc (random), then hid asc for final determinism
+    buy_orders_with_tie.sort(key=lambda x: (-x[2], x[3], x[0]))
+    # drop tie values
+    buy_orders = [
+        (hid, qty, bid_price) for (hid, qty, bid_price, _) in buy_orders_with_tie
+    ]
 
     available = float(world_state.firm.balance_sheet.inventory_goods)
 
@@ -77,20 +98,43 @@ def clear_goods_market_new(
         consumption_value += payment
         available -= fill
 
-        # Update household: deduct cash and set last_consumption
-        new_cash = max(0.0, world_state.households[hid].balance_sheet.cash - payment)
-        updates.append(
-            StateUpdateCommand.assign(
-                AgentKind.HOUSEHOLD,
-                agent_id=hid,
-                balance_sheet={
-                    **world_state.households[hid].balance_sheet.model_dump(),
-                    "cash": new_cash,
-                },
-                last_consumption=fill,
-                trade_success=True,
-            )
+        # Use finance_market.transfer to produce atomic updates + ledger
+        t_updates, t_ledgers, t_log = finance_market.transfer(
+            world_state,
+            payer_kind=AgentKind.HOUSEHOLD,
+            payer_id=str(hid),
+            payee_kind=AgentKind.FIRM,
+            payee_id=world_state.firm.id,
+            amount=payment,
+            tick=world_state.tick,
+            day=world_state.day,
         )
+        # attach last_consumption and trade_success into household update if present
+        if t_updates:
+            # find household update and augment it
+            for up in t_updates:
+                if up.scope is AgentKind.HOUSEHOLD and str(up.agent_id) == str(hid):
+                    bs = up.changes.get("balance_sheet") or {}
+                    bs["last_consumption"] = fill
+                    up.changes["balance_sheet"] = bs
+            updates.extend(t_updates)
+        else:
+            # fallback to previous behavior if finance market didn't return updates
+            new_cash = max(
+                0.0, world_state.households[hid].balance_sheet.cash - payment
+            )
+            updates.append(
+                StateUpdateCommand.assign(
+                    AgentKind.HOUSEHOLD,
+                    agent_id=hid,
+                    balance_sheet={
+                        **world_state.households[hid].balance_sheet.model_dump(),
+                        "cash": new_cash,
+                    },
+                    last_consumption=fill,
+                    trade_success=True,
+                )
+            )
         trade_success[hid] = True
         trade_qty[hid] = fill
 
@@ -98,16 +142,17 @@ def clear_goods_market_new(
     new_inventory = max(
         0.0, world_state.firm.balance_sheet.inventory_goods - goods_sold
     )
-    new_cash = float(world_state.firm.balance_sheet.cash + consumption_value)
+    # The firm's cash will have been updated by finance_market.transfer when
+    # transfers succeeded. Do not add consumption_value again to avoid
+    # double-counting. Build the firm's balance_sheet from the current model
+    # dump and only override the inventory field.
+    firm_bs = world_state.firm.balance_sheet.model_dump()
+    firm_bs["inventory_goods"] = new_inventory
     updates.append(
         StateUpdateCommand.assign(
             AgentKind.FIRM,
             agent_id=world_state.firm.id,
-            balance_sheet={
-                **world_state.firm.balance_sheet.model_dump(),
-                "inventory_goods": new_inventory,
-                "cash": new_cash,
-            },
+            balance_sheet=firm_bs,
             last_sales=goods_sold,
         )
     )
