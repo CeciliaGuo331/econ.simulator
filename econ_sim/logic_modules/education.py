@@ -54,7 +54,7 @@ def process_education(
                 and float(getattr(h_dec, "education_payment", 0.0)) > 0
             ):
                 amount = float(h_dec.education_payment)
-                # transfer from household to government
+                # transfer from household to government immediately (tuition paid now)
                 t_updates, t_ledgers, t_log = finance_market.transfer(
                     world_state,
                     payer_kind=AgentKind.HOUSEHOLD,
@@ -71,21 +71,17 @@ def process_education(
                 if t_ledgers:
                     ledgers.extend(t_ledgers)
 
-                # update household education_level
+                # mark household as studying for the current day; do NOT
+                # immediately apply education level gains here — gains are
+                # applied at the start of the next day's first tick by
+                # daily_settlement.settle_previous_day.
                 hh = world_state.households[int(hid)]
-                try:
-                    current_level = float(hh.education_level or 0.0)
-                except Exception:
-                    current_level = 0.0
-                new_level = min(1.5, current_level + gain)
-                hh.education_level = new_level
                 hh.is_studying = True
 
                 updates.append(
                     StateUpdateCommand.assign(
                         scope=AgentKind.HOUSEHOLD,
                         agent_id=hid,
-                        education_level=new_level,
                         is_studying=True,
                     )
                 )

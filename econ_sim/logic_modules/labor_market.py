@@ -49,6 +49,9 @@ def resolve_labor_market_new(
         if getattr(h_dec, "labor_supply", 0.0) <= 0.0:
             continue
         h = world_state.households[hid]
+        # skip households who are studying for the current day
+        if getattr(h, "is_studying", False):
+            continue
         # HouseholdState exposes `skill` (not `productivity`) in the data model
         candidates.append((hid, float(h.skill), float(h.reservation_wage)))
 
@@ -120,11 +123,13 @@ def resolve_labor_market_new(
 
     # Update firm employee list
     new_firm_employees = sorted(list(set(firm.employees + assigned_firm)))
+    # Also record explicit labor_assignment for auditing and for production module
     updates.append(
         StateUpdateCommand.assign(
             AgentKind.FIRM,
             agent_id=firm.id,
             employees=new_firm_employees,
+            labor_assignment=assigned_firm,
         )
     )
 

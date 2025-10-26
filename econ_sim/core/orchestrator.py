@@ -258,6 +258,48 @@ class SimulationOrchestrator:
             shocks = generate_household_shocks(world_state, self.config)
             decision_state = apply_household_shocks_for_decision(world_state, shocks)
 
+        # ---------- DAILY SETTLEMENT (start of day) ----------
+        # If this is the daily decision tick (tick_in_day == 1), settle the
+        # previous day's wages and clear employment relations before any
+        # decisions are generated. The settlement mutates the in-memory
+        # world_state so subsequent decision generation observes post-settlement
+        # state. We collect the returned updates/log for persistence later.
+        early_updates: List[StateUpdateCommand] = []
+        early_logs: List[TickLogEntry] = []
+        try:
+            market = world_state.get_public_market_data()
+            is_daily = bool(getattr(market, "is_daily_decision_tick", False))
+        except Exception:
+            is_daily = False
+
+        if is_daily:
+            try:
+                from ..logic_modules import daily_settlement
+
+                s_updates, s_log = daily_settlement.settle_previous_day(
+                    world_state, tick=world_state.tick, day=world_state.day
+                )
+                if s_updates:
+                    early_updates.extend(s_updates)
+                if s_log is not None:
+                    early_logs.append(s_log)
+                # after mutating world_state, recompute decision_state so agent
+                # decisions observe the post-settlement state (but still with
+                # shocks applied for decision-making if shocks exist)
+                if world_state.features.household_shock_enabled:
+                    from ..logic_modules.shock_logic import (
+                        apply_household_shocks_for_decision,
+                    )
+
+                    decision_state = apply_household_shocks_for_decision(
+                        world_state, shocks
+                    )
+                else:
+                    decision_state = world_state
+            except Exception:
+                # best-effort: do not abort tick on settlement failure
+                logger.exception("daily settlement failed; continuing")
+
         # baseline decisions
         baseline_dur = None
         start = time.perf_counter()
@@ -430,7 +472,11 @@ class SimulationOrchestrator:
         updates, logs, ledgers, market_signals = await asyncio.to_thread(
             _execute_market_logic, world_state, decisions, self.config, shocks
         )
-        # prepend pre_updates so they are applied first when persisting
+        # prepend early_updates (settlement) and pre_updates so they are applied
+        # first when persisting. early_updates come from the start-of-day
+        # settlement and must be persisted before market logic updates.
+        if early_updates:
+            updates = early_updates + updates
         if pre_updates:
             updates = pre_updates + updates
         end = time.perf_counter()
@@ -438,6 +484,11 @@ class SimulationOrchestrator:
 
         if script_failure_logs:
             logs = script_failure_logs + logs
+
+        # include early logs (from daily settlement) at the front so they are
+        # visible before other market logs
+        if early_logs:
+            logs = early_logs + logs
 
         if world_state.features.household_shock_enabled and shocks:
             updates.append(
@@ -877,6 +928,48 @@ def _execute_market_logic(
         l_updates, l_log = labor_market.resolve_labor_market_new(world_state, decisions)
         updates.extend(l_updates)
         logs.append(l_log)
+        # Apply labor market updates into in-memory world_state so downstream
+        # modules (wages settlement, production) observe the new assignments.
+        try:
+            for cmd in l_updates:
+                try:
+                    scope = getattr(cmd, "scope", None)
+                    agent_id = getattr(cmd, "agent_id", None)
+                    changes = getattr(cmd, "changes", {}) or {}
+                    if scope is None:
+                        continue
+                    if scope == AgentKind.HOUSEHOLD:
+                        hid = int(agent_id)
+                        hh = world_state.households.get(hid)
+                        if hh is None:
+                            continue
+                        for k, v in changes.items():
+                            try:
+                                setattr(hh, k, v)
+                            except Exception:
+                                # best-effort: ignore incompatible fields
+                                pass
+                    elif scope == AgentKind.FIRM and world_state.firm is not None:
+                        for k, v in changes.items():
+                            try:
+                                setattr(world_state.firm, k, v)
+                            except Exception:
+                                pass
+                    elif (
+                        scope == AgentKind.GOVERNMENT
+                        and world_state.government is not None
+                    ):
+                        for k, v in changes.items():
+                            try:
+                                setattr(world_state.government, k, v)
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+        except Exception:
+            logger.debug(
+                "Applying labor_market updates to world_state failed", exc_info=True
+            )
     except Exception:
         pass
 

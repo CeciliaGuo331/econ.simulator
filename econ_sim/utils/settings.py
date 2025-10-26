@@ -109,6 +109,11 @@ class PolicyConfig(BaseModel):
         default=0.05,
         description="Education increases productivity by this amount per completed daily investment",
     )
+    # initial fraction of households that start as studying when a simulation is seeded
+    education_initial_participation: float = Field(
+        default=0.2,
+        description="Fraction of households initially marked as studying when a simulation is created",
+    )
 
 
 class WorldConfig(BaseModel):

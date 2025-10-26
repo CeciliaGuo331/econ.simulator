@@ -62,12 +62,22 @@ def create_household_state(config: WorldConfig, household_id: int) -> HouseholdS
         np.clip(markets.labor.base_wage * skill * 0.8, 40.0, 120.0)
     )
 
+    # initial studying participation: use config-driven probability with
+    # deterministic RNG per household so test/seeding is reproducible
+    try:
+        participation = float(config.policies.education_initial_participation)
+    except Exception:
+        participation = 0.0
+
+    is_studying = bool(rng.uniform(0.0, 1.0) < max(0.0, min(1.0, participation)))
+
     return HouseholdState(
         id=household_id,
         balance_sheet=balance_sheet,
         skill=skill,
         preference=preference,
         reservation_wage=reservation_wage,
+        is_studying=is_studying,
     )
 
 
