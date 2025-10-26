@@ -18,6 +18,7 @@ from ..data_access.models import (
     WorldState,
     AgentKind,
 )
+from ..utils.settings import get_world_config
 
 
 def generate_baseline_decisions(world_state: WorldState) -> TickDecisions:
@@ -37,10 +38,56 @@ def generate_baseline_decisions(world_state: WorldState) -> TickDecisions:
         consumption_budget = min(cash * 0.1, 10.0)
         savings_rate = 0.1
         labor_supply = 0.5 if h.employment_status.name == "UNEMPLOYED" else 0.0
+        # education decision: only allow changing on daily decision tick
+        is_studying = False
+        education_payment = 0.0
+        try:
+            market = world_state.get_public_market_data()
+            is_daily = bool(getattr(market, "is_daily_decision_tick", False))
+        except Exception:
+            # if public market data not available, fall back to computing tick_in_day
+            try:
+                cfg = get_world_config()
+                ticks = int(cfg.simulation.ticks_per_day or 1)
+            except Exception:
+                ticks = 1
+            tick_in_day = (int(world_state.tick) % ticks) + 1
+            is_daily = tick_in_day == 1
+
+        if is_daily:
+            try:
+                cfg = get_world_config()
+                cost = float(cfg.policies.education_cost_per_day)
+                gain = float(cfg.policies.education_gain)
+            except Exception:
+                cost = 2.0
+                gain = 0.05
+
+            assets = float(
+                (h.balance_sheet.cash or 0.0) + (h.balance_sheet.deposits or 0.0)
+            )
+            # approximate expected wage gain from a unit of education investment
+            expected_wage_gain = 0.0
+            try:
+                firm_wage = (
+                    float(world_state.firm.wage_offer)
+                    if world_state.firm is not None
+                    else 0.0
+                )
+                expected_wage_gain = firm_wage * (0.6 * gain)
+            except Exception:
+                expected_wage_gain = 0.0
+
+            if assets > cost * 20 and expected_wage_gain > cost:
+                is_studying = True
+                education_payment = cost
+
         households[hid] = HouseholdDecision(
             labor_supply=labor_supply,
             consumption_budget=consumption_budget,
             savings_rate=savings_rate,
+            is_studying=is_studying,
+            education_payment=education_payment,
         )
 
     firm = world_state.firm

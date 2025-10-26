@@ -53,10 +53,39 @@ class BaseHouseholdStrategy:
             1.0 if household.employment_status.name.startswith("UNEMP") else 0.8
         )
 
+        # Education decision: only evaluated on daily decision ticks
+        is_studying = False
+        education_payment = 0.0
+        try:
+            is_daily = bool(getattr(market, "is_daily_decision_tick", False))
+        except Exception:
+            is_daily = False
+
+        if is_daily:
+            # do not study if currently employed
+            if not household.employment_status.name.startswith("EMP"):
+                try:
+                    cost = float(self.config.policies.education_cost_per_day)
+                    gain = float(self.config.policies.education_gain)
+                except Exception:
+                    cost = 2.0
+                    gain = 0.05
+
+                assets = float(
+                    (household.balance_sheet.cash or 0.0)
+                    + (household.balance_sheet.deposits or 0.0)
+                )
+                expected_wage_gain = float(market.wage_offer or 0.0) * (0.6 * gain)
+                if assets > cost * 20 and expected_wage_gain > cost:
+                    is_studying = True
+                    education_payment = cost
+
         return HouseholdDecision(
             labor_supply=labor_supply,
             consumption_budget=planned_consumption,
             savings_rate=savings_rate,
+            is_studying=is_studying,
+            education_payment=education_payment,
         )
 
 

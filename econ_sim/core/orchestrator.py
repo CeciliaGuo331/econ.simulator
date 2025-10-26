@@ -991,6 +991,19 @@ def _execute_market_logic(
     except Exception:
         pass
 
+    # 4.5) education processing: apply education payments and update education_level
+    try:
+        from ..logic_modules import education
+
+        e_updates, e_ledgers, e_log = education.process_education(
+            world_state, decisions, tick=tick, day=day
+        )
+        updates.extend(e_updates)
+        ledgers.extend(e_ledgers)
+        logs.append(e_log)
+    except Exception:
+        pass
+
     # 5) government transfers
     try:
         from ..logic_modules import government_transfers

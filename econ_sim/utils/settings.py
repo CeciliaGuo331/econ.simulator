@@ -101,6 +101,14 @@ class PolicyConfig(BaseModel):
         description="国债票面利率（per-tick），即每个 tick 支付的利率。若需从年化利率转换，请在配置加载前处理",
     )
     default_bond_maturity: int = Field(default=10)
+    # education policy parameters (world settings)
+    education_cost_per_day: float = Field(
+        default=2.0, description="Daily cost for household education"
+    )
+    education_gain: float = Field(
+        default=0.05,
+        description="Education increases productivity by this amount per completed daily investment",
+    )
 
 
 class WorldConfig(BaseModel):

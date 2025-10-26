@@ -56,6 +56,9 @@ class HouseholdState(BaseModel):
     reservation_wage: float = 60.0
     # bond holdings: bond_id -> quantity
     bond_holdings: Dict[str, float] = Field(default_factory=dict)
+    # education state
+    education_level: float = 0.5
+    is_studying: bool = False
 
     @property
     def productivity(self) -> float:
@@ -266,6 +269,10 @@ class HouseholdDecision(BaseModel):
     labor_supply: float
     consumption_budget: float
     savings_rate: float
+    # education decision: whether to study (only meaningful on daily decision tick)
+    is_studying: bool = False
+    # payment towards education for this tick
+    education_payment: float = 0.0
     # optional financial orders
     deposit_order: float = 0.0
     withdrawal_order: float = 0.0
@@ -327,6 +334,8 @@ class HouseholdDecisionOverride(BaseModel):
     labor_supply: Optional[float] = None
     consumption_budget: Optional[float] = None
     savings_rate: Optional[float] = None
+    is_studying: Optional[bool] = None
+    education_payment: Optional[float] = None
 
 
 class FirmDecisionOverride(BaseModel):
