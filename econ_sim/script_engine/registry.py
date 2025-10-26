@@ -274,6 +274,24 @@ class ScriptRegistry:
                     str(new_meta.entity_id),
                 )
                 self._entity_index[entity_key] = script_id
+                
+    def _validate_script(self, code: str) -> None:
+        """验证脚本代码的语法正确性。
+        
+        Args:
+            code: Python 脚本代码字符串
+            
+        Raises:
+            ValueError: 当脚本语法错误时
+        """
+        if not code or not code.strip():
+            raise ValueError("脚本代码不能为空")
+        
+        try:
+            compile(code, '<string>', 'exec')
+        except SyntaxError as e:
+            raise ValueError(f"脚本语法错误: {e}")
+    
 
     async def _ingest_stored_scripts(
         self, stored_scripts: Iterable["StoredScript"]
