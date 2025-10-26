@@ -59,6 +59,9 @@ class BackgroundJobManager:
         self._jobs: Dict[str, BackgroundJob] = {}
         self._active_simulations: Dict[str, str] = {}
         self._lock = asyncio.Lock()
+        # keep references to asyncio.Task objects for active runners so we can
+        # cancel or await them during shutdown
+        self._tasks: Dict[str, asyncio.Task] = {}
 
     async def enqueue(
         self,
@@ -91,7 +94,10 @@ class BackgroundJobManager:
         async def _runner() -> None:
             await self._run_job(job_id, factory)
 
-        asyncio.create_task(_runner())
+        task = asyncio.create_task(_runner())
+        # keep reference so shutdown can cancel/await
+        async with self._lock:
+            self._tasks[job_id] = task
         return job
 
     async def _run_job(
@@ -134,6 +140,12 @@ class BackgroundJobManager:
                     if extra:
                         job.extra = extra
             self._active_simulations.pop(job.simulation_id, None)
+        # cleanup task reference if present
+        async with self._lock:
+            try:
+                self._tasks.pop(job_id, None)
+            except Exception:
+                pass
 
     async def get(self, job_id: str) -> Optional[BackgroundJob]:
         async with self._lock:
@@ -145,6 +157,50 @@ class BackgroundJobManager:
             if not job_id:
                 return None
             return self._jobs.get(job_id)
+
+    async def shutdown(self, *, cancel: bool = True, timeout: float = 5.0) -> None:
+        """Gracefully shutdown background manager.
+
+        If `cancel` is True, cancel all active runner tasks immediately and wait
+        up to `timeout` seconds for them to finish. Otherwise wait for them to
+        complete naturally up to `timeout` seconds.
+        """
+        # Snapshot current tasks
+        async with self._lock:
+            tasks = list(self._tasks.items())
+
+        if not tasks:
+            return
+
+        pending = [t for _, t in tasks if not t.done()]
+        if not pending:
+            return
+
+        if cancel:
+            for t in pending:
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
+
+        # wait for tasks to finish or timeout
+        try:
+            await asyncio.wait(pending, timeout=timeout)
+        except Exception:
+            # best-effort: ignore exceptions during shutdown
+            pass
+
+        # After waiting, mark any still-pending jobs as failed
+        async with self._lock:
+            for job_id, task in list(self._tasks.items()):
+                if not task.done():
+                    job = self._jobs.get(job_id)
+                    if job is not None:
+                        job.status = "failed"
+                        job.error = "shutdown: task cancelled or timed out"
+                        job.finished_at = time.time()
+                    # remove task reference
+                    self._tasks.pop(job_id, None)
 
 
 __all__ = [
