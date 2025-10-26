@@ -1,88 +1,74 @@
 # 企业 (Firm) 脚本 API（面向玩家）
 
-目标读者：为企业（firm）编写策略脚本的玩家。
+目标读者：为企业（firm）编写策略脚本的玩家。该文档与 household 文档保持一致的章节结构，覆盖 context 结构、字段含义、可写决策、示例、LLM 使用规范及排错建议。
 
-## 一、context 可读内容（摘录）
+## 重要前置
+- 入口函数：你的脚本必须定义 `def generate_decisions(context)`，返回一个决策覆盖（overrides）。
+- 推荐构造器：使用 `econ_sim.script_engine.user_api.OverridesBuilder()` 构造返回值（会做字段白名单校验）。
+- 隐私与可见性：脚本看到的 `world_state` 会被裁剪，只包含与你相关的信息；不要假设能读到其他玩家的私有数据。
 
-- `context['entity_state']`（FirmState）关键字段：
-  - `id` (str)
-  - `balance_sheet`: { `cash`, `reserves`, `deposits`, `loans`, `inventory_goods` }
-  - `price` (float)
-  - `wage_offer` (float)
-  - `planned_production` (float)
-  - `productivity` (float)
-  - `employees` (list[int])
-  - `last_sales` (float)
-- `world_state` 中你可见的宏观信息（`macro`）与 `features`。
+## 一、context 的结构与如何使用
 
-## 二、脚本可下的决策字段（FirmDecision）
+- `world_state`：被裁剪的世界快照（含 `tick`, `day`, `features`, `macro`），以及和你有关的市场/主体子树。
+- `entity_state`：你的实体的完整序列化状态（FirmState）。
+- `config`：世界配置（只读，用于读取步长、上限等约束）。
+- `script_api_version`、`agent_kind`（值为 `'firm'`）、`entity_id`。
 
-- `price` (float)
-- `planned_production` (float)
-- `wage_offer` (float)
-- `hiring_demand` (int)
-
-这些决定会被平台合并为 `TickDecisions.firm`，随后 labor_market / production / goods_market 等模块会使用这些字段进行撮合与计算。注意：实际产出由后端生产模块基于资本、劳动分配与技术计算；`planned_production` 是目标/计划。
-
-## 三、构造返回值示例
-
-```python
-from econ_sim.script_engine.user_api import OverridesBuilder
-
-def generate_decisions(context):
-    b = OverridesBuilder()
-    # 调整价格与生产计划
-    b.firm(price=9.5, planned_production=120.0, wage_offer=85.0, hiring_demand=3)
-    return b.build()
-```
-
-## 四、字段详解与使用建议
+下面对 `entity_state` 中的重要字段给出详细说明：
 
 - `id` (str)
-  - 唯一标识符（例如 "firm_1"）。
+  - 含义：企业唯一标识。
 
 - `balance_sheet` (dict)
-  - cash: 公司的现金头寸，用于支付工资与购买中间品。
-  - inventory_goods: 可出售的商品库存，goods_market 会按价格与库存撮合销售。
+  - `cash` (float)：可支配现金，用于支付工资、购买中间品和投资。
+  - `inventory_goods` (float)：库存商品数量，影响可售量与价格决策。
 
 - `price` (float)
-  - 含义：当前商品标价。脚本可调整以应对库存与需求变化。
+  - 含义：商品的当前标价，goods_market 会以价格与库存与需求撮合成交。
 
 - `wage_offer` (float)
-  - 含义：面向 labor_market 的招聘工资出价。labor_market 会用它来筛选候选人（结合候选人的 reservation_wage）。
+  - 含义：面向 labor_market 的工资报价，用于吸引合适劳动力。
 
 - `planned_production` (float)
-  - 含义：公司计划在本 tick 生产的目标产量（后端生产模块将考虑资本、人力与技术把它转化为实际产出）。脚本设置此字段作为目标。
+  - 含义：本 tick 希望生产的目标产量；后端生产模块会基于资本、劳动与技术将计划转为实际产出。
 
 - `productivity` (float)
-  - 含义：公司内部平均工人效率，用作生产函数的参数。
+  - 含义：平均每单位劳动或资本的产出效率。
 
 - `employees` (list[int])
-  - 当前雇佣的家户 id 列表。脚本可读以评估是否需要补招或裁员。
+  - 当前雇佣的家户 id 列表，脚本可读取以判断是否需补招。
 
 - `last_sales` (float)
-  - 含义：上一次 tick 的商品销售总量（由 goods_market 写入），用于估算需求强度。
+  - 含义：goods_market 在上一个 tick 写入的实际成交量，通常比计划更可信。
 
-## 五、与劳动力市场的交互注意事项
+## 二、可下决策字段（FirmDecision）与说明
 
-- `hiring_demand` 与 `wage_offer` 会直接影响 labor_market 的匹配结果；提高 `wage_offer` 可以放宽 reservation_wage 的筛选并提高匹配概率。
-- labor_market 在构建候选池时会：
-  - 只包含 `decisions.households` 中 `labor_supply > 0` 的家户；
-  - 排除 `is_studying == True` 的家户（无论该标记来自 state 还是来自该 tick 的决策）；
-  - 使用家户的 skill/productivity 与随机扰动计算 matching_score 并按优先级分配岗位。
+允许写入的字段（示例）——请使用 `OverridesBuilder.firm(...)`：
 
-## 六、构造决策示例（带容错）
+- `price` (float)
+  - 本 tick 新的商品标价。
+- `planned_production` (float)
+  - 目标产量。
+- `wage_offer` (float)
+  - 本 tick 对招工的工资报价。
+- `hiring_demand` (int)
+  - 希望新增招聘的岗位数。
+
+注意：实际产出由后端生产模块决定；`planned_production` 只是你的计划输入。
+
+## 三、如何构造与返回覆盖（示例与容错）
 
 ```python
 from econ_sim.script_engine.user_api import OverridesBuilder
+from econ_sim.utils.llm_session import create_llm_session_from_env
 
 def generate_decisions(context):
-    firm = context.get('entity_state', {}) or {}
     try:
-        # 简单规则：略微下调价格以清库存
-        price = max(0.1, float(firm.get('price', 10.0)) * 0.98)
-        planned = max(0.0, float(firm.get('planned_production', 0.0)) + 10.0)
-        wage = float(firm.get('wage_offer', 80.0))
+        ent = context.get('entity_state', {}) or {}
+        price = max(0.1, float(ent.get('price', 10.0)) * 0.98)
+        planned = max(0.0, float(ent.get('planned_production', 0.0)) + 10.0)
+        wage = float(ent.get('wage_offer', 80.0))
+
         b = OverridesBuilder()
         b.firm(price=round(price,2), planned_production=planned, wage_offer=wage, hiring_demand=3)
         return b.build()
@@ -90,17 +76,54 @@ def generate_decisions(context):
         return None
 ```
 
-## 七、LLM 使用建议（企业脚本）
-- 场景：根据市场文字信息或外部情报生成定价策略时可调用 LLM 获取策略建议。
-- 若要在脚本内部调用注入的 `llm`，请保证 prompt 短小并对返回结果做严格解析与回退处理。
+示例说明：对输入做了类型保护与下界保护，以避免脚本异常导致整个决策失败。
 
-## 八、常见问题与调试
-- 产出差距：若 `last_sales` 显著小于 `planned_production`，检查 `labor_assignment`、firm `employees` 与 `price` 是否合理；planned_production 是目标，实际产出取决于后端生产模块。
-- 招工失败：检查 `wage_offer` 是否高于目标候选人的 `reservation_wage`，并注意 `is_studying` 家户会被排除。
+## 四、与劳动力市场的交互要点
 
-## 九、使用 LLM（进阶）
-- 若脚本需要生成复杂定价策略，可以将简短 prompt 发送到平台 `/llm/completions` 或在脚本内使用注入的 `llm`（若可用）。注意脚本超时限制，避免长时间阻塞。
+- `hiring_demand` 与 `wage_offer` 会直接影响 labor_market 的匹配结果；提高 `wage_offer` 可以放宽候选人筛选并提高匹配概率。
+- labor_market 会排除 `is_studying == True` 的家户（无论该标记来自 state 还是决策）。
 
-## 十、调试提示
-- 若你发现 `last_sales` 与 `planned_production` 有差异：检查 `labor_assignment`、firm 的 `employees` 与生产要素（capital_stock、productivity）。
-- 在开发阶段可先在脚本里返回少量字段以逐步验证效果。
+## 五、在脚本中使用 LLM（统一、受支持的方法）
+
+平台对脚本内调用 LLM 的方式只支持一种：
+
+    from econ_sim.utils.llm_session import create_llm_session_from_env
+
+示例（从 LLM 获取定价建议并严格解析）：
+
+```python
+from econ_sim.utils.llm_session import create_llm_session_from_env
+from econ_sim.script_engine.user_api import OverridesBuilder
+
+def generate_decisions(context):
+    try:
+        session = create_llm_session_from_env()
+        prompt = '基于最近 10 期的 last_sales 与库存，建议一个价格调整比例（0-1，只返回数字）'
+        resp = session.generate(prompt, max_tokens=20)
+        text = resp.get('content', '')
+        try:
+            ratio = float(text.strip().split()[0])
+        except Exception:
+            ratio = 0.02
+
+        ent = context.get('entity_state', {}) or {}
+        curr = float(ent.get('price', 10.0))
+        new_price = max(0.1, curr * (1 + ratio))
+        b = OverridesBuilder()
+        b.firm(price=round(new_price,2))
+        return b.build()
+    except Exception:
+        return None
+```
+
+注意：对 LLM 输出进行范围检查与回退；不要直接信任文本格式，防止解析异常。
+
+## 六、常见问题与排查
+
+- 产能与销量差距：若 `last_sales` << `planned_production`，请检查 `employees`、`wage_offer` 与 `price`；后端生产模块也可能受资本或原料约束。
+- 招工失败：当 `hiring_demand` 没有招到足够员工时，先确认 `wage_offer` 是否充分以及候选池的 `reservation_wage` 分布。
+- 脚本抛异常或返回 None：平台将回退到 baseline 策略；请在脚本中添加异常保护并在本地做 dry-run 测试。
+
+## 七、本地 dry-run 模板
+
+参考 household 文档中的 `dry_run_generate` 示例，在本地构造 sample_ctx（可参考 tests 中的 fixture）以验证返回结构。
