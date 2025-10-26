@@ -303,17 +303,136 @@ class SimulationOrchestrator:
 
         # collect final decisions
         start = time.perf_counter()
+        try:
+            # debug: dump combined_overrides to help trace why script overrides may not apply
+            if combined_overrides is not None:
+                try:
+                    print(
+                        "DEBUG combined_overrides:",
+                        combined_overrides.model_dump(mode="json"),
+                    )
+                except Exception:
+                    print("DEBUG combined_overrides:", combined_overrides)
+            else:
+                print("DEBUG combined_overrides: None")
+        except Exception:
+            pass
         decisions = await asyncio.to_thread(
             collect_tick_decisions, baseline_decisions, combined_overrides
         )
         end = time.perf_counter()
         collect_dur = end - start
 
+        # Prepare pre_updates and materialize decisions into the in-memory world_state
+        pre_updates: List[StateUpdateCommand] = []
+        try:
+            # firm
+            firm_dec = getattr(decisions, "firm", None)
+            firm_state = getattr(world_state, "firm", None)
+            if firm_dec is not None and firm_state is not None:
+                changes = {}
+                if getattr(firm_dec, "price", None) is not None and float(
+                    firm_state.price
+                ) != float(firm_dec.price):
+                    firm_state.price = float(firm_dec.price)
+                    changes["price"] = float(firm_dec.price)
+                if getattr(firm_dec, "wage_offer", None) is not None and float(
+                    firm_state.wage_offer
+                ) != float(firm_dec.wage_offer):
+                    firm_state.wage_offer = float(firm_dec.wage_offer)
+                    changes["wage_offer"] = float(firm_dec.wage_offer)
+                if getattr(firm_dec, "planned_production", None) is not None:
+                    changes["planned_production"] = firm_dec.planned_production
+                if getattr(firm_dec, "hiring_demand", None) is not None:
+                    changes["hiring_demand"] = firm_dec.hiring_demand
+                if changes:
+                    pre_updates.append(
+                        StateUpdateCommand.assign(
+                            AgentKind.FIRM, agent_id=firm_state.id, **changes
+                        )
+                    )
+
+            # bank
+            bank_dec = getattr(decisions, "bank", None)
+            bank_state = getattr(world_state, "bank", None)
+            if bank_dec is not None and bank_state is not None:
+                changes = {}
+                if getattr(bank_dec, "deposit_rate", None) is not None:
+                    changes["deposit_rate"] = float(bank_dec.deposit_rate)
+                if getattr(bank_dec, "loan_rate", None) is not None:
+                    changes["loan_rate"] = float(bank_dec.loan_rate)
+                if getattr(bank_dec, "loan_supply", None) is not None:
+                    changes["loan_supply"] = float(bank_dec.loan_supply)
+                if changes:
+                    pre_updates.append(
+                        StateUpdateCommand.assign(
+                            AgentKind.BANK, agent_id=bank_state.id, **changes
+                        )
+                    )
+
+            # government
+            gov_dec = getattr(decisions, "government", None)
+            gov_state = getattr(world_state, "government", None)
+            if gov_dec is not None and gov_state is not None:
+                changes = {}
+                if getattr(gov_dec, "tax_rate", None) is not None:
+                    changes["tax_rate"] = float(gov_dec.tax_rate)
+                if getattr(gov_dec, "government_jobs", None) is not None:
+                    changes["government_jobs"] = int(gov_dec.government_jobs)
+                if getattr(gov_dec, "transfer_budget", None) is not None:
+                    changes["transfer_budget"] = float(gov_dec.transfer_budget)
+                if changes:
+                    pre_updates.append(
+                        StateUpdateCommand.assign(
+                            AgentKind.GOVERNMENT, agent_id=gov_state.id, **changes
+                        )
+                    )
+
+            # central bank
+            cb_dec = getattr(decisions, "central_bank", None)
+            cb_state = getattr(world_state, "central_bank", None)
+            if cb_dec is not None and cb_state is not None:
+                changes = {}
+                if getattr(cb_dec, "policy_rate", None) is not None:
+                    changes["policy_rate"] = float(cb_dec.policy_rate)
+                if getattr(cb_dec, "reserve_ratio", None) is not None:
+                    changes["reserve_ratio"] = float(cb_dec.reserve_ratio)
+                if changes:
+                    pre_updates.append(
+                        StateUpdateCommand.assign(
+                            AgentKind.CENTRAL_BANK, agent_id=cb_state.id, **changes
+                        )
+                    )
+        except Exception:
+            # non-fatal
+            pass
+
         # execute market logic using new modular subsystems
+        # If scripts submitted bond_bids via overrides, attach them onto decisions
+        try:
+            combined_bids = getattr(combined_overrides, "bond_bids", None)
+            if combined_bids:
+                # produce a copy of decisions with bond_bids attached so downstream
+                # market logic can observe script-submitted bids without mutating
+                # baseline-derived decision models directly.
+                try:
+                    decisions = decisions.model_copy(
+                        update={"bond_bids": combined_bids}
+                    )
+                except Exception:
+                    setattr(decisions, "bond_bids", combined_bids)
+        except Exception:
+            pass
+
         start = time.perf_counter()
+        # include pre_updates in the updates list returned from market logic so
+        # they persist (but ensure market logic observes mutated world_state)
         updates, logs, ledgers, market_signals = await asyncio.to_thread(
             _execute_market_logic, world_state, decisions, self.config, shocks
         )
+        # prepend pre_updates so they are applied first when persisting
+        if pre_updates:
+            updates = pre_updates + updates
         end = time.perf_counter()
         execute_dur = end - start
 
@@ -365,6 +484,41 @@ class SimulationOrchestrator:
             ledgers=ledgers,
         )
         await self.data_access.record_tick(tick_result)
+        # Diagnostic: check deposit consistency between bank liabilities and non-bank holdings.
+        try:
+            total_nonbank_deposits = 0.0
+            if updated_state.households:
+                total_nonbank_deposits += float(
+                    sum(
+                        float(h.balance_sheet.deposits or 0.0)
+                        for h in updated_state.households.values()
+                    )
+                )
+            if updated_state.firm is not None:
+                total_nonbank_deposits += float(
+                    updated_state.firm.balance_sheet.deposits or 0.0
+                )
+            if updated_state.government is not None:
+                total_nonbank_deposits += float(
+                    updated_state.government.balance_sheet.deposits or 0.0
+                )
+            bank_deposits = (
+                float(updated_state.bank.balance_sheet.deposits)
+                if updated_state.bank is not None
+                else None
+            )
+            if bank_deposits is not None:
+                diff = abs(bank_deposits - total_nonbank_deposits)
+                # log debug-level mismatch; non-intrusive to avoid breaking tests
+                if diff > 1e-6:
+                    logger.debug(
+                        "deposit_consistency_check: bank.deposits=%s nonbank_deposits=%s diff=%s",
+                        bank_deposits,
+                        total_nonbank_deposits,
+                        diff,
+                    )
+        except Exception:
+            logger.debug("Failed to run deposit consistency diagnostic", exc_info=True)
         end = time.perf_counter()
         persist_dur = end - start
 
@@ -839,6 +993,46 @@ def _execute_market_logic(
             market_signals["bond_yield"] = float(by)
     except Exception:
         pass
+
+    # Centralize persistence of market-level logs (e.g. bond auction trades) by
+    # extracting any embedded auction/trade payloads from subsystem TickLogEntry
+    # contexts and appending dedicated market TickLogEntry records. This keeps
+    # market data centralized in the orchestrator's log list instead of being
+    # scattered inside various module-specific logs.
+    try:
+        extra_market_logs: list[TickLogEntry] = []
+        for tlog in list(logs):
+            ctx = getattr(tlog, "context", {}) or {}
+            # support both explicit bond_auction_trades (legacy) and a generic
+            # market_logs payload that modules may attach
+            payload = None
+            if "bond_auction_trades" in ctx:
+                payload = ctx.pop("bond_auction_trades")
+            elif "market_logs" in ctx:
+                payload = ctx.pop("market_logs")
+
+            if payload is None:
+                continue
+
+            # payload expected to be a list/serializable structure describing trades
+            try:
+                extra = TickLogEntry(
+                    tick=world_state.tick,
+                    day=world_state.day,
+                    message="market_auction_executed",
+                    context={"trades": payload},
+                )
+                extra_market_logs.append(extra)
+            except Exception:
+                # best-effort: ignore malformed payloads
+                continue
+
+        # append market logs after existing module logs for clearer ordering
+        if extra_market_logs:
+            logs.extend(extra_market_logs)
+    except Exception:
+        # non-fatal: do not prevent the tick from completing
+        logger.debug("Failed to centralize market logs", exc_info=True)
 
     return updates, logs, ledgers, market_signals
 

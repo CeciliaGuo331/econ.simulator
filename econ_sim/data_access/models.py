@@ -33,6 +33,8 @@ class BalanceSheet(BaseModel):
     """通用资产负债表，用于记录现金、存款、负债与商品库存。"""
 
     cash: float = 0.0
+    # 商业银行在央行或同业的准备金余额（用于准备金约束与跨行结算）
+    reserves: float = 0.0
     deposits: float = 0.0
     loans: float = 0.0
     inventory_goods: float = 0.0
@@ -109,6 +111,20 @@ class BankState(BaseModel):
     approved_loans: Dict[int, float] = Field(default_factory=dict)
     # bond holdings: bond_id -> quantity
     bond_holdings: Dict[str, float] = Field(default_factory=dict)
+
+    @property
+    def equity(self) -> float:
+        """计算银行净资产（会计恒等式：equity = reserves + loans - deposits）。
+
+        注意：该属性为只读计算字段，用于策略与监控。持久化层不依赖于此字段。
+        """
+        try:
+            bs = self.balance_sheet
+            return float(
+                (bs.reserves or 0.0) + (bs.loans or 0.0) - (bs.deposits or 0.0)
+            )
+        except Exception:
+            return 0.0
 
 
 class CentralBankState(BaseModel):
@@ -218,6 +234,9 @@ class HouseholdDecision(BaseModel):
     labor_supply: float
     consumption_budget: float
     savings_rate: float
+    # optional financial orders
+    deposit_order: float = 0.0
+    withdrawal_order: float = 0.0
 
 
 class FirmDecision(BaseModel):
@@ -235,6 +254,9 @@ class GovernmentDecision(BaseModel):
     tax_rate: float
     government_jobs: int
     transfer_budget: float
+    # optional issuance plan proposed by a government script for this tick
+    # issuance_plan: {"volume": float, "min_price": Optional[float]}
+    issuance_plan: Optional[Dict[str, Any]] = None
 
 
 class BankDecision(BaseModel):
@@ -290,6 +312,8 @@ class GovernmentDecisionOverride(BaseModel):
     tax_rate: Optional[float] = None
     government_jobs: Optional[int] = None
     transfer_budget: Optional[float] = None
+    # allow scripts to propose an issuance_plan (volume, min_price) for this tick
+    issuance_plan: Optional[Dict[str, Any]] = None
 
 
 class BankDecisionOverride(BaseModel):
@@ -315,6 +339,11 @@ class TickDecisionOverrides(BaseModel):
     bank: Optional[BankDecisionOverride] = None
     government: Optional[GovernmentDecisionOverride] = None
     central_bank: Optional[CentralBankDecisionOverride] = None
+    # optional bond bids that a script may submit for this tick's issuance
+    # each bid: {"buyer_kind": str, "buyer_id": str|int, "price": float, "quantity": float}
+    bond_bids: List[Dict[str, Any]] = Field(default_factory=list)
+    # optional issuance plan proposed by government script
+    issuance_plan: Optional[Dict[str, Any]] = None
 
 
 class TickLogEntry(BaseModel):
@@ -377,6 +406,9 @@ class BondInstrument(BaseModel):
     maturity_tick: int
     outstanding: float
     holders: Dict[str, float] = Field(default_factory=dict)
+    # detailed purchase records to track holding start tick and enable
+    # minimum-hold-period rules (list of {buyer_kind, buyer_id, quantity, price, tick})
+    purchase_records: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class LedgerEntry(BaseModel):

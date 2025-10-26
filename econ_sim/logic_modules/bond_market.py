@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import List, Dict, Any
 from uuid import uuid4
 import statistics
+import json
 
 from econ_sim.data_access import models
 from econ_sim.data_access.models import (
@@ -26,6 +27,7 @@ from econ_sim.data_access.models import (
 )
 from econ_sim.utils.settings import get_world_config
 import math
+import random
 
 
 def _apply_cash_delta(entity_balance_sheet, delta: float):
@@ -40,13 +42,42 @@ def clear_bond_auction(
     bids: List[Dict[str, Any]],
     tick: int,
     day: int,
+    min_price: float | None = None,
 ):
     """按价格优先撮合债券发行（政府卖方）。
 
     bids: list of {buyer_kind, buyer_id, price, quantity}
     """
-    # sort bids by price desc
-    bids_sorted = sorted(bids, key=lambda b: b["price"], reverse=True)
+    # determine auction mode (price-priority or random-priority per docs)
+    cfg = get_world_config()
+    auction_mode = "price"
+    try:
+        auction_mode = cfg.markets.finance.auction_mode
+    except Exception:
+        auction_mode = "price"
+
+    bids_sorted = list(bids)
+    # apply optional reserve / min_price: filter out any bids below min_price
+    try:
+        if min_price is not None:
+            bids_sorted = [
+                b for b in bids_sorted if float(b.get("price", 0.0)) >= float(min_price)
+            ]
+    except Exception:
+        # if filtering fails, keep original bids list
+        bids_sorted = list(bids)
+    if auction_mode == "price":
+        # price-priority (existing behavior)
+        bids_sorted.sort(key=lambda b: b["price"], reverse=True)
+    else:
+        # random-priority: deterministic shuffle using global seed + tick
+        try:
+            seed = int(cfg.simulation.seed or 0) + int(tick)
+            rnd = random.Random(seed)
+            rnd.shuffle(bids_sorted)
+        except Exception:
+            # fallback to deterministic sort by buyer id to keep behavior stable
+            bids_sorted.sort(key=lambda b: str(b.get("buyer_id", "")))
     remaining = bond.outstanding
     trades: List[TradeRecord] = []
     ledgers: List[LedgerEntry] = []
@@ -58,14 +89,16 @@ def clear_bond_auction(
     for bid in bids_sorted:
         if remaining <= 0:
             break
-        qty = min(bid["quantity"], remaining)
-        price = bid["price"]
-        amount = qty * price
+        # respect cash constraint: buyer cannot pay more than available cash
+        price = float(bid.get("price", 0.0))
+        requested_qty = float(bid.get("quantity", 0.0))
 
-        buyer_kind: AgentKind = bid["buyer_kind"]
-        buyer_id = bid["buyer_id"]
+        if price <= 0 or requested_qty <= 0:
+            continue
 
         # route buyer object
+        buyer_kind: AgentKind = bid.get("buyer_kind")
+        buyer_id = bid.get("buyer_id")
         if buyer_kind == AgentKind.BANK and str(buyer_id) == str(world_state.bank.id):
             buyer = world_state.bank
         elif buyer_kind == AgentKind.HOUSEHOLD:
@@ -74,15 +107,48 @@ def clear_bond_auction(
             # for minimal impl, only support bank and household buyers
             continue
 
+        max_affordable_qty = 0.0
+        try:
+            max_affordable_qty = (
+                float(buyer.balance_sheet.cash) / price if price > 0 else 0.0
+            )
+        except Exception:
+            max_affordable_qty = 0.0
+
+        qty = min(requested_qty, remaining, max_affordable_qty)
+        if qty <= 0:
+            # buyer cannot afford even a fraction; skip
+            continue
+
+        amount = qty * price
+
+        buyer_kind: AgentKind = bid["buyer_kind"]
+        buyer_id = bid["buyer_id"]
+
         # transfer cash from buyer to government
         buyer.balance_sheet.cash -= amount
         government.balance_sheet.cash += amount
 
-        # assign bond holdings
+        # assign bond holdings (aggregate) and record purchase detail with tick
         buyer.bond_holdings[bond.id] = buyer.bond_holdings.get(bond.id, 0.0) + qty
         bond.holders[str(buyer_id)] = bond.holders.get(str(buyer_id), 0.0) + qty
         government.debt_outstanding[bond.id] = (
             government.debt_outstanding.get(bond.id, 0.0) + qty
+        )
+
+        # record detailed purchase record for minimum-hold enforcement
+        bond.purchase_records.append(
+            {
+                "buyer_kind": (
+                    buyer_kind.value
+                    if isinstance(buyer_kind, AgentKind)
+                    else str(buyer_kind)
+                ),
+                "buyer_id": str(buyer_id),
+                "quantity": float(qty),
+                "price": float(price),
+                "tick": int(tick),
+            }
         )
 
         remaining -= qty
@@ -157,9 +223,9 @@ def clear_bond_auction(
             )
         )
 
-    # if any remaining (unsold), reduce outstanding to sold amount
+    # if any remaining (unsold), set outstanding to remaining unsold face value
     sold = bond.outstanding - remaining
-    bond.outstanding = sold
+    # keep bond.outstanding as original issue amount and register sold quantity in government's debt_outstanding
 
     market_price = statistics.mean(traded_prices) if traded_prices else None
     market_yield = None
@@ -213,10 +279,30 @@ def clear_bond_auction(
     # register bond in government's debt_instruments registry
     government.debt_instruments[bond.id] = bond
 
+    # produce a TickLogEntry summarizing the auction/trades for persistent market_order_log
+    try:
+        trades_serial = [t.model_dump() for t in trades]
+        log = TickLogEntry(
+            tick=tick,
+            day=day,
+            message="bond_auction_cleared",
+            context={
+                "bond_id": bond.id,
+                "sold": float(sold),
+                "market_price": market_price,
+                "trades": json.dumps(trades_serial),
+            },
+        )
+    except Exception:
+        log = TickLogEntry(
+            tick=tick, day=day, message="bond_auction_cleared", context={}
+        )
+
     return {
         "updates": updates,
         "ledgers": ledgers,
         "trades": trades,
         "market_price": market_price,
         "market_yield": market_yield,
+        "log": log,
     }

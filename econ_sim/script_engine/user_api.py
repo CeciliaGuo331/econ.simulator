@@ -15,6 +15,7 @@ _HOUSEHOLD_FIELDS = {"consumption_budget", "savings_rate", "labor_supply"}
 _FIRM_FIELDS = {"price", "planned_production", "wage_offer", "hiring_demand"}
 _BANK_FIELDS = {"deposit_rate", "loan_rate", "loan_supply"}
 _GOVERNMENT_FIELDS = {"tax_rate", "government_jobs", "transfer_budget"}
+_GOVERNMENT_FIELDS = {"tax_rate", "government_jobs", "transfer_budget", "issuance_plan"}
 _CENTRAL_BANK_FIELDS = {"policy_rate", "reserve_ratio"}
 
 
@@ -27,6 +28,7 @@ class OverridesBuilder:
         self._bank: Dict[str, Any] = {}
         self._government: Dict[str, Any] = {}
         self._central_bank: Dict[str, Any] = {}
+        self._bond_bids: list[Dict[str, Any]] = []
 
     def household(self, household_id: int, **fields: Any) -> "OverridesBuilder":
         _validate_fields("household", fields, _HOUSEHOLD_FIELDS)
@@ -49,6 +51,13 @@ class OverridesBuilder:
     def government(self, **fields: Any) -> "OverridesBuilder":
         _validate_fields("government", fields, _GOVERNMENT_FIELDS)
         if fields:
+            # if issuance_plan provided, ensure it's a dict with allowed keys
+            plan = fields.get("issuance_plan")
+            if plan is not None:
+                if not isinstance(plan, dict):
+                    raise ValueError(
+                        "issuance_plan must be a dict with keys 'volume' and optional 'min_price'"
+                    )
             self._government.update(fields)
         return self
 
@@ -70,7 +79,22 @@ class OverridesBuilder:
             result["government"] = self._government
         if self._central_bank:
             result["central_bank"] = self._central_bank
+        if self._bond_bids:
+            result["bond_bids"] = self._bond_bids
         return result
+
+    def bond_bids(self, bids: list[Dict[str, Any]]) -> "OverridesBuilder":
+        """Attach a list of bond bids to the decision overrides.
+
+        Each bid should be a dict: {"buyer_kind": str, "buyer_id": str|int, "price": float, "quantity": float}
+        This helper is intended for scripts that want to submit bids to the government's issuance process.
+        """
+        if bids:
+            # minimal validation: ensure list of dict-like objects
+            if not isinstance(bids, list):
+                raise ValueError("bond_bids must be a list of bid dicts")
+            self._bond_bids = list(bids)
+        return self
 
 
 def clamp(value: float, lower: float, upper: float) -> float:

@@ -9,7 +9,7 @@ The function merges two optional TickDecisionOverrides objects by overlaying
 non-None fields. It's intentionally conservative and deterministic.
 """
 
-from typing import Optional
+from typing import Optional, List
 
 from econ_sim.data_access.models import (
     TickDecisionOverrides,
@@ -136,5 +136,11 @@ def merge_tick_overrides(
         bank=bank,
         government=government,
         central_bank=central_bank,
+        bond_bids=(combined.bond_bids or []) + (overrides.bond_bids or []),
+        issuance_plan=(
+            overrides.issuance_plan
+            if getattr(overrides, "issuance_plan", None) is not None
+            else combined.issuance_plan
+        ),
     )
     return merged

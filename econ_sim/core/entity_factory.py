@@ -138,8 +138,16 @@ def create_bank_state(
     if deposits <= 0.0:
         deposits = float(config.simulation.num_households * 150.0)
 
+    # initialize reserves according to central bank reserve_ratio (simple rule)
+    try:
+        reserve_ratio = float(config.policies.central_bank.reserve_ratio)
+    except Exception:
+        reserve_ratio = 0.1
+    reserves = float(deposits * reserve_ratio)
+
     balance_sheet = BalanceSheet(
         cash=200000.0,
+        reserves=reserves,
         deposits=deposits,
         loans=0.0,
         inventory_goods=0.0,

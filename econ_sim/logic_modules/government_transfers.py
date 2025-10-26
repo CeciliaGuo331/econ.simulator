@@ -187,12 +187,41 @@ def _means_tested_transfer(
                 bids=use_bids,
                 tick=world_state.tick,
                 day=world_state.day,
+                issuance_plan=getattr(gov_decision, "issuance_plan", None),
             )
             # integrate returned ledgers and updates for bookkeeping
             for up in res.get("updates", []):
                 updates.append(up)
             for le in res.get("ledgers", []):
                 ledger.append(le)
+            # if auction produced a market log, include trade info into our log context
+            auction_log = res.get("auction_log")
+            if auction_log is not None:
+                try:
+                    # attach serialized trades into our ledger/log context via a marker entry
+                    ledger.append(
+                        LedgerEntry(
+                            tick=world_state.tick,
+                            day=world_state.day,
+                            account_kind=AgentKind.GOVERNMENT,
+                            entity_id=gov.id,
+                            entry_type="bond_auction_log",
+                            amount=0.0,
+                            balance_after=None,
+                            reference=(
+                                res.get("bond", {}).id if res.get("bond") else None
+                            ),
+                        )
+                    )
+                except Exception:
+                    pass
+                # also capture trades JSON to include in TickLogEntry context later
+                try:
+                    auction_trades_json = auction_log.context.get("trades")
+                except Exception:
+                    auction_trades_json = None
+            else:
+                auction_trades_json = None
             # keep a compatibility bond_issuance ledger marker as well
             ledger.append(
                 LedgerEntry(
@@ -225,6 +254,8 @@ def _means_tested_transfer(
         "funding_method": funding_method,
         "beneficiaries": json.dumps(beneficiaries),
     }
+    if auction_trades_json is not None:
+        context["bond_auction_trades"] = auction_trades_json
     log = TickLogEntry(
         tick=world_state.tick,
         day=world_state.day,
@@ -379,11 +410,39 @@ def _unemployment_benefit(
                 bids=use_bids,
                 tick=world_state.tick,
                 day=world_state.day,
+                issuance_plan=getattr(gov_decision, "issuance_plan", None),
             )
             for up in res.get("updates", []):
                 updates.append(up)
             for le in res.get("ledgers", []):
                 ledger.append(le)
+            # capture auction log marker if present
+            auction_log = res.get("auction_log")
+            if auction_log is not None:
+                try:
+                    ledger.append(
+                        LedgerEntry(
+                            tick=world_state.tick,
+                            day=world_state.day,
+                            account_kind=AgentKind.GOVERNMENT,
+                            entity_id=gov.id,
+                            entry_type="bond_auction_log",
+                            amount=0.0,
+                            balance_after=None,
+                            reference=(
+                                res.get("bond", {}).id if res.get("bond") else None
+                            ),
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    auction_trades_json = auction_log.context.get("trades")
+                except Exception:
+                    auction_trades_json = None
+            else:
+                auction_trades_json = None
+
             ledger.append(
                 LedgerEntry(
                     tick=world_state.tick,
@@ -414,6 +473,11 @@ def _unemployment_benefit(
         "funding_method": funding_method,
         "beneficiaries": json.dumps(unemployed),
     }
+    try:
+        if auction_trades_json is not None:
+            context["bond_auction_trades"] = auction_trades_json
+    except Exception:
+        pass
     log = TickLogEntry(
         tick=world_state.tick,
         day=world_state.day,

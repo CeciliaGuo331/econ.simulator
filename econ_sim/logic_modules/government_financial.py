@@ -26,6 +26,7 @@ def issue_bonds(
     bids: List[Dict[str, Any]],
     tick: int,
     day: int,
+    issuance_plan: dict | None = None,
     coupon_frequency_ticks: int = 0,
 ):
     """发行债券并进行市场化承销。
@@ -51,7 +52,26 @@ def issue_bonds(
     )
 
     # run auction / underwriting
-    result = bond_market.clear_bond_auction(world_state, bond, bids, tick=tick, day=day)
+    # if issuer provided an issuance_plan, it may override volume and set a min_price
+    min_price = None
+    try:
+        if issuance_plan is not None and isinstance(issuance_plan, dict):
+            if issuance_plan.get("volume") is not None:
+                try:
+                    bond.outstanding = float(issuance_plan.get("volume"))
+                except Exception:
+                    pass
+            if issuance_plan.get("min_price") is not None:
+                try:
+                    min_price = float(issuance_plan.get("min_price"))
+                except Exception:
+                    min_price = None
+    except Exception:
+        min_price = None
+
+    result = bond_market.clear_bond_auction(
+        world_state, bond, bids, tick=tick, day=day, min_price=min_price
+    )
 
     # update public market data bond_yield if available
     if result.get("market_yield") is not None:
@@ -67,6 +87,10 @@ def issue_bonds(
             result["updates"] = result_updates
         except Exception:
             pass
+
+    # forward auction log (if present) under a consistent key so callers may persist it
+    if result.get("log") is not None:
+        result["auction_log"] = result.get("log")
 
     return {"bond": bond, **result}
 
@@ -103,13 +127,57 @@ def process_coupon_payments(world_state: models.WorldState, tick: int, day: int)
             bond.face_value * bond.coupon_rate * bond.coupon_frequency_ticks
         )
 
-        # compute total coupon due
+        # compute total coupon due, but only include holdings that have been held at least one day
         total_due = 0.0
         holder_amounts = {}
+        try:
+            cfg = get_world_config()
+            min_hold_ticks = int(cfg.simulation.ticks_per_day)
+        except Exception:
+            min_hold_ticks = 1
+
+        # helper to compute eligible quantity for a buyer
+        def eligible_qty_for(buyer_id_str: str) -> float:
+            # if purchase_records exist, sum quantities with purchase_tick <= tick - min_hold_ticks
+            if getattr(bond, "purchase_records", None):
+                qty = 0.0
+                for rec in bond.purchase_records:
+                    try:
+                        if str(rec.get("buyer_id")) == str(buyer_id_str) and int(
+                            rec.get("tick", 0)
+                        ) <= (tick - min_hold_ticks):
+                            qty += float(rec.get("quantity", 0.0))
+                    except Exception:
+                        continue
+                return qty
+            # fallback: use aggregate holdings
+            owner_qty = 0.0
+            if buyer_id_str == (
+                getattr(world_state.bank, "id", None)
+                if getattr(world_state, "bank", None)
+                else None
+            ):
+                owner_qty = (
+                    float(
+                        getattr(world_state.bank, "bond_holdings", {}).get(bond_id, 0.0)
+                    )
+                    if getattr(world_state, "bank", None)
+                    else 0.0
+                )
+            else:
+                try:
+                    hid = int(buyer_id_str)
+                    owner_qty = float(
+                        world_state.households[hid].bond_holdings.get(bond_id, 0.0)
+                    )
+                except Exception:
+                    owner_qty = 0.0
+            return owner_qty
+
         # bank
         bank = getattr(world_state, "bank", None)
         if bank is not None:
-            bqty = bank.bond_holdings.get(bond_id, 0.0)
+            bqty = eligible_qty_for(bank.id)
             if bqty and bqty > 0:
                 amt = bqty * coupon_per_unit
                 holder_amounts[(AgentKind.BANK, bank.id)] = amt
@@ -117,10 +185,11 @@ def process_coupon_payments(world_state: models.WorldState, tick: int, day: int)
 
         # households
         for hid, hh in getattr(world_state, "households", {}).items():
-            hqty = hh.bond_holdings.get(bond_id, 0.0)
+            hid_str = str(hid)
+            hqty = eligible_qty_for(hid_str)
             if hqty and hqty > 0:
                 amt = hqty * coupon_per_unit
-                holder_amounts[(AgentKind.HOUSEHOLD, str(hid))] = amt
+                holder_amounts[(AgentKind.HOUSEHOLD, hid_str)] = amt
                 total_due += amt
 
         if total_due <= 0:
@@ -334,18 +403,60 @@ def process_bond_maturities(world_state, tick: int, day: int):
             total_payment = 0.0
             holder_amounts = {}
 
-            # collect bank holders
+            # collect bank holders eligible by min-hold rule
+            try:
+                cfg = get_world_config()
+                min_hold_ticks = int(cfg.simulation.ticks_per_day)
+            except Exception:
+                min_hold_ticks = 1
+
+            def eligible_qty_for_maturity(buyer_id_str: str) -> float:
+                if getattr(bond, "purchase_records", None):
+                    qty = 0.0
+                    for rec in bond.purchase_records:
+                        try:
+                            if str(rec.get("buyer_id")) == str(buyer_id_str) and int(
+                                rec.get("tick", 0)
+                            ) <= (tick - min_hold_ticks):
+                                qty += float(rec.get("quantity", 0.0))
+                        except Exception:
+                            continue
+                    return qty
+                # fallback to aggregate
+                if buyer_id_str == (
+                    getattr(world_state.bank, "id", None)
+                    if getattr(world_state, "bank", None)
+                    else None
+                ):
+                    return (
+                        float(
+                            getattr(world_state.bank, "bond_holdings", {}).get(
+                                bond_id, 0.0
+                            )
+                        )
+                        if getattr(world_state, "bank", None)
+                        else 0.0
+                    )
+                try:
+                    hid = int(buyer_id_str)
+                    return float(
+                        world_state.households[hid].bond_holdings.get(bond_id, 0.0)
+                    )
+                except Exception:
+                    return 0.0
+
+            # bank
             bank = getattr(world_state, "bank", None)
             if bank is not None:
-                qty = bank.bond_holdings.get(bond_id, 0.0)
+                qty = eligible_qty_for_maturity(bank.id)
                 if qty > 0:
                     amt = qty * payment_per_unit
                     holder_amounts[(models.AgentKind.BANK, bank.id)] = (qty, amt)
                     total_payment += amt
 
-            # collect household holders
+            # households
             for hid, hh in getattr(world_state, "households", {}).items():
-                qty = hh.bond_holdings.get(bond_id, 0.0)
+                qty = eligible_qty_for_maturity(str(hid))
                 if qty > 0:
                     amt = qty * payment_per_unit
                     holder_amounts[(models.AgentKind.HOUSEHOLD, str(hid))] = (qty, amt)

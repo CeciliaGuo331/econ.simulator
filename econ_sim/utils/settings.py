@@ -56,6 +56,10 @@ class FinanceMarketConfig(BaseModel):
         default=0.05,
         description="贷款利率（per-tick），即每个 tick 的利率。例如 0.05 表示每个 tick 增长 5%",
     )
+    # auction_mode: 'random' (doc-specified random allocation) or 'price' (price-priority)
+    auction_mode: str = Field(
+        default="random", description="Bond auction matching mode: 'random' or 'price'"
+    )
 
 
 class MarketConfig(BaseModel):

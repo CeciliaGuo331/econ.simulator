@@ -369,6 +369,163 @@ class ScriptRegistry:
                 self._user_index.setdefault(user_id, set())
                 self._loaded_users.add(user_id)
 
+    def _serialize_entity_state(
+        self,
+        metadata: ScriptMetadata,
+        world_state: WorldState,
+    ) -> Optional[dict[str, object]]:
+        """根据脚本元数据从 world_state 中提取并返回对应实体的序列化字典（若存在）。"""
+        kind = metadata.agent_kind
+        if kind is None:
+            return None
+        if kind is AgentKind.HOUSEHOLD:
+            try:
+                household_id = int(metadata.entity_id)
+            except Exception:
+                return None
+            entity = world_state.households.get(household_id)
+            if entity is None:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.FIRM:
+            entity = world_state.firm
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.BANK:
+            entity = world_state.bank
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.GOVERNMENT:
+            entity = world_state.government
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        if kind is AgentKind.CENTRAL_BANK:
+            entity = world_state.central_bank
+            if entity is None or entity.id != metadata.entity_id:
+                return None
+            return entity.model_dump(mode="json")
+        return None
+
+    def _execute_script(
+        self,
+        record: _ScriptRecord,
+        world_state: WorldState,
+        config: WorldConfig,
+        world_state_json: Optional[dict] = None,
+        config_json: Optional[dict] = None,
+    ) -> Optional[TickDecisionOverrides]:
+        """调用沙箱执行脚本并解析返回的决策覆盖。"""
+        entity_state = self._serialize_entity_state(record.metadata, world_state)
+        ws_full = (
+            world_state_json
+            if world_state_json is not None
+            else world_state.model_dump(mode="json")
+        )
+        cfg = config_json if config_json is not None else config.model_dump(mode="json")
+
+        pruned_ws = ws_full
+        if isinstance(ws_full, dict):
+            meta_keys = {
+                "tick": ws_full.get("tick"),
+                "day": ws_full.get("day"),
+                "features": ws_full.get("features"),
+                "macro": ws_full.get("macro"),
+            }
+            kind = record.metadata.agent_kind
+            if kind is AgentKind.HOUSEHOLD:
+                household_entity = ws_full.get("households", {}).get(
+                    str(record.metadata.entity_id)
+                )
+                if household_entity is None:
+                    pruned_ws = {**meta_keys, "households": {}}
+                else:
+                    pruned_ws = {
+                        **meta_keys,
+                        "households": {
+                            str(record.metadata.entity_id): household_entity
+                        },
+                    }
+            elif kind is AgentKind.FIRM:
+                firm = ws_full.get("firm")
+                if firm is None:
+                    pruned_ws = {**meta_keys, "firm": None}
+                else:
+                    if str(firm.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "firm": firm}
+                    else:
+                        pruned_ws = {**meta_keys, "firm": None}
+            elif kind is AgentKind.BANK:
+                bank = ws_full.get("bank")
+                if bank is None:
+                    pruned_ws = {**meta_keys, "bank": None}
+                else:
+                    if str(bank.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "bank": bank}
+                    else:
+                        pruned_ws = {**meta_keys, "bank": None}
+            elif kind is AgentKind.GOVERNMENT:
+                government = ws_full.get("government")
+                if government is None:
+                    pruned_ws = {**meta_keys, "government": None}
+                else:
+                    if str(government.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "government": government}
+                    else:
+                        pruned_ws = {**meta_keys, "government": None}
+            elif kind is AgentKind.CENTRAL_BANK:
+                central = ws_full.get("central_bank")
+                if central is None:
+                    pruned_ws = {**meta_keys, "central_bank": None}
+                else:
+                    if str(central.get("id")) == str(record.metadata.entity_id):
+                        pruned_ws = {**meta_keys, "central_bank": central}
+                    else:
+                        pruned_ws = {**meta_keys, "central_bank": None}
+
+        context = {
+            "world_state": pruned_ws,
+            "config": cfg,
+            "script_api_version": 1,
+            "agent_kind": record.metadata.agent_kind.value,
+            "entity_id": record.metadata.entity_id,
+            "entity_state": entity_state,
+        }
+
+        try:
+            result = execute_script(
+                record.code,
+                context,
+                timeout=self._sandbox_timeout,
+                script_id=record.metadata.script_id,
+                allowed_modules=self._allowed_modules,
+                llm_factory_path=self._llm_factory_path,
+            )
+        except ScriptSandboxTimeout as exc:
+            logger.exception("Sandbox timeout for script %s", record.metadata.script_id)
+            raise ScriptExecutionError(
+                f"脚本执行超时: {record.metadata.script_id}"
+            ) from exc
+        except ScriptSandboxError as exc:
+            logger.exception(
+                "Sandbox error for script %s: %s", record.metadata.script_id, exc
+            )
+            raise ScriptExecutionError(
+                f"脚本执行失败 ({record.metadata.script_id}): {exc}"
+            ) from exc
+
+        if result in (None, {}, []):
+            return None
+
+        try:
+            return TickDecisionOverrides.model_validate(result)
+        except ValidationError as exc:
+            raise ScriptExecutionError(
+                f"脚本返回结果解析失败 ({record.metadata.script_id}): {exc}"
+            ) from exc
+
     def _count_user_scripts_unlocked(self, simulation_id: str, user_id: str) -> int:
         script_ids = self._simulation_index.get(simulation_id, set())
         return sum(
@@ -470,7 +627,7 @@ class ScriptRegistry:
             entity_id = self._generate_placeholder_entity_id(agent_kind)
 
         entity_id = self._normalize_entity_id(entity_id)
-        self._validate_script(script_code)
+        _validate_script_module(script_code)
 
         if simulation_id is not None:
             self._validate_entity_binding(agent_kind, entity_id)
@@ -865,7 +1022,7 @@ class ScriptRegistry:
         # 基本校验
         entity_id = self._normalize_entity_id(entity_id)
         self._validate_entity_binding(agent_kind, entity_id)
-        self._validate_script(new_code)
+        _validate_script_module(new_code)
 
         # If old_script_id is provided and belongs to same user, prefer in-place
         # update to preserve script_id and any associated state.
@@ -988,7 +1145,7 @@ class ScriptRegistry:
         - 若提供 user_id，将校验拥有者；未提供则不校验（供管理员或内部流程使用）。
         """
 
-        self._validate_script(new_code)
+        _validate_script_module(new_code)
 
         async with self._registry_lock:
             record = self._records.get(script_id)
@@ -1218,6 +1375,12 @@ class ScriptRegistry:
                 status_updates.append((rec.metadata.script_id, timestamp, str(exc)))
                 continue
 
+            # validate that the script only touched fields it is allowed to
+            try:
+                _validate_override_for_script(rec, overrides)
+            except ScriptExecutionError:
+                # re-raise to be handled by outer loop as a script failure
+                raise
             combined = merge_tick_overrides(combined, overrides)
             if (
                 rec.metadata.last_failure_at is not None
@@ -1254,236 +1417,184 @@ class ScriptRegistry:
 
         return combined, failure_logs, failure_events
 
-    def _serialize_entity_state(
-        self,
-        metadata: ScriptMetadata,
-        world_state: any,
-    ) -> Optional[dict[str, object]]:
-        """根据脚本元数据从 world_state 中提取并返回对应实体的序列化字典（若存在）。"""
-        kind = metadata.agent_kind
-        if kind is AgentKind.HOUSEHOLD:
-            try:
-                household_id = int(metadata.entity_id)
-            except ValueError:
-                return None
-            # support both WorldState model and dict-like serialized state
-            if isinstance(world_state, dict):
-                entity = world_state.get("households", {}).get(str(household_id))
-                if entity is None:
-                    # try integer key
-                    entity = world_state.get("households", {}).get(household_id)
-                return entity
-            else:
-                entity = world_state.households.get(household_id)
-                if entity is None:
-                    return None
-                return entity.model_dump(mode="json")
-        if kind is AgentKind.FIRM:
-            if isinstance(world_state, dict):
-                entity = world_state.get("firm")
-                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
-                    return None
-                return entity
-            else:
-                entity = world_state.firm
-                if entity is None or entity.id != metadata.entity_id:
-                    return None
-                return entity.model_dump(mode="json")
-        if kind is AgentKind.BANK:
-            if isinstance(world_state, dict):
-                entity = world_state.get("bank")
-                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
-                    return None
-                return entity
-            else:
-                entity = world_state.bank
-                if entity is None or entity.id != metadata.entity_id:
-                    return None
-                return entity.model_dump(mode="json")
-        if kind is AgentKind.GOVERNMENT:
-            if isinstance(world_state, dict):
-                entity = world_state.get("government")
-                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
-                    return None
-                return entity
-            else:
-                entity = world_state.government
-                if entity is None or entity.id != metadata.entity_id:
-                    return None
-                return entity.model_dump(mode="json")
-        if kind is AgentKind.CENTRAL_BANK:
-            if isinstance(world_state, dict):
-                entity = world_state.get("central_bank")
-                if entity is None or str(entity.get("id")) != str(metadata.entity_id):
-                    return None
-                return entity
-            else:
-                entity = world_state.central_bank
-                if entity is None or entity.id != metadata.entity_id:
-                    return None
-                return entity.model_dump(mode="json")
-        return None
 
-    def _execute_script(
-        self,
-        record: _ScriptRecord,
-        world_state: WorldState,
-        config: WorldConfig,
-        world_state_json: Optional[dict] = None,
-        config_json: Optional[dict] = None,
-    ) -> Optional[TickDecisionOverrides]:
-        """调用脚本并解析返回的决策覆盖。"""
+def _validate_override_for_script(
+    rec: _ScriptRecord, overrides: Optional[TickDecisionOverrides]
+) -> None:
+    """Ensure a script only returns overrides for its own entity and agent kind.
 
-        entity_state = self._serialize_entity_state(record.metadata, world_state)
-        # 优先使用预先序列化的 JSON 字典以避免重复序列化
-        ws_full = (
-            world_state_json
-            if world_state_json is not None
-            else world_state.model_dump(mode="json")
-        )
-        cfg = config_json if config_json is not None else config.model_dump(mode="json")
-        # 为按实体脚本裁剪世界状态，从而最小化序列化/打包开销
-        pruned_ws = ws_full
-        if isinstance(ws_full, dict):
-            meta_keys = {
-                "tick": ws_full.get("tick"),
-                "day": ws_full.get("day"),
-                "features": ws_full.get("features"),
-                "macro": ws_full.get("macro"),
-            }
-            kind = record.metadata.agent_kind
-            if kind is AgentKind.HOUSEHOLD:
-                household_entity = ws_full.get("households", {}).get(
-                    str(record.metadata.entity_id)
+    Raises ScriptExecutionError on violation.
+    """
+    if overrides is None:
+        return
+
+    kind = rec.metadata.agent_kind
+    ent_id = rec.metadata.entity_id
+
+    # households: only allowed if script is a household and key equals its entity id
+    if kind is not None and kind is not getattr(
+        __import__("econ_sim.data_access.models", fromlist=["AgentKind"]).AgentKind,
+        "HOUSEHOLD",
+    ):
+        if getattr(overrides, "households", None):
+            raise ScriptExecutionError(
+                f"Script {rec.metadata.script_id} not allowed to override households"
+            )
+    else:
+        if getattr(overrides, "households", None):
+            keys = set(str(k) for k in overrides.households.keys())
+            if str(ent_id) not in keys or len(keys) != 1:
+                raise ScriptExecutionError(
+                    f"Household script {rec.metadata.script_id} may only override its own household id {ent_id}"
                 )
-                if household_entity is None:
-                    pruned_ws = {**meta_keys, "households": {}}
-                else:
-                    pruned_ws = {
-                        **meta_keys,
-                        "households": {
-                            str(record.metadata.entity_id): household_entity
-                        },
-                    }
-            elif kind is AgentKind.FIRM:
-                firm = ws_full.get("firm")
-                if firm is None:
-                    pruned_ws = {**meta_keys, "firm": None}
-                else:
-                    # only include firm if id matches
-                    if str(firm.get("id")) == str(record.metadata.entity_id):
-                        pruned_ws = {**meta_keys, "firm": firm}
-                    else:
-                        pruned_ws = {**meta_keys, "firm": None}
-            elif kind is AgentKind.BANK:
-                bank = ws_full.get("bank")
-                if bank is None:
-                    pruned_ws = {**meta_keys, "bank": None}
-                else:
-                    if str(bank.get("id")) == str(record.metadata.entity_id):
-                        pruned_ws = {**meta_keys, "bank": bank}
-                    else:
-                        pruned_ws = {**meta_keys, "bank": None}
-            elif kind is AgentKind.GOVERNMENT:
-                government = ws_full.get("government")
-                if government is None:
-                    pruned_ws = {**meta_keys, "government": None}
-                else:
-                    if str(government.get("id")) == str(record.metadata.entity_id):
-                        pruned_ws = {**meta_keys, "government": government}
-                    else:
-                        pruned_ws = {**meta_keys, "government": None}
-            elif kind is AgentKind.CENTRAL_BANK:
-                central = ws_full.get("central_bank")
-                if central is None:
-                    pruned_ws = {**meta_keys, "central_bank": None}
-                else:
-                    if str(central.get("id")) == str(record.metadata.entity_id):
-                        pruned_ws = {**meta_keys, "central_bank": central}
-                    else:
-                        pruned_ws = {**meta_keys, "central_bank": None}
-        context = {
-            "world_state": pruned_ws,
-            "config": cfg,
-            "script_api_version": 1,
-            "agent_kind": record.metadata.agent_kind.value,
-            "entity_id": record.metadata.entity_id,
-            "entity_state": entity_state,
-        }
 
-        try:
-            snippet = (
-                (record.code[:200] + "...") if len(record.code) > 200 else record.code
-            )
-            logger.debug(
-                "Executing script %s (code_snippet=%r) with timeout=%s",
-                record.metadata.script_id,
-                snippet,
-                self._sandbox_timeout,
-            )
-            result = execute_script(
-                record.code,
-                context,
-                timeout=self._sandbox_timeout,
-                script_id=record.metadata.script_id,
-                allowed_modules=self._allowed_modules,
-                llm_factory_path=self._llm_factory_path,
-            )
-        except ScriptSandboxTimeout as exc:
-            logger.exception("Sandbox timeout for script %s", record.metadata.script_id)
-            raise ScriptExecutionError(
-                f"脚本执行超时: {record.metadata.script_id}"
-            ) from exc
-        except ScriptSandboxError as exc:
-            logger.exception(
-                "Sandbox error for script %s: %s", record.metadata.script_id, exc
-            )
-            raise ScriptExecutionError(
-                f"脚本执行失败 ({record.metadata.script_id}): {exc}"
-            ) from exc
+    # singleton agents: firm, bank, government, central_bank
+    if rec.metadata.agent_kind is not None:
+        from econ_sim.data_access.models import AgentKind as AK
 
-        if result in (None, {}, []):
-            return None
+        if rec.metadata.agent_kind is AK.FIRM:
+            if (
+                overrides.bank is not None
+                or overrides.government is not None
+                or overrides.central_bank is not None
+            ):
+                raise ScriptExecutionError(
+                    f"Firm script {rec.metadata.script_id} not allowed to override other agent kinds"
+                )
+        if rec.metadata.agent_kind is AK.BANK:
+            if (
+                overrides.firm is not None
+                or overrides.government is not None
+                or overrides.central_bank is not None
+            ):
+                raise ScriptExecutionError(
+                    f"Bank script {rec.metadata.script_id} not allowed to override other agent kinds"
+                )
+        if rec.metadata.agent_kind is AK.GOVERNMENT:
+            if (
+                overrides.firm is not None
+                or overrides.bank is not None
+                or overrides.central_bank is not None
+            ):
+                raise ScriptExecutionError(
+                    f"Government script {rec.metadata.script_id} not allowed to override other agent kinds"
+                )
+        if rec.metadata.agent_kind is AK.CENTRAL_BANK:
+            if (
+                overrides.firm is not None
+                or overrides.bank is not None
+                or overrides.government is not None
+            ):
+                raise ScriptExecutionError(
+                    f"Central bank script {rec.metadata.script_id} not allowed to override other agent kinds"
+                )
 
-        try:
-            return TickDecisionOverrides.model_validate(result)
-        except ValidationError as exc:
-            raise ScriptExecutionError(
-                f"脚本返回结果解析失败 ({record.metadata.script_id}): {exc}"
-            ) from exc
+    # bond_bids: ensure buyer_id and buyer_kind match the script's entity
+    bids = getattr(overrides, "bond_bids", None)
+    if bids:
+        for bid in bids:
+            try:
+                bkind = bid.get("buyer_kind")
+                bid_id = bid.get("buyer_id")
+            except Exception:
+                raise ScriptExecutionError(
+                    f"Invalid bond bid format from script {rec.metadata.script_id}"
+                )
+            if str(bkind) != rec.metadata.agent_kind.value:
+                raise ScriptExecutionError(
+                    f"Script {rec.metadata.script_id} may only submit bids for its own agent kind"
+                )
+            if str(bid_id) != str(rec.metadata.entity_id):
+                raise ScriptExecutionError(
+                    f"Script {rec.metadata.script_id} may only submit bids using its own entity id {rec.metadata.entity_id}"
+                )
 
-    def _validate_script(self, script_code: str) -> None:
-        try:
-            tree = ast.parse(script_code)
-        except SyntaxError as exc:  # pragma: no cover - 语法检查
-            raise ScriptExecutionError(f"脚本语法错误: {exc}") from exc
+    # issuance_plan: only government scripts may propose an issuance_plan and it must
+    # only contain allowed keys (volume, min_price) and not attempt to specify buyers
+    try:
+        gov_override = getattr(overrides, "government", None)
+    except Exception:
+        gov_override = None
+    if gov_override is not None:
+        plan = getattr(gov_override, "issuance_plan", None)
+        if plan is not None:
+            # must be a government script
+            from econ_sim.data_access.models import AgentKind as AK
 
-        has_entry = any(
-            isinstance(node, ast.FunctionDef) and node.name == "generate_decisions"
-            for node in tree.body
+            if rec.metadata.agent_kind is not AK.GOVERNMENT:
+                raise ScriptExecutionError(
+                    f"Only government scripts may propose an issuance_plan (script {rec.metadata.script_id})"
+                )
+            # plan must be a dict-like structure with allowed keys
+            if not isinstance(plan, dict):
+                raise ScriptExecutionError(
+                    f"issuance_plan must be a dict with keys 'volume' and optional 'min_price'"
+                )
+            allowed_keys = {"volume", "min_price"}
+            extra = set(plan.keys()) - allowed_keys
+            if extra:
+                raise ScriptExecutionError(
+                    f"issuance_plan contains disallowed keys: {sorted(list(extra))}"
+                )
+            # validate types/values
+            try:
+                vol = float(plan.get("volume"))
+            except Exception:
+                raise ScriptExecutionError(
+                    f"issuance_plan.volume must be a number (script {rec.metadata.script_id})"
+                )
+            if vol <= 0:
+                raise ScriptExecutionError(
+                    f"issuance_plan.volume must be positive (script {rec.metadata.script_id})"
+                )
+            if "min_price" in plan and plan.get("min_price") is not None:
+                try:
+                    mp = float(plan.get("min_price"))
+                except Exception:
+                    raise ScriptExecutionError(
+                        f"issuance_plan.min_price must be numeric if provided (script {rec.metadata.script_id})"
+                    )
+
+    return None
+
+
+def _validate_script_module(script_code: str) -> None:
+    """Module-level script validator used where an instance method may not be bound.
+
+    Mirrors the checks performed by ScriptRegistry._validate_script but operates
+    without access to instance state.
+    """
+    try:
+        tree = ast.parse(script_code)
+    except SyntaxError as exc:  # pragma: no cover - 语法检查
+        raise ScriptExecutionError(f"脚本语法错误: {exc}") from exc
+
+    has_entry = any(
+        isinstance(node, ast.FunctionDef) and node.name == "generate_decisions"
+        for node in tree.body
+    )
+
+    if not has_entry:
+        raise ScriptExecutionError(
+            "脚本中必须定义可调用的 generate_decisions(context) 函数"
         )
 
-        if not has_entry:
-            raise ScriptExecutionError(
-                "脚本中必须定义可调用的 generate_decisions(context) 函数"
-            )
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if not self._is_module_allowed(alias.name):
-                        raise ScriptExecutionError(f"禁止导入模块: {alias.name}")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module is None:
-                    raise ScriptExecutionError("禁止使用相对导入")
-                if not self._is_module_allowed(node.module):
-                    raise ScriptExecutionError(f"禁止导入模块: {node.module}")
-
-    def _is_module_allowed(self, module_name: str) -> bool:
+    def is_module_allowed(module_name: str) -> bool:
         return any(
             module_name == allowed or module_name.startswith(f"{allowed}.")
-            for allowed in self._allowed_modules
+            for allowed in ALLOWED_MODULES
         )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if not is_module_allowed(alias.name):
+                    raise ScriptExecutionError(f"禁止导入模块: {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module is None:
+                raise ScriptExecutionError("禁止使用相对导入")
+            if not is_module_allowed(node.module):
+                raise ScriptExecutionError(f"禁止导入模块: {node.module}")
 
 
 __all__ = [
