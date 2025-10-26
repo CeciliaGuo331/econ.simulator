@@ -70,12 +70,10 @@ def generate_decisions(context: Context) -> DecisionOverrides:
 
     productivity = max(avg_worker_prod, 0.1)
     required_workers = int(math.ceil(planned_production / max(1e-6, productivity)))
-    # hiring and wage offers only updated on daily decision ticks
-    hiring_demand = None
-    wage_offer = None
-    if is_daily:
-        hiring_demand = max(0, required_workers - len(firm.get("employees", [])))
-        wage_offer = round(firm.get("wage_offer", 80.0) * wage_adjustment, 2)
+    # hiring and wage offers: provide sensible defaults even on non-daily
+    # ticks so fallback decision objects validate consistently.
+    hiring_demand = max(0, required_workers - len(firm.get("employees", [])))
+    wage_offer = round(firm.get("wage_offer", 80.0) * wage_adjustment, 2)
 
     # price and planned production are updated each tick; hiring/wage only on daily
     firm_fields: dict = {

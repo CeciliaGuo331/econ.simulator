@@ -39,8 +39,21 @@ def generate_decisions(context: Context) -> DecisionOverrides:
     wage_income = entity_state.get("wage_income", 0.0)
     cash = balance_sheet.get("cash", 0.0)
     subsistence = 40.0
+    # approximate lifetime-utility-aware consumption: simple PIH-style rule
+    # consumption = (1 - beta) * (liquid wealth + expected income)
+    cfg = context.get("config", {}) or {}
+    policies = cfg.get("policies", {})
+    beta = float(policies.get("discount_factor_per_tick", 0.999))
+    deposits = float(balance_sheet.get("deposits", 0.0))
+    expected_income = float(wage_income)
+    liquid_wealth = float(cash) + deposits
+    pih_consumption = max(0.0, (1.0 - beta) * (liquid_wealth + expected_income))
     discretionary = max(0.0, wage_income * (1 - precaution) + cash * 0.02)
-    consumption_budget = max(subsistence, discretionary) * inflation_factor
+    # blend baseline discretionary rule with PIH-derived consumption for stability
+    consumption_budget = (
+        max(subsistence, (pih_consumption * 0.6 + discretionary * 0.4))
+        * inflation_factor
+    )
     employment_status = str(entity_state.get("employment_status", "")).lower()
     # labor / hiring decisions are only meaningful on daily decision ticks
     labor_supply = None
@@ -65,13 +78,18 @@ def generate_decisions(context: Context) -> DecisionOverrides:
             is_studying = True
             edu_payment = round(proposed, 2)
 
-    # Build household override; omit labor_supply when not daily so defaults persist
+    # If the household is studying they should not supply labor this tick
+    # (enforce that studying households cannot look for work / supply labor).
+    if is_studying:
+        labor_supply = 0.0
+
+    # Build household override; always include labor_supply so fallback
+    # consumers return a complete HouseholdDecision structure for the orchestrator.
     household_fields: dict = {
         "consumption_budget": round(consumption_budget, 2),
         "savings_rate": round(precaution, 3),
+        "labor_supply": labor_supply if labor_supply is not None else 1.0,
     }
-    if labor_supply is not None:
-        household_fields["labor_supply"] = labor_supply
     # education overrides (only legal on daily tick)
     if is_studying:
         household_fields["is_studying"] = True

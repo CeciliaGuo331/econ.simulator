@@ -114,6 +114,25 @@ class PolicyConfig(BaseModel):
         default=0.2,
         description="Fraction of households initially marked as studying when a simulation is created",
     )
+    # utility calculation parameters
+    discount_factor_per_tick: float = Field(
+        default=0.999,
+        description=(
+            "Per-tick discount factor (beta) used to discount instantaneous utility back to tick 1."
+        ),
+    )
+    crra_gamma: float = Field(
+        default=1.0,
+        description=(
+            "CRRA risk aversion parameter gamma. gamma=1 implies log utility."
+        ),
+    )
+    utility_epsilon_for_log: float = Field(
+        default=1e-8,
+        description=(
+            "Small epsilon added to zero consumption when computing log utility to avoid -inf."
+        ),
+    )
 
 
 class WorldConfig(BaseModel):

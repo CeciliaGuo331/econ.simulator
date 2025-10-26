@@ -1096,6 +1096,17 @@ def _execute_market_logic(
     except Exception:
         pass
 
+    # 4.1) utility accumulation: compute instantaneous utility from realized
+    # consumption (written by goods_market) and accumulate discounted lifetime utility
+    try:
+        from ..logic_modules import utility
+
+        u_updates, u_log = utility.accumulate_utility(world_state, tick=tick, day=day)
+        updates.extend(u_updates)
+        logs.append(u_log)
+    except Exception:
+        pass
+
     # 4.5) education processing: apply education payments and update education_level
     try:
         from ..logic_modules import education

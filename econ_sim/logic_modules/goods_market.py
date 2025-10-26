@@ -111,12 +111,12 @@ def clear_goods_market_new(
         )
         # attach last_consumption and trade_success into household update if present
         if t_updates:
-            # find household update and augment it
+            # find household update and augment it by setting the top-level
+            # `last_consumption` field (not nesting inside balance_sheet).
             for up in t_updates:
                 if up.scope is AgentKind.HOUSEHOLD and str(up.agent_id) == str(hid):
-                    bs = up.changes.get("balance_sheet") or {}
-                    bs["last_consumption"] = fill
-                    up.changes["balance_sheet"] = bs
+                    # set top-level last_consumption so HouseholdState is updated
+                    up.changes["last_consumption"] = fill
             updates.extend(t_updates)
         else:
             # fallback to previous behavior if finance market didn't return updates

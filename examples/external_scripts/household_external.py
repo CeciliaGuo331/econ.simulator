@@ -20,8 +20,14 @@ def generate_decisions(context: dict) -> dict:
     cash = balance.get("cash", 0.0)
     wage = entity_state.get("wage_income", 0.0)
 
-    # conservative consumption rule: spend MPC of wage and small fraction of cash
-    consumption = round(max(1.0, wage * 0.6 + cash * 0.02), 2)
+    # lifetime-utility-aware approximate consumption: PIH-style fraction of wealth
+    cfg = context.get("config", {}) or {}
+    policies = cfg.get("policies", {})
+    beta = float(policies.get("discount_factor_per_tick", 0.999))
+    deposits = float(balance.get("deposits", 0.0))
+    expected_income = float(wage)
+    liquid_wealth = float(cash) + deposits
+    consumption = round(max(1.0, (1.0 - beta) * (liquid_wealth + expected_income)), 2)
     savings_rate = round(clamp(0.15, 0.01, 0.6), 3)
 
     builder = OverridesBuilder()

@@ -59,6 +59,10 @@ class HouseholdState(BaseModel):
     # education state
     education_level: float = 0.5
     is_studying: bool = False
+    # cumulative (discounted) lifetime utility observed by the household
+    lifetime_utility: float = 0.0
+    # last tick's instantaneous utility (for observation/debug)
+    last_instant_utility: Optional[float] = None
 
     @property
     def productivity(self) -> float:

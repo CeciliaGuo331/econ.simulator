@@ -46,11 +46,21 @@ def resolve_labor_market_new(
     # Build candidate pool: households that signaled labor_supply > 0
     candidates = []  # list of (hid, productivity, reservation_wage)
     for hid, h_dec in decisions.households.items():
+        # skip if signaled no labor supply
         if getattr(h_dec, "labor_supply", 0.0) <= 0.0:
             continue
         h = world_state.households[hid]
-        # skip households who are studying for the current day
-        if getattr(h, "is_studying", False):
+        # skip households who are studying for the current day.
+        # Check both the current world_state and the incoming decision: a
+        # household may set `is_studying` in its decision this tick, and the
+        # engine must respect that even before state updates are persisted.
+        studying_in_state = getattr(h, "is_studying", False)
+        studying_in_decision = getattr(h_dec, "is_studying", None)
+        if studying_in_decision is None:
+            is_studying = studying_in_state
+        else:
+            is_studying = bool(studying_in_decision)
+        if is_studying:
             continue
         # HouseholdState exposes `skill` (not `productivity`) in the data model
         candidates.append((hid, float(h.skill), float(h.reservation_wage)))
