@@ -31,18 +31,37 @@ def generate_decisions(context: Context) -> DecisionOverrides:
     desired_inventory = household_count * 1.5
     inventory_gap = desired_inventory - inventory
 
-    # Production: Cobb-Douglas Y = technology * K^alpha * L^(1-alpha)
+    # Planned production is a firm decision driven by demand; backend/production
+    # module should compute realized output from inputs (K, L, technology).
+    # Here we compute planned_production from demand while deriving the
+    # labour needed to meet that plan using the Cobb-Douglas inverse.
     alpha = 0.33
     capital_stock = float(firm.get("capital_stock", 150.0))
     technology = float(firm.get("technology", 1.0))
-    # approximate effective labor as number_of_employees * average productivity
     employees = firm.get("employees", []) or []
     avg_worker_prod = float(firm.get("productivity", 1.0))
-    labor_input = max(1.0, len(employees) * avg_worker_prod)
-    output = technology * (capital_stock**alpha) * (labor_input ** (1.0 - alpha))
 
-    # planned_production is the Cobb-Douglas output plus an inventory gap adjustment
-    planned_production = max(0.0, output + inventory_gap)
+    # use demand proxy to set a production target (decision variable)
+    planned_from_demand = max(0.0, demand_proxy * 0.5 + inventory_gap)
+
+    # compute theoretical labour (effective units) required to achieve planned output
+    # using inverse of Cobb-Douglas: L_required = (planned / (tech * K^alpha))^(1/(1-alpha))
+    denom = max(1e-9, technology * (capital_stock**alpha))
+    try:
+        labour_required_effective = (planned_from_demand / denom) ** (
+            1.0 / (1.0 - alpha)
+        )
+    except Exception:
+        labour_required_effective = 0.0
+
+    # convert effective labour to headcount using average worker productivity
+    required_workers = int(
+        math.ceil(labour_required_effective / max(1e-6, avg_worker_prod))
+    )
+
+    # planned_production remains a decision (target); actual production should be
+    # computed by the production/market engine from K, labor_assignment and tech.
+    planned_production = planned_from_demand
 
     price_adjustment = clamp(
         1.0 + inventory_gap / max(desired_inventory, 1.0) * 0.1, 0.9, 1.1

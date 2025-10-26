@@ -981,6 +981,18 @@ def _execute_market_logic(
     except Exception:
         pass
 
+    # 3.5) production execution: compute realized output from K/L/tech
+    try:
+        from ..logic_modules import firm_production
+
+        p_updates, p_log = firm_production.process_production(
+            world_state, decisions, tick=tick, day=day
+        )
+        updates.extend(p_updates)
+        logs.append(p_log)
+    except Exception:
+        pass
+
     # 4) goods market
     try:
         from ..logic_modules import goods_market
