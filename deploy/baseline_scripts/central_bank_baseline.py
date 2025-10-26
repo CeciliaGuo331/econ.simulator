@@ -22,18 +22,22 @@ def generate_decisions(context: Context) -> DecisionOverrides:
         "unemployment_target", 0.05
     )
 
-    policy_rate = clamp(
-        cb.get("base_rate", 0.02) + 0.8 * inflation_gap - 0.4 * unemployment_gap,
-        0.0,
-        0.25,
+    # Taylor-style policy rate with smoothing toward previous rate
+    taylor_rate = (
+        cb.get("base_rate", 0.02) + 1.5 * inflation_gap - 0.5 * unemployment_gap
     )
-    reserve_ratio = clamp(
-        cb.get("reserve_ratio", 0.1) + 0.15 * unemployment_gap, 0.05, 0.35
-    )
+    taylor_rate = clamp(taylor_rate, 0.0, 0.4)
 
-    builder.central_bank(
-        policy_rate=round(policy_rate, 4),
-        reserve_ratio=round(reserve_ratio, 4),
-    )
+    prev_rate = cb.get("base_rate", 0.02)
+    smoothing = 0.7
+    policy_rate = round(smoothing * prev_rate + (1 - smoothing) * taylor_rate, 4)
+
+    # reserve ratio adjusts to credit growth: require credit_growth from macro if present
+    credit_growth = macro.get("credit_growth", None)
+    reserve_ratio = cb.get("reserve_ratio", 0.1)
+    if credit_growth is not None:
+        reserve_ratio = clamp(reserve_ratio + 0.1 * (credit_growth - 0.03), 0.05, 0.2)
+
+    builder.central_bank(policy_rate=policy_rate, reserve_ratio=round(reserve_ratio, 4))
 
     return builder.build()
