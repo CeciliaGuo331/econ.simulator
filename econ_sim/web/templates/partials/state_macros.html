@@ -99,9 +99,10 @@
                         {%- set bh = (info.bond_holdings if info.bond_holdings is defined else (info["bond_holdings"] if "bond_holdings" in info else {})) -%}
                         {%- if bh and bh | length > 0 -%}
                             <small>
-                            {%- for bid, qty in bh.items() -%}
-                                {{ bid }}:{{ "{:.2f}".format(qty) }}{% if not loop.last %}, {% endif %}
-                            {%- endfor -%}
+                                {%- for bid, qty in bh.items() -%}
+                                    {{ bid }}:{{ "{:.2f}".format(qty) }}
+                                    {% if not loop.last %},{% endif %}
+                                {%- endfor -%}
                             </small>
                         {%- else -%}
                             <span class="empty">—</span>

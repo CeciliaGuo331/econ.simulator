@@ -1523,8 +1523,55 @@ def _execute_market_logic(
 
     # 5) government transfers
     try:
-        from ..logic_modules import government_transfers
+        from ..logic_modules import government_transfers, government_financial
 
+        # First: if the government explicitly proposed an issuance_plan in its
+        # decision, perform a marketized issuance so submitted bond_bids can
+        # participate. This enables proactive issuance (not only debt-funded
+        # transfers) when a government script wants to sell bonds.
+        try:
+            gov_plan = getattr(decisions.government, "issuance_plan", None)
+            if gov_plan is not None and isinstance(gov_plan, dict):
+                cfg = config
+                face_value = 1.0
+                coupon_rate = float(cfg.policies.default_bond_coupon_rate)
+                maturity_tick = world_state.tick + int(
+                    cfg.policies.default_bond_maturity
+                )
+                volume = float(gov_plan.get("volume", 0.0)) or 0.0
+                # if no explicit volume provided, default to min(available cash, small amount)
+                if volume <= 0:
+                    # default conservative issuance size
+                    volume = float(
+                        min(100.0, max(0.0, world_state.government.balance_sheet.cash))
+                    )
+
+                bids = getattr(decisions, "bond_bids", None) or []
+                issuance_res = government_financial.issue_bonds(
+                    world_state,
+                    face_value=face_value,
+                    coupon_rate=coupon_rate,
+                    maturity_tick=maturity_tick,
+                    volume=volume,
+                    bids=bids,
+                    tick=tick,
+                    day=day,
+                    issuance_plan=gov_plan,
+                )
+                # integrate issuance results into updates/ledgers/logs
+                for up in issuance_res.get("updates", []):
+                    updates.append(up)
+                for le in issuance_res.get("ledgers", []):
+                    ledgers.append(le)
+                a_log = issuance_res.get("auction_log") or issuance_res.get("log")
+                if a_log is not None:
+                    logs.append(a_log)
+        except Exception:
+            # best-effort: do not abort the tick if issuance fails
+            logger.debug("government proactive issuance failed", exc_info=True)
+
+        # Then run normal transfer/means-tested/unemployment flows which may
+        # themselves trigger marketized issuance when funding shortfalls occur.
         u_updates, u_ledgers, u_log = government_transfers.unemployment_benefit(
             world_state,
             decisions.government,

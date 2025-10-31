@@ -357,9 +357,15 @@
                                                 <tr>
                                                     <td>{{ bid }}</td>
                                                     <td>{{ inst.face_value if inst.face_value is defined else inst["face_value"] if "face_value" in inst else "—" }}</td>
-                                                    <td>{{ inst.coupon_rate if inst.coupon_rate is defined else inst["coupon_rate"] if "coupon_rate" in inst else "—" }}</td>
-                                                    <td>{{ inst.maturity_tick if inst.maturity_tick is defined else inst["maturity_tick"] if "maturity_tick" in inst else "—" }}</td>
-                                                    <td>{{ inst.outstanding if inst.outstanding is defined else inst["outstanding"] if "outstanding" in inst else "—" }}</td>
+                                                    <td>
+                                                        {{ inst.coupon_rate if inst.coupon_rate is defined else inst["coupon_rate"] if "coupon_rate" in inst else "—" }}
+                                                    </td>
+                                                    <td>
+                                                        {{ inst.maturity_tick if inst.maturity_tick is defined else inst["maturity_tick"] if "maturity_tick" in inst else "—" }}
+                                                    </td>
+                                                    <td>
+                                                        {{ inst.outstanding if inst.outstanding is defined else inst["outstanding"] if "outstanding" in inst else "—" }}
+                                                    </td>
                                                 </tr>
                                             {% endfor %}
                                         </tbody>
