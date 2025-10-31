@@ -40,6 +40,7 @@ from ..script_engine.notifications import (
 )
 from ..script_engine.registry import ScriptExecutionError, ScriptFailureEvent
 from typing import TYPE_CHECKING
+from pydantic import BaseModel
 
 if TYPE_CHECKING:  # pragma: no cover - only for type checking to avoid runtime cycle
     from ..script_engine.registry import ScriptMetadata
@@ -1020,14 +1021,51 @@ def _execute_market_logic(
                             continue
                         for k, v in changes.items():
                             try:
-                                setattr(hh, k, v)
+                                existing = getattr(hh, k, None)
+                                # if existing is a pydantic model and new value is a dict,
+                                # validate/convert it back to the model to preserve attribute access
+                                if isinstance(existing, BaseModel) and isinstance(
+                                    v, dict
+                                ):
+                                    try:
+                                        setattr(hh, k, existing.model_validate(v))
+                                    except Exception:
+                                        # fallback: try model_copy(update=...)
+                                        try:
+                                            setattr(
+                                                hh, k, existing.model_copy(update=v)
+                                            )
+                                        except Exception:
+                                            setattr(hh, k, v)
+                                else:
+                                    setattr(hh, k, v)
                             except Exception:
                                 # best-effort: ignore incompatible fields
                                 pass
                     elif scope == AgentKind.FIRM and world_state.firm is not None:
                         for k, v in changes.items():
                             try:
-                                setattr(world_state.firm, k, v)
+                                existing = getattr(world_state.firm, k, None)
+                                if isinstance(existing, BaseModel) and isinstance(
+                                    v, dict
+                                ):
+                                    try:
+                                        setattr(
+                                            world_state.firm,
+                                            k,
+                                            existing.model_validate(v),
+                                        )
+                                    except Exception:
+                                        try:
+                                            setattr(
+                                                world_state.firm,
+                                                k,
+                                                existing.model_copy(update=v),
+                                            )
+                                        except Exception:
+                                            setattr(world_state.firm, k, v)
+                                else:
+                                    setattr(world_state.firm, k, v)
                             except Exception:
                                 pass
                     elif (
@@ -1177,13 +1215,47 @@ def _execute_market_logic(
                             continue
                         for k, v in changes.items():
                             try:
-                                setattr(hh, k, v)
+                                existing = getattr(hh, k, None)
+                                if isinstance(existing, BaseModel) and isinstance(
+                                    v, dict
+                                ):
+                                    try:
+                                        setattr(hh, k, existing.model_validate(v))
+                                    except Exception:
+                                        try:
+                                            setattr(
+                                                hh, k, existing.model_copy(update=v)
+                                            )
+                                        except Exception:
+                                            setattr(hh, k, v)
+                                else:
+                                    setattr(hh, k, v)
                             except Exception:
                                 pass
                     elif scope == AgentKind.FIRM and world_state.firm is not None:
                         for k, v in changes.items():
                             try:
-                                setattr(world_state.firm, k, v)
+                                existing = getattr(world_state.firm, k, None)
+                                if isinstance(existing, BaseModel) and isinstance(
+                                    v, dict
+                                ):
+                                    try:
+                                        setattr(
+                                            world_state.firm,
+                                            k,
+                                            existing.model_validate(v),
+                                        )
+                                    except Exception:
+                                        try:
+                                            setattr(
+                                                world_state.firm,
+                                                k,
+                                                existing.model_copy(update=v),
+                                            )
+                                        except Exception:
+                                            setattr(world_state.firm, k, v)
+                                else:
+                                    setattr(world_state.firm, k, v)
                             except Exception:
                                 pass
                     elif (
@@ -1192,7 +1264,27 @@ def _execute_market_logic(
                     ):
                         for k, v in changes.items():
                             try:
-                                setattr(world_state.government, k, v)
+                                existing = getattr(world_state.government, k, None)
+                                if isinstance(existing, BaseModel) and isinstance(
+                                    v, dict
+                                ):
+                                    try:
+                                        setattr(
+                                            world_state.government,
+                                            k,
+                                            existing.model_validate(v),
+                                        )
+                                    except Exception:
+                                        try:
+                                            setattr(
+                                                world_state.government,
+                                                k,
+                                                existing.model_copy(update=v),
+                                            )
+                                        except Exception:
+                                            setattr(world_state.government, k, v)
+                                else:
+                                    setattr(world_state.government, k, v)
                             except Exception:
                                 pass
                 except Exception:
@@ -1233,9 +1325,26 @@ def _execute_market_logic(
     try:
         from ..logic_modules import goods_market
 
-        g_updates, g_log = goods_market.clear_goods_market_new(world_state, decisions)
-        updates.extend(g_updates)
-        logs.append(g_log)
+        try:
+            g_updates, g_log = goods_market.clear_goods_market_new(
+                world_state, decisions
+            )
+            updates.extend(g_updates)
+            logs.append(g_log)
+        except (
+            Exception
+        ) as exc:  # capture and record diagnostic log instead of silently swallowing
+            import traceback
+
+            tb = traceback.format_exc()
+            logs.append(
+                TickLogEntry(
+                    tick=world_state.tick,
+                    day=world_state.day,
+                    message="goods_market_failed",
+                    context={"error": str(exc), "traceback": tb},
+                )
+            )
     except Exception:
         pass
 

@@ -1,6 +1,7 @@
 """示例家户脚本（仅使用允许读取的字段）。"""
 
 from econ_sim.script_engine.user_api import OverridesBuilder, clamp
+import random
 
 
 def generate_decisions(context: dict) -> dict:
@@ -17,30 +18,39 @@ def generate_decisions(context: dict) -> dict:
     deposits = float(bs.get("deposits", 0.0))
     wage = float(ent.get("wage_income", 0.0))
 
-    # 简单 PIH 风格消费（只使用允许字段）
-    cfg = context.get("config", {}) or {}
-    beta = float(cfg.get("policies", {}).get("discount_factor_per_tick", 0.999))
+    # randomized decisions: consumption, savings_rate, labor_supply, education
     liquid = cash + deposits
-    consumption = round(max(1.0, (1.0 - beta) * (liquid + wage)), 2)
-    savings_rate = round(clamp(0.15, 0.01, 0.6), 3)
+    max_affordable = max(1.0, liquid + wage)
+    consumption_min = 1.0
+    consumption_max = max(1.0, 0.5 * max_affordable)
+    consumption = round(random.uniform(consumption_min, consumption_max), 2)
+
+    savings_rate = round(random.uniform(0.0, 0.8), 3)
 
     features = context.get("world_state", {}).get("features", {}) or {}
     is_daily = bool(features.get("is_daily_decision_tick"))
 
-    builder = OverridesBuilder()
-    if is_daily:
-        pay = round(min(2.0, wage * 0.05 + cash * 0.01), 2)
-        builder.household(
-            int(entity_id),
-            consumption_budget=consumption,
-            savings_rate=savings_rate,
-            labor_supply=1.0,
-            is_studying=pay > 0,
-            education_payment=pay,
-        )
-    else:
-        builder.household(
-            int(entity_id), consumption_budget=consumption, savings_rate=savings_rate
-        )
+    is_studying = False
+    education_payment = 0.0
+    if is_daily and random.random() < 0.2:
+        is_studying = True
+        education_payment = round(min(2.0, max(0.0, cash * 0.1)), 2)
 
+    if is_studying:
+        labor_supply = 0.0
+    else:
+        labor_supply = 1.0 if random.random() < 0.7 else 0.0
+
+    builder = OverridesBuilder()
+    builder.household(
+        int(entity_id),
+        consumption_budget=consumption,
+        savings_rate=savings_rate,
+        labor_supply=labor_supply,
+        **(
+            {"is_studying": True, "education_payment": education_payment}
+            if is_studying
+            else {}
+        ),
+    )
     return builder.build()

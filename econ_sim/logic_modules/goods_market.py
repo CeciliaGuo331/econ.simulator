@@ -45,14 +45,39 @@ def clear_goods_market_new(
     # Build buy orders: each household may optionally include a 'bid_price' field in decision
     # If not present, default bid_price = ask_price. Quantity = consumption_budget / bid_price
     buy_orders: List[tuple[int, float, float]] = []  # (hid, qty, bid_price)
+    # read subsistence consumption from config and ensure households' budgets
+    # are at least enough to purchase subsistence_consumption units at their bid_price.
+    try:
+        cfg = get_world_config()
+        subsistence = float(cfg.markets.goods.subsistence_consumption)
+    except Exception:
+        subsistence = 1.0
+
+    clipped_budgets: dict[int, tuple[float, float]] = {}
     for hid, h_dec in decisions.households.items():
         bid_price = getattr(h_dec, "bid_price", None)
         if bid_price is None:
             bid_price = ask_price
+        bid_price = float(bid_price)
+
+        # compute minimum budget required to secure subsistence consumption
+        min_budget = subsistence * bid_price
+
+        # original budget (may be None or invalid)
+        try:
+            orig_budget = float(getattr(h_dec, "consumption_budget", 0.0) or 0.0)
+        except Exception:
+            orig_budget = 0.0
+
+        # clip up to at least min_budget to avoid zero consumption -> negative utility
+        budget = max(orig_budget, min_budget)
+        if budget != orig_budget:
+            clipped_budgets[hid] = (orig_budget, budget)
+
         # avoid division by zero
         qty = 0.0
         try:
-            qty = float(max(0.0, h_dec.consumption_budget / bid_price))
+            qty = float(max(0.0, budget / bid_price))
         except Exception:
             qty = 0.0
         buy_orders.append((hid, qty, float(bid_price)))
@@ -117,6 +142,16 @@ def clear_goods_market_new(
                 if up.scope is AgentKind.HOUSEHOLD and str(up.agent_id) == str(hid):
                     # set top-level last_consumption so HouseholdState is updated
                     up.changes["last_consumption"] = fill
+                    # Also update in-memory world_state so downstream modules
+                    # (e.g. utility.accumulate_utility) that read the live
+                    # world_state observe the delivered consumption.
+                    try:
+                        # safe in-place update; households keyed by int
+                        if hid in world_state.households:
+                            world_state.households[hid].last_consumption = float(fill)
+                    except Exception:
+                        # best-effort: do not fail market clearing if in-memory write fails
+                        pass
             updates.extend(t_updates)
         else:
             # fallback to previous behavior if finance market didn't return updates
@@ -175,6 +210,9 @@ def clear_goods_market_new(
         context={
             "goods_sold": float(goods_sold),
             "consumption_value": float(consumption_value),
+            "clipped_budgets": json.dumps(
+                {str(k): [v[0], v[1]] for k, v in clipped_budgets.items()}
+            ),
             "trade_success": json.dumps(trade_success_serial),
             "trade_qty": json.dumps(trade_qty_serial),
         },

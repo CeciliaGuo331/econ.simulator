@@ -1433,13 +1433,24 @@ class ScriptRegistry:
                 )
                 status_updates.append((rec.metadata.script_id, timestamp, str(exc)))
                 continue
-
             # validate that the script only touched fields it is allowed to
             try:
                 _validate_override_for_script(rec, overrides)
             except ScriptExecutionError:
                 # re-raise to be handled by outer loop as a script failure
                 raise
+
+            # Sanitize / clip any illegal or dangerous decisions returned by
+            # scripts. This enforces backend-level constraints so scripts cannot
+            # bypass server-side rules by only relying on UI checks.
+            try:
+                self._sanitize_overrides(rec, overrides, world_state, config)
+            except Exception:
+                # best-effort: do not let sanitizer crash the entire tick
+                logger.exception(
+                    "Sanitizing overrides failed for script %s",
+                    rec.metadata.script_id,
+                )
             combined = merge_tick_overrides(combined, overrides)
             if (
                 rec.metadata.last_failure_at is not None
@@ -1475,6 +1486,49 @@ class ScriptRegistry:
                     )
 
         return combined, failure_logs, failure_events
+
+    def _sanitize_overrides(
+        self,
+        rec: _ScriptRecord,
+        overrides: Optional[TickDecisionOverrides],
+        world_state: WorldState,
+        config: WorldConfig,
+    ) -> None:
+        """Enforce backend decision constraints on the overrides returned by a script.
+
+        This mutates `overrides` in-place. It is deliberately defensive and
+        best-effort: failures in sanitization should not crash the tick.
+        """
+        if overrides is None:
+            return
+
+        # Only household scripts are allowed to override household decisions
+        # for their own id; but sanitizer may be called for any script type.
+        try:
+            if rec.metadata.agent_kind is None:
+                return
+        except Exception:
+            return
+
+        from ..data_access.models import AgentKind as AK
+
+        # sanitize household overrides
+        if getattr(overrides, "households", None):
+            # if this is a household script, only sanitize the entry matching its id
+            try:
+                if rec.metadata.agent_kind is AK.HOUSEHOLD:
+                    key = int(rec.metadata.entity_id)
+                    hh_ov = overrides.households.get(key)
+                    if hh_ov is not None:
+                        # call module-level sanitizer helper
+                        _sanitize_household_override(hh_ov, world_state, config)
+                else:
+                    # for non-household scripts, sanitize any household overrides
+                    for hh_ov in overrides.households.values():
+                        _sanitize_household_override(hh_ov, world_state, config)
+            except Exception:
+                # swallow sanitization errors - already logged by caller
+                pass
 
 
 def _validate_override_for_script(
@@ -1654,6 +1708,87 @@ def _validate_script_module(script_code: str) -> None:
                 raise ScriptExecutionError("禁止使用相对导入")
             if not is_module_allowed(node.module):
                 raise ScriptExecutionError(f"禁止导入模块: {node.module}")
+
+    return None
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    try:
+        v = float(value)
+    except Exception:
+        return lo
+    return max(lo, min(hi, v))
+
+
+@staticmethod
+def _sanitize_household_override(
+    hh_override, world_state: WorldState, config: WorldConfig
+) -> None:
+    """Sanitize a HouseholdDecisionOverride in-place.
+
+    Rules enforced here (backend-level):
+      - consumption_budget >= subsistence * price
+      - savings_rate clamped to [0,1]
+      - labor_supply clamped to [0,1]
+      - education_payment >= 0 (if present)
+    """
+    try:
+        subsistence = float(get_world_config().markets.goods.subsistence_consumption)
+    except Exception:
+        subsistence = 1.0
+
+    # attempt to get a market price from world_state.firm.price if available
+    price = None
+    try:
+        if world_state is not None and world_state.firm is not None:
+            price = float(world_state.firm.price)
+    except Exception:
+        price = None
+    if price is None:
+        try:
+            price = float(config.markets.goods.base_price)
+        except Exception:
+            price = 1.0
+
+    min_budget = subsistence * float(price)
+
+    try:
+        cb = getattr(hh_override, "consumption_budget", None)
+        if cb is None:
+            setattr(hh_override, "consumption_budget", float(min_budget))
+        else:
+            try:
+                if float(cb) < min_budget:
+                    setattr(hh_override, "consumption_budget", float(min_budget))
+            except Exception:
+                setattr(hh_override, "consumption_budget", float(min_budget))
+    except Exception:
+        pass
+
+    try:
+        sr = getattr(hh_override, "savings_rate", None)
+        if sr is not None:
+            setattr(hh_override, "savings_rate", _clamp(sr, 0.0, 1.0))
+    except Exception:
+        pass
+
+    try:
+        ls = getattr(hh_override, "labor_supply", None)
+        if ls is not None:
+            setattr(hh_override, "labor_supply", _clamp(ls, 0.0, 1.0))
+    except Exception:
+        pass
+
+    try:
+        ep = getattr(hh_override, "education_payment", None)
+        if ep is not None:
+            try:
+                if float(ep) < 0.0:
+                    setattr(hh_override, "education_payment", 0.0)
+            except Exception:
+                setattr(hh_override, "education_payment", 0.0)
+    except Exception:
+        pass
 
 
 __all__ = [

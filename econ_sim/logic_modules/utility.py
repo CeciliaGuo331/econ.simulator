@@ -26,14 +26,23 @@ import math
 
 
 def _compute_instant_utility(c: float, gamma: float, eps: float) -> float:
-    c_eff = max(0.0, float(c) if c is not None else 0.0)
-    if c_eff <= 0.0:
-        c_eff = eps
+    # Shift consumption by +1 to make utility(0) == 0 and ensure positive
+    # consumption yields positive utility. This avoids huge negative values
+    # when c == 0 and gamma == 1 (log(0)). Using u(c) = log(1 + c) for
+    # gamma == 1 and its CRRA generalization for other gamma preserves
+    # homothetic preferences while making zero the reference.
+    try:
+        c_val = float(c) if c is not None else 0.0
+    except Exception:
+        c_val = 0.0
+    c_shift = max(0.0, c_val) + 1.0
+
     if abs(float(gamma) - 1.0) < 1e-12:
-        # log utility
-        return math.log(c_eff)
+        # shifted log utility: u(c) = log(1 + c)
+        return math.log(c_shift)
     else:
-        return (c_eff ** (1.0 - float(gamma)) - 1.0) / (1.0 - float(gamma))
+        # shifted CRRA: u(c) = ((1+c)^(1-gamma) - 1) / (1-gamma)
+        return (c_shift ** (1.0 - float(gamma)) - 1.0) / (1.0 - float(gamma))
 
 
 def accumulate_utility(
