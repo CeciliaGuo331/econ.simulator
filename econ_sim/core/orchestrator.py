@@ -19,6 +19,7 @@ from typing import Dict, Iterable, List, Optional, TYPE_CHECKING, Any
 from ..data_access.models import (
     AgentKind,
     HouseholdShock,
+    EmploymentStatus,
     StateUpdateCommand,
     TickDecisionOverrides,
     TickDecisions,
@@ -258,7 +259,6 @@ class SimulationOrchestrator:
             shocks = generate_household_shocks(world_state, self.config)
             decision_state = apply_household_shocks_for_decision(world_state, shocks)
 
-        # ---------- DAILY SETTLEMENT (start of day) ----------
         # If this is the daily decision tick (tick_in_day == 1), settle the
         # previous day's wages and clear employment relations before any
         # decisions are generated. The settlement mutates the in-memory
@@ -523,6 +523,81 @@ class SimulationOrchestrator:
                 AgentKind.WORLD, agent_id=None, tick=next_tick, day=next_day
             )
         )
+
+        # Compute and append macro aggregates (unemployment, inflation, price/wage indices)
+        # before persisting so they are included in the stored state that the UI reads.
+        try:
+            try:
+                # unemployment rate: fraction of households with EmploymentStatus.UNEMPLOYED
+                total_hh = 0
+                unemployed = 0
+                if world_state.households:
+                    for hid, hh in world_state.households.items():
+                        total_hh += 1
+                        try:
+                            if (
+                                getattr(hh, "employment_status", None)
+                                == EmploymentStatus.UNEMPLOYED
+                            ):
+                                unemployed += 1
+                        except Exception:
+                            # fallback to string compare
+                            if (
+                                str(hh.get("employment_status", "unemployed"))
+                                == "unemployed"
+                            ):
+                                unemployed += 1
+                unemployment_rate = (
+                    float(unemployed) / float(total_hh) if total_hh > 0 else 0.0
+                )
+
+                # price_index and wage_index: use firm's current price and wage_offer
+                firm = getattr(world_state, "firm", None)
+                old_price_index = float(
+                    getattr(world_state.macro, "price_index", 100.0) or 100.0
+                )
+                new_price_index = (
+                    float(getattr(firm, "price", old_price_index))
+                    if firm is not None
+                    else old_price_index
+                )
+                new_wage_index = (
+                    float(
+                        getattr(
+                            firm,
+                            "wage_offer",
+                            getattr(world_state.macro, "wage_index", 100.0),
+                        )
+                    )
+                    if firm is not None
+                    else float(getattr(world_state.macro, "wage_index", 100.0))
+                )
+
+                # inflation: relative change in price_index
+                try:
+                    inflation = (
+                        (new_price_index - old_price_index) / float(old_price_index)
+                        if old_price_index != 0
+                        else 0.0
+                    )
+                except Exception:
+                    inflation = 0.0
+
+                updates.append(
+                    StateUpdateCommand.assign(
+                        AgentKind.MACRO,
+                        agent_id=None,
+                        unemployment_rate=float(unemployment_rate),
+                        inflation=float(inflation),
+                        price_index=float(new_price_index),
+                        wage_index=float(new_wage_index),
+                    )
+                )
+            except Exception:
+                # best-effort: do not abort tick on macro aggregation failure
+                pass
+        except Exception:
+            logger.debug("Failed to compute macro aggregates", exc_info=True)
 
         # persist updates and record tick
         start = time.perf_counter()
