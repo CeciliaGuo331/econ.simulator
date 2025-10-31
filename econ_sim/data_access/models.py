@@ -105,6 +105,8 @@ class FirmState(BaseModel):
     productivity: float = 1.0
     employees: List[int] = Field(default_factory=list)
     last_sales: float = 0.0
+    # most recent realized production (set by production engine)
+    last_production: float = 0.0
 
 
 class GovernmentState(BaseModel):

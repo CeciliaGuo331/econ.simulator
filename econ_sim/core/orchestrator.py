@@ -1083,6 +1083,74 @@ def _execute_market_logic(
         )
         updates.extend(p_updates)
         logs.append(p_log)
+        # Apply production updates into in-memory world_state so downstream
+        # modules (goods market) observe the new production results (e.g.,
+        # last_production or updated inventory). This mirrors how labor market
+        # updates are applied earlier.
+        try:
+            for cmd in p_updates:
+                try:
+                    scope = getattr(cmd, "scope", None)
+                    agent_id = getattr(cmd, "agent_id", None)
+                    changes = getattr(cmd, "changes", {}) or {}
+                    if scope is None:
+                        continue
+                    if scope == AgentKind.HOUSEHOLD:
+                        hid = int(agent_id)
+                        hh = world_state.households.get(hid)
+                        if hh is None:
+                            continue
+                        for k, v in changes.items():
+                            try:
+                                setattr(hh, k, v)
+                            except Exception:
+                                pass
+                    elif scope == AgentKind.FIRM and world_state.firm is not None:
+                        for k, v in changes.items():
+                            try:
+                                setattr(world_state.firm, k, v)
+                            except Exception:
+                                pass
+                    elif (
+                        scope == AgentKind.GOVERNMENT
+                        and world_state.government is not None
+                    ):
+                        for k, v in changes.items():
+                            try:
+                                setattr(world_state.government, k, v)
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+        except Exception:
+            logger.debug(
+                "Applying production updates to world_state failed", exc_info=True
+            )
+        # --- compute production-based GDP here as a single source of truth ---
+        try:
+            try:
+                firm = getattr(world_state, "firm", None)
+                gov = getattr(world_state, "government", None)
+                price = float(getattr(firm, "price", 0.0)) if firm is not None else 0.0
+                production = (
+                    float(getattr(firm, "last_production", 0.0))
+                    if firm is not None
+                    else 0.0
+                )
+                gov_spend = (
+                    float(getattr(gov, "spending", 0.0)) if gov is not None else 0.0
+                )
+                gdp_val = price * production + gov_spend
+                # append GDP assignment so it is persisted with other updates
+                updates.append(
+                    StateUpdateCommand.assign(
+                        AgentKind.MACRO, agent_id=None, gdp=float(gdp_val)
+                    )
+                )
+            except Exception:
+                pass
+        except Exception:
+            logger.debug("Failed to compute production-based GDP", exc_info=True)
     except Exception:
         pass
 

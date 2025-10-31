@@ -157,14 +157,9 @@ def clear_goods_market_new(
         )
     )
 
-    # Macro update (simple)
-    updates.append(
-        StateUpdateCommand.assign(
-            AgentKind.MACRO,
-            agent_id=None,
-            gdp=consumption_value,
-        )
-    )
+    # NOTE: GDP is computed at financial settlement (finance_market.transfer)
+    # as a best-effort single source of truth. The transfer call that
+    # represents household -> firm payments will append a MACRO gdp update.
 
     # convert trade maps to serializable simple types (string keys)
     import json
