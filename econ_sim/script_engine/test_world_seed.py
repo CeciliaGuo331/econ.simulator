@@ -48,12 +48,28 @@ class SeedSummary:
         return self.scripts_created + self.scripts_existing
 
 
-_HOUSEHOLD_SCRIPT = """
-def generate_decisions(context):
-    return {}
-"""
+from pathlib import Path
 
-_SINGLETON_SCRIPT = _HOUSEHOLD_SCRIPT
+# When seeding test_world, register household scripts from the deploy baseline
+# file instead of embedding script code here. This keeps the canonical
+# household behavior in one place (`deploy/baseline_scripts/household_baseline.py`).
+_DEFAULT_HOUSEHOLD_SCRIPT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "deploy"
+    / "baseline_scripts"
+    / "household_baseline.py"
+)
+
+
+def _load_default_household_script() -> str:
+    try:
+        return _DEFAULT_HOUSEHOLD_SCRIPT_PATH.read_text()
+    except Exception:
+        # fallback minimal no-op script
+        return "def generate_decisions(context):\n    return {}\n"
+
+
+_SINGLETON_SCRIPT = "def generate_decisions(context):\n    return {}\n"
 
 _SINGLETON_AGENTS: Sequence[tuple[str, AgentKind, str, str]] = (
     ("test_firm@econ.sim", AgentKind.FIRM, "firm_primary", "firm"),
@@ -130,7 +146,7 @@ async def seed_test_world(
         email: str,
         agent_kind: AgentKind,
         entity_id: str,
-        script_body: str = _HOUSEHOLD_SCRIPT,
+        script_body: Optional[str] = None,
     ) -> None:
         nonlocal scripts_created, scripts_existing, existing_scripts
         key = (agent_kind, entity_id)
@@ -140,6 +156,12 @@ async def seed_test_world(
 
         meta = existing_scripts.get(key)
         if meta is None:
+            # choose default script if none provided
+            if script_body is None and agent_kind is AgentKind.HOUSEHOLD:
+                script_body = _load_default_household_script()
+            if script_body is None:
+                script_body = _SINGLETON_SCRIPT
+
             meta = await registry.register_script(
                 simulation_id=simulation_id,
                 user_id=email,
@@ -175,11 +197,13 @@ async def seed_test_world(
         for household_id in range_iterable:
             email = f"test_household_{household_id:03d}@econ.sim"
             await ensure_user(email, "individual")
+            # do not inline household script here; let ensure_script load the
+            # deploy/baseline_scripts/household_baseline.py by default
             await ensure_script(
                 email,
                 AgentKind.HOUSEHOLD,
                 str(household_id),
-                _HOUSEHOLD_SCRIPT,
+                None,
             )
 
     await seed_households(household_range)
