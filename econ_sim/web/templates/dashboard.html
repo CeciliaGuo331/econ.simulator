@@ -87,10 +87,7 @@
                                 <h4>市场价格与利率</h4>
                                 {{ render_table(role_state.market_rows) }}
                             </div>
-                            <div class="state-block">
-                                <h4>家户平均指标</h4>
-                                {{ render_table(role_state.household_rows) }}
-                            </div>
+                            {# 家户平均指标已从家户用户视图中移除 #}
                             {% if owned_households %}
                                 <div class="state-block">
                                     <h4>我的家户</h4>

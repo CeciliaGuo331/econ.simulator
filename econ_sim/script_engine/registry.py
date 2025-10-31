@@ -369,6 +369,61 @@ class ScriptRegistry:
                 self._user_index.setdefault(user_id, set())
                 self._loaded_users.add(user_id)
 
+    @staticmethod
+    def _filter_household_view(raw: dict) -> dict:
+        """Return a restricted household view for user scripts.
+
+        Expose only the approved fields:
+          - id
+          - balance_sheet: {cash, deposits, loans, inventory_goods}
+          - skill
+          - employment_status
+          - is_studying
+          - education_level
+          - labor_supply
+          - wage_income
+          - last_consumption
+          - lifetime_utility
+
+        Input may be a pydantic model_dump dict or arbitrary mapping; function
+        defensively extracts available keys.
+        """
+        if not isinstance(raw, dict):
+            return {}
+        out: dict = {}
+        # id
+        if "id" in raw:
+            out["id"] = raw.get("id")
+
+        # balance_sheet nested
+        bs = raw.get("balance_sheet") or {}
+        if not isinstance(bs, dict):
+            try:
+                bs = bs.model_dump(mode="json")  # type: ignore[attr-defined]
+            except Exception:
+                bs = {}
+        out_bs: dict = {}
+        for key in ("cash", "deposits", "loans", "inventory_goods"):
+            if key in bs:
+                out_bs[key] = bs.get(key)
+        out["balance_sheet"] = out_bs
+
+        # simple scalar fields
+        for key in (
+            "skill",
+            "employment_status",
+            "is_studying",
+            "education_level",
+            "labor_supply",
+            "wage_income",
+            "last_consumption",
+            "lifetime_utility",
+        ):
+            if key in raw:
+                out[key] = raw.get(key)
+
+        return out
+
     def _serialize_entity_state(
         self,
         metadata: ScriptMetadata,
@@ -386,7 +441,9 @@ class ScriptRegistry:
             entity = world_state.households.get(household_id)
             if entity is None:
                 return None
-            return entity.model_dump(mode="json")
+            # Return a filtered view exposing only allowed household fields.
+            raw = entity.model_dump(mode="json")
+            return self._filter_household_view(raw)
         if kind is AgentKind.FIRM:
             entity = world_state.firm
             if entity is None or entity.id != metadata.entity_id:
@@ -442,11 +499,13 @@ class ScriptRegistry:
                 if household_entity is None:
                     pruned_ws = {**meta_keys, "households": {}}
                 else:
+                    # Ensure household view is filtered to allowed fields only.
+                    filtered = self._filter_household_view(
+                        household_entity if isinstance(household_entity, dict) else {}
+                    )
                     pruned_ws = {
                         **meta_keys,
-                        "households": {
-                            str(record.metadata.entity_id): household_entity
-                        },
+                        "households": {str(record.metadata.entity_id): filtered},
                     }
             elif kind is AgentKind.FIRM:
                 firm = ws_full.get("firm")

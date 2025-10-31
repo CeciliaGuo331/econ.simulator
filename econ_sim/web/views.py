@@ -750,21 +750,10 @@ def _extract_view_data(
             _table_row("税率", government.get("tax_rate")),
         ]
 
-        household_rows = [
-            _table_row("家户数量", households_summary.get("count"), is_int=True),
-            _table_row("平均现金", households_summary.get("avg_cash")),
-            _table_row("平均存款", households_summary.get("avg_deposits")),
-            _table_row("平均贷款", households_summary.get("avg_loans")),
-            _table_row("平均工资收入", households_summary.get("avg_wage_income")),
-            _table_row("平均消费", households_summary.get("avg_last_consumption")),
-            _table_row("就业率", employment_display),
-        ]
-
         return {
             "role": "individual",
             "macro_rows": _macro_rows(),
             "market_rows": market_rows,
-            "household_rows": household_rows,
         }
 
     if user_type == "firm":
@@ -1187,43 +1176,102 @@ async def dashboard(
     all_users: List[Dict[str, Any]] = []
 
     # For non-admin users, collect any household entities owned by this user
-    # within the current simulation so we can show per-user household info
+    # within the current simulation so we can show per-user household info.
+    #
+    # Strategy (in order):
+    # 1. Query authoritative per-simulation scripts and filter by user.
+    # 2. Fall back to the user's script list if needed.
+    # 3. If still nothing, fall back to participants and finally try to
+    #    match households by any owner field present in the prepared world.
     owned_households: List[tuple] = []
     try:
         if user.get("user_type") != "admin" and simulation_id:
-            # user_scripts contains this user's scripts (possibly across sims)
-            my_scripts = (
-                user_scripts
-                if user_scripts is not None
-                else await script_registry.list_user_scripts(user.get("email", ""))
-            )
-            for meta in my_scripts:
+            households_map = prepared_world.get("households", {}) or {}
+
+            def _lookup_household(eid: object) -> Optional[dict]:
+                # Try direct key, string key, int key, then scan str-equality
+                if eid is None:
+                    return None
+                # direct
+                if eid in households_map:
+                    return households_map[eid]
+                s = str(eid)
+                if s in households_map:
+                    return households_map[s]
+                try:
+                    i = int(eid)
+                except Exception:
+                    i = None
+                if i is not None and i in households_map:
+                    return households_map[i]
+                # final scan: compare stringified keys
+                for k, v in households_map.items():
+                    try:
+                        if str(k) == s:
+                            return v
+                    except Exception:
+                        continue
+                return None
+
+            # 1) authoritative per-simulation scripts
+            try:
+                sim_scripts = await script_registry.list_scripts(simulation_id)
+            except Exception:
+                sim_scripts = []
+
+            user_email = user.get("email", "")
+            matched = []
+            for meta in sim_scripts:
                 if (
-                    getattr(meta, "simulation_id", None) == simulation_id
+                    getattr(meta, "user_id", None) == user_email
                     and getattr(meta, "agent_kind", None) == AgentKind.HOUSEHOLD
                 ):
                     eid = getattr(meta, "entity_id", None)
-                    if eid is None:
-                        continue
-                    households_map = prepared_world.get("households", {}) or {}
-                    hh_info = None
-                    # try direct, string, and int keys
-                    if eid in households_map:
-                        hh_info = households_map[eid]
-                    else:
-                        s = str(eid)
-                        if s in households_map:
-                            hh_info = households_map[s]
-                        else:
-                            try:
-                                i = int(eid)
-                                if i in households_map:
-                                    hh_info = households_map[i]
-                            except Exception:
-                                pass
-                    if hh_info:
-                        owned_households.append((eid, hh_info))
+                    hh = _lookup_household(eid)
+                    if hh:
+                        matched.append((eid, hh))
+
+            # 2) fallback: user's scripts (may include scripts across sims)
+            if not matched:
+                try:
+                    my_scripts = (
+                        user_scripts
+                        if user_scripts is not None
+                        else await script_registry.list_user_scripts(user_email)
+                    )
+                except Exception:
+                    my_scripts = []
+                for meta in my_scripts:
+                    if (
+                        getattr(meta, "simulation_id", None) == simulation_id
+                        and getattr(meta, "agent_kind", None) == AgentKind.HOUSEHOLD
+                    ):
+                        eid = getattr(meta, "entity_id", None)
+                        hh = _lookup_household(eid)
+                        if hh:
+                            matched.append((eid, hh))
+
+            # 3) fallback: participants + owner-field scan
+            if not matched:
+                try:
+                    participants = await _orchestrator.list_participants(simulation_id)
+                except Exception:
+                    participants = []
+                if user_email in participants:
+                    # try to find households that assert an owner field
+                    for k, v in households_map.items():
+                        owner = (
+                            v.get("owner") or v.get("owner_email") or v.get("user_id")
+                        )
+                        try:
+                            if owner and owner == user_email:
+                                matched.append((k, v))
+                        except Exception:
+                            continue
+
+            owned_households = matched
     except Exception:
+        # on any unexpected error, fall back to empty list (don't raise)
         owned_households = []
 
     if allow_create:

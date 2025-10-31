@@ -1,7 +1,4 @@
-"""示例外置家户脚本 — 展示用户如何实现自定义决策。
-
-此脚本可以被上传并挂载到仿真实例的某个 household。
-"""
+"""示例家户脚本（仅使用允许读取的字段）。"""
 
 from econ_sim.script_engine.user_api import OverridesBuilder, clamp
 
@@ -11,34 +8,28 @@ def generate_decisions(context: dict) -> dict:
     if entity_id is None:
         return {}
 
-    world = context.get("world_state", {})
-    features = world.get("features", {}) or {}
-    is_daily = bool(features.get("is_daily_decision_tick"))
+    ent = context.get("entity_state") or {}
+    if not ent:
+        return {}
 
-    entity_state = context.get("entity_state") or {}
-    balance = entity_state.get("balance_sheet", {})
-    cash = balance.get("cash", 0.0)
-    wage = entity_state.get("wage_income", 0.0)
+    bs = ent.get("balance_sheet", {})
+    cash = float(bs.get("cash", 0.0))
+    deposits = float(bs.get("deposits", 0.0))
+    wage = float(ent.get("wage_income", 0.0))
 
-    # lifetime-utility-aware approximate consumption: PIH-style fraction of wealth
+    # 简单 PIH 风格消费（只使用允许字段）
     cfg = context.get("config", {}) or {}
-    policies = cfg.get("policies", {})
-    beta = float(policies.get("discount_factor_per_tick", 0.999))
-    deposits = float(balance.get("deposits", 0.0))
-    expected_income = float(wage)
-    liquid_wealth = float(cash) + deposits
-    consumption = round(max(1.0, (1.0 - beta) * (liquid_wealth + expected_income)), 2)
+    beta = float(cfg.get("policies", {}).get("discount_factor_per_tick", 0.999))
+    liquid = cash + deposits
+    consumption = round(max(1.0, (1.0 - beta) * (liquid + wage)), 2)
     savings_rate = round(clamp(0.15, 0.01, 0.6), 3)
 
+    features = context.get("world_state", {}).get("features", {}) or {}
+    is_daily = bool(features.get("is_daily_decision_tick"))
+
     builder = OverridesBuilder()
-    # only set labor/education on daily ticks
     if is_daily:
-        edu_cost = float(
-            context.get("config", {})
-            .get("policies", {})
-            .get("education_cost_per_day", 2.0)
-        )
-        pay = round(min(edu_cost, wage * 0.05 + cash * 0.01), 2)
+        pay = round(min(2.0, wage * 0.05 + cash * 0.01), 2)
         builder.household(
             int(entity_id),
             consumption_budget=consumption,
