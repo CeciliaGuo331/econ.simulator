@@ -91,6 +91,12 @@
                                 <h4>家户平均指标</h4>
                                 {{ render_table(role_state.household_rows) }}
                             </div>
+                            {% if owned_households %}
+                                <div class="state-block">
+                                    <h4>我的家户</h4>
+                                    {{ render_households_table(owned_households, -1) }}
+                                </div>
+                            {% endif %}
                         {% elif role_state.role == "firm" %}
                             <div class="state-block">
                                 <h4>宏观指标</h4>

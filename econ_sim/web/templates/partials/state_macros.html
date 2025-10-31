@@ -75,15 +75,16 @@
                 <th style="width:5%;">ID</th>
                 <th style="width:10%;">现金</th>
                 <th style="width:10%;">存款</th>
-                <th style="width:7%;">负债</th>
-                <th style="width:7%;">库存</th>
-                <th style="width:7%;">技能</th>
-                <th style="width:12%;">就业状态</th>
+                <th style="width:5%;">负债</th>
+                <th style="width:5%;">库存</th>
+                <th style="width:5%;">技能</th>
+                <th style="width:10%;">就业状态</th>
                 <th style="width:8%;">教育状态</th>
                 <th style="width:8%;">教育水平</th>
-                <th style="width:7%;">劳动供给</th>
-                <th style="width:7%;">工资收入</th>
-                <th style="width:10%;">最新消费</th>
+                <th style="width:8%;">劳动供给</th>
+                <th style="width:8%;">工资收入</th>
+                <th style="width:9%;">最新消费</th>
+                <th style="width:9%;">累计效用</th>
             </tr>
         </thead>
         <tbody>
@@ -120,10 +121,13 @@
                     <td>
                         {{ fmt_number(info.last_consumption if info.last_consumption is defined else info["last_consumption"] if "last_consumption" in info else None) }}
                     </td>
+                    <td>
+                        {{ fmt_number(info.lifetime_utility if info.lifetime_utility is defined else (info["lifetime_utility"] if "lifetime_utility" in info else None) ) }}
+                    </td>
                 </tr>
             {%- else -%}
                 <tr>
-                    <td colspan="12" class="empty">暂无家户数据。</td>
+                    <td colspan="13" class="empty">暂无家户数据。</td>
                 </tr>
             {%- endfor -%}
         </tbody>

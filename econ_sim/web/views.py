@@ -1186,6 +1186,46 @@ async def dashboard(
         features_by_sim[simulation_id] = features_for_view
     all_users: List[Dict[str, Any]] = []
 
+    # For non-admin users, collect any household entities owned by this user
+    # within the current simulation so we can show per-user household info
+    owned_households: List[tuple] = []
+    try:
+        if user.get("user_type") != "admin" and simulation_id:
+            # user_scripts contains this user's scripts (possibly across sims)
+            my_scripts = (
+                user_scripts
+                if user_scripts is not None
+                else await script_registry.list_user_scripts(user.get("email", ""))
+            )
+            for meta in my_scripts:
+                if (
+                    getattr(meta, "simulation_id", None) == simulation_id
+                    and getattr(meta, "agent_kind", None) == AgentKind.HOUSEHOLD
+                ):
+                    eid = getattr(meta, "entity_id", None)
+                    if eid is None:
+                        continue
+                    households_map = prepared_world.get("households", {}) or {}
+                    hh_info = None
+                    # try direct, string, and int keys
+                    if eid in households_map:
+                        hh_info = households_map[eid]
+                    else:
+                        s = str(eid)
+                        if s in households_map:
+                            hh_info = households_map[s]
+                        else:
+                            try:
+                                i = int(eid)
+                                if i in households_map:
+                                    hh_info = households_map[i]
+                            except Exception:
+                                pass
+                    if hh_info:
+                        owned_households.append((eid, hh_info))
+    except Exception:
+        owned_households = []
+
     if allow_create:
         template_name = "admin_dashboard.html"
         context["world"] = prepared_world
@@ -1245,6 +1285,7 @@ async def dashboard(
             "script_form_defaults": base_form_defaults,
             "ticks_per_day_default": ticks_per_day_default,
             "remaining_ticks_by_sim": remaining_ticks_by_sim,
+            "owned_households": owned_households,
         },
     )
 
