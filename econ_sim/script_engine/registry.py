@@ -418,6 +418,9 @@ class ScriptRegistry:
             "wage_income",
             "last_consumption",
             "lifetime_utility",
+            # expose bond holdings so household scripts can observe their own
+            # government bond positions (bond_id -> quantity)
+            "bond_holdings",
         ):
             if key in raw:
                 out[key] = raw.get(key)

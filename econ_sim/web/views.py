@@ -748,6 +748,7 @@ def _extract_view_data(
             _table_row("存款利率", bank.get("deposit_rate")),
             _table_row("贷款利率", bank.get("loan_rate")),
             _table_row("税率", government.get("tax_rate")),
+            _table_row("国债收益率", macro.get("bond_yield")),
         ]
 
         return {
@@ -821,6 +822,8 @@ def _extract_view_data(
             "fiscal_rows": fiscal_rows,
             "labor_rows": labor_rows,
             "finance_rows": finance_rows,
+            # include debt_instruments for UI inspection of bond instruments
+            "debt_instruments": government.get("debt_instruments"),
         }
 
     if user_type == "commercial_bank":
@@ -926,28 +929,6 @@ async def dashboard(
             )
             for sid, count in pairs:
                 household_counts_by_sim[sid] = count
-
-        # compute remaining to day-end for admins (parallel)
-        async def _fetch_state(sid: str):
-            try:
-                return (sid, await _orchestrator.get_state(sid))
-            except SimulationNotFoundError:
-                return (sid, None)
-
-        if all_simulations:
-            pairs = await _bounded_gather([_fetch_state(s) for s in all_simulations])
-            for sid, st in pairs:
-                if not st or ticks_per_day_default <= 0:
-                    remaining_ticks_by_sim[sid] = None
-                    continue
-                tick_val = _extract_tick_from_state(st)
-                if isinstance(tick_val, int):
-                    mod = tick_val % ticks_per_day_default
-                    remaining_ticks_by_sim[sid] = (
-                        0 if mod == 0 else (ticks_per_day_default - mod)
-                    )
-                else:
-                    remaining_ticks_by_sim[sid] = None
 
     if not allow_create:
         user_scripts = await script_registry.list_user_scripts(user["email"])

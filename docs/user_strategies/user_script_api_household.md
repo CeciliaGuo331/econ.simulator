@@ -19,6 +19,8 @@
 
 - `id` (int)
 - `balance_sheet` (object): 子字段：`cash`, `deposits`, `loans`, `inventory_goods`
+- `balance_sheet` (object): 子字段：`cash`, `deposits`, `loans`, `inventory_goods`
+- `bond_holdings` (dict): 债券 id -> 持仓数量（例如 {"BOND-2025-01": 10.0}），脚本可以读取自身持仓以决定是否参与认购或抛售。
 - `skill` (float)
 - `employment_status` (str)
 - `is_studying` (bool)
@@ -27,6 +29,8 @@
 - `wage_income` (float)
 - `last_consumption` (float)
 - `lifetime_utility` (float)
+
+此外，脚本可通过 `world_state['macro'].get('bond_yield')` 观察当期市场可见的国债收益率（若有），用于评估债券回报与再平衡决策。
 
 三、可写决策字段（HouseholdDecision）
 
@@ -74,6 +78,31 @@ def generate_decisions(context):
     else:
         builder.household(hid, consumption_budget=round(target_consumption,2), savings_rate=0.1)
 
+    return builder.build()
+```
+
+六、债券示例：读取持仓与债券收益率
+
+```python
+from econ_sim.script_engine.user_api import OverridesBuilder
+
+def generate_decisions(context):
+    hid = int(context.get('entity_id'))
+    ent = context.get('entity_state') or {}
+    bond_holdings = ent.get('bond_holdings', {}) or {}
+    bond_yield = (context.get('world_state') or {}).get('macro', {}).get('bond_yield')
+
+    # 若收益率高且手头有债券，考虑出售部分仓位
+    builder = OverridesBuilder()
+    if bond_yield is not None and bond_holdings:
+        # 简单规则：当收益率高于阈值且持仓较多时减少持仓（示例）
+        for bid, qty in bond_holdings.items():
+            if qty > 0 and float(bond_yield) > 0.05:
+                # 平台上家户一般通过提交 bond_bids 等方式参与，这里仅做示例逻辑
+                pass
+
+    # 返回默认消费决策示例
+    builder.household(hid, consumption_budget=round(float(ent.get('balance_sheet', {}).get('cash',0.0)),2), savings_rate=0.1)
     return builder.build()
 ```
 

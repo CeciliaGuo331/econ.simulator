@@ -338,6 +338,38 @@
                             ]) }}
                         </div>
                         <div class="state-block">
+                            <h4>政府债券（债券工具）</h4>
+                            {% set debt = world.government.debt_instruments if world.government is defined and world.government.debt_instruments is defined else {} %}
+                            {% if debt and debt | length > 0 %}
+                                <div class="scroll-pane">
+                                    <table class="state-table">
+                                        <thead>
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>面值</th>
+                                                <th>票息</th>
+                                                <th>到期 Tick</th>
+                                                <th>在外量</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for bid, inst in debt.items() %}
+                                                <tr>
+                                                    <td>{{ bid }}</td>
+                                                    <td>{{ inst.face_value if inst.face_value is defined else inst["face_value"] if "face_value" in inst else "—" }}</td>
+                                                    <td>{{ inst.coupon_rate if inst.coupon_rate is defined else inst["coupon_rate"] if "coupon_rate" in inst else "—" }}</td>
+                                                    <td>{{ inst.maturity_tick if inst.maturity_tick is defined else inst["maturity_tick"] if "maturity_tick" in inst else "—" }}</td>
+                                                    <td>{{ inst.outstanding if inst.outstanding is defined else inst["outstanding"] if "outstanding" in inst else "—" }}</td>
+                                                </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            {% else %}
+                                <p class="empty">当前无政府债券登记。</p>
+                            {% endif %}
+                        </div>
+                        <div class="state-block">
                             <h4>中央银行</h4>
                             {{ render_table([
                                                         ("基准利率", world.central_bank.base_rate if world.central_bank is defined else None) ,
