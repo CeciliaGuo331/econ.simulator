@@ -488,10 +488,45 @@ class ScriptRegistry:
 
         pruned_ws = ws_full
         if isinstance(ws_full, dict):
+            # Include computed per-tick public market flags so scripts can
+            # deterministically check daily-decision ticks without needing
+            # to re-compute them locally. `world_state.get_public_market_data`
+            # computes `tick_in_day` and `is_daily_decision_tick` from the
+            # underlying world_state tick and config.
+            try:
+                pub = world_state.get_public_market_data()
+                pub_json = pub.model_dump(mode="json")
+            except Exception:
+                pub_json = {}
+
+            # preserve any existing features dict but augment with public
+            # per-tick fields (tick_in_day, is_daily_decision_tick) so user
+            # scripts that read `world_state['features']` get the expected
+            # flag.
+            features_raw = ws_full.get("features") or {}
+            if isinstance(features_raw, dict):
+                features_aug = {
+                    **features_raw,
+                    **{
+                        k: v
+                        for k, v in pub_json.items()
+                        if k in ("tick_in_day", "is_daily_decision_tick")
+                    },
+                }
+            else:
+                # fallback: keep original and add any public keys we could compute
+                try:
+                    features_aug = features_raw.model_dump(mode="json")
+                    for k in ("tick_in_day", "is_daily_decision_tick"):
+                        if k in pub_json:
+                            features_aug[k] = pub_json[k]
+                except Exception:
+                    features_aug = pub_json
+
             meta_keys = {
                 "tick": ws_full.get("tick"),
                 "day": ws_full.get("day"),
-                "features": ws_full.get("features"),
+                "features": features_aug,
                 "macro": ws_full.get("macro"),
             }
             kind = record.metadata.agent_kind

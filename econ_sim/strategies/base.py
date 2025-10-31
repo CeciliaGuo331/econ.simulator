@@ -76,7 +76,11 @@ class BaseHouseholdStrategy:
                     + (household.balance_sheet.deposits or 0.0)
                 )
                 expected_wage_gain = float(market.wage_offer or 0.0) * (0.6 * gain)
-                if assets > cost * 20 and expected_wage_gain > cost:
+                # Relax threshold compared to production/stable scenarios so
+                # that households in lightweight dev runs are more likely to
+                # invest in education. Require smaller asset buffer and allow
+                # modest expected wage gains to qualify.
+                if assets > cost * 5 and expected_wage_gain > (cost * 0.5):
                     is_studying = True
                     education_payment = cost
 

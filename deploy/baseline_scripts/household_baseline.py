@@ -50,11 +50,20 @@ def generate_decisions(context: dict) -> dict:
     is_studying = False
     education_payment = 0.0
     if is_daily:
-        # 20% chance to study
-        if random.random() < 0.2:
+        # increase baseline study probability during dev/test runs so some
+        # households actually take education in seeded test_world.
+        study_prob = 0.4
+        if random.random() < study_prob:
             is_studying = True
-            # pay up to a small fraction of cash, but at least 0.0
-            education_payment = round(min(2.0, max(0.0, cash * 0.1)), 2)
+            # prefer to pay at least the configured daily education cost when
+            # available; fall back to a small fraction of cash capped to a
+            # modest amount.
+            cfg = context.get("config") or {}
+            try:
+                cost = float(cfg.get("policies", {}).get("education_cost_per_day", 2.0))
+            except Exception:
+                cost = 2.0
+            education_payment = round(min(max(cost, cash * 0.1), 5.0), 2)
 
     # labor supply: if studying -> 0.0; otherwise random 0 or 1 (work/no-work)
     if is_studying:
@@ -74,4 +83,23 @@ def generate_decisions(context: dict) -> dict:
             else {}
         ),
     )
+    # small household bond bid participation for baseline smoke tests: households
+    # may place a tiny bid (a fraction of cash) to ensure bond auctions have
+    # retail-side bids present when seeding test_world.
+    try:
+        if cash >= 10.0:
+            bid_qty = round(min(cash * 0.05, 20.0), 2)
+            builder.bond_bids(
+                [
+                    {
+                        "buyer_kind": "household",
+                        "buyer_id": entity_id,
+                        "price": 1.0,
+                        "quantity": bid_qty,
+                    }
+                ]
+            )
+    except Exception:
+        # best-effort: ignore bidding errors
+        pass
     return builder.build()

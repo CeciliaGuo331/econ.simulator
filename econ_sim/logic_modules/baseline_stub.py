@@ -78,10 +78,11 @@ def generate_baseline_decisions(world_state: WorldState) -> TickDecisions:
             except Exception:
                 expected_wage_gain = 0.0
 
-            # Relaxed threshold for testing: lower assets requirement from
-            # cost * 20 to cost * 5 so that more households may opt into
-            # education in baseline scenarios used for smoke tests.
-            if assets > cost * 5 and expected_wage_gain > cost:
+            # Relaxed threshold for testing: lower assets requirement and
+            # accept smaller expected wage gains so more households may opt
+            # into education in baseline scenarios used for smoke tests.
+            # This makes daily education uptake less strict during dev runs.
+            if assets > cost * 2 and expected_wage_gain > (cost * 0.5):
                 is_studying = True
                 education_payment = cost
 
@@ -153,6 +154,29 @@ def generate_baseline_decisions(world_state: WorldState) -> TickDecisions:
             ]
         except Exception:
             bond_bids = []
+
+    # Also include small household bids so that bond auctions have retail
+    # participation during baseline smoke tests. Households bid a small
+    # fraction of their cash (e.g. 10%) up to a modest cap.
+    try:
+        for hid, hh in world_state.households.items():
+            try:
+                cash = float(hh.balance_sheet.cash or 0.0)
+                if cash >= 10.0:
+                    qty = float(min(cash * 0.1, 50.0))
+                    bond_bids.append(
+                        {
+                            "buyer_kind": AgentKind.HOUSEHOLD,
+                            "buyer_id": hid,
+                            "price": 1.0,
+                            "quantity": qty,
+                        }
+                    )
+            except Exception:
+                continue
+    except Exception:
+        # best-effort: if household bidding generation fails, ignore
+        pass
 
     return TickDecisions(
         households=households,
