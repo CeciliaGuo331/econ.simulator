@@ -79,6 +79,8 @@
                 <th>库存</th>
                 <th>技能</th>
                 <th>就业状态</th>
+                <th>教育状态</th>
+                <th>教育水平</th>
                 <th>劳动供给</th>
                 <th>工资收入</th>
                 <th>最新消费</th>
@@ -96,6 +98,18 @@
                     <td>{{ fmt_number(info.skill if info.skill is defined else info["skill"] if "skill" in info else None) }}</td>
                     <td>
                         {{ info.employment_status if info.employment_status is defined else info["employment_status"] if "employment_status" in info else "—" }}
+                    </td>
+                    <td>
+                        {%- set studying = (info.is_studying if info.is_studying is defined else (info["is_studying"] if "is_studying" in info else False)) -%}
+                        {%- if studying -%}
+                            <span class="badge small">在学</span>
+                        {%- else -%}
+                            <span class="empty">否</span>
+                        {%- endif -%}
+                    </td>
+                    <td>
+                        {%- set edu_level = (info.education_level if info.education_level is defined else (info["education_level"] if "education_level" in info else None)) -%}
+                        {{ fmt_number(edu_level) }}
                     </td>
                     <td>
                         {{ fmt_number(info.labor_supply if info.labor_supply is defined else info["labor_supply"] if "labor_supply" in info else None) }}
