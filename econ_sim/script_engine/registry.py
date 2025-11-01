@@ -185,6 +185,46 @@ class ScriptRegistry:
             return self._simulation_limits[simulation_id]
         return self._default_script_limit
 
+    def _validate_script(self, script_code: str) -> None:
+        """实例方法版本的脚本校验，供需要访问实例状态的调用使用。
+
+        行为上与模块级 `_validate_script_module` 保持一致，但使用
+        实例的 `_allowed_modules` 集合进行导入白名单检查。
+        """
+        try:
+            tree = ast.parse(script_code)
+        except SyntaxError as exc:  # pragma: no cover - 语法检查
+            raise ScriptExecutionError(f"脚本语法错误: {exc}") from exc
+
+        has_entry = any(
+            isinstance(node, ast.FunctionDef) and node.name == "generate_decisions"
+            for node in tree.body
+        )
+
+        if not has_entry:
+            raise ScriptExecutionError(
+                "脚本中必须定义可调用的 generate_decisions(context) 函数"
+            )
+
+        def is_module_allowed(module_name: str) -> bool:
+            return any(
+                module_name == allowed or module_name.startswith(f"{allowed}.")
+                for allowed in self._allowed_modules
+            )
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if not is_module_allowed(alias.name):
+                        raise ScriptExecutionError(f"禁止导入模块: {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module is None:
+                    raise ScriptExecutionError("禁止使用相对导入")
+                if not is_module_allowed(node.module):
+                    raise ScriptExecutionError(f"禁止导入模块: {node.module}")
+
+        return None
+
     async def set_simulation_limit(
         self, simulation_id: str, limit: Optional[int]
     ) -> Optional[int]:
