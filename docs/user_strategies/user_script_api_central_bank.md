@@ -1,108 +1,87 @@
+# 央行（Central Bank）脚本 API
 
-# 央行 (Central Bank) 脚本 API（面向玩家）
+本文档涵盖：与商业银行文档相同的 1-4 项（交互方式、可读信息字段与经济学含义、如何构造决策与失效时的 fallback、决策字段逐项说明），并针对央行职责补充 OMO/货币政策相关条目。
 
-目标读者：为央行（central_bank）编写策略脚本的玩家。本文件和其他主体文档保持统一结构：context 说明、可写决策、示例、LLM 使用规范（仅支持一种调用方式）、常见错误与调试建议。
+## 1. 平台与脚本的交互契约
 
-## 重要前置
-- 入口函数：你的脚本必须定义 `def generate_decisions(context)` 并返回决策覆盖（overrides）。
-- 推荐使用 `econ_sim.script_engine.user_api.OverridesBuilder()` 构造返回值。
-- 央行脚本看到的 `world_state` 只包含允许可见的宏观数据与本体状态，请不要依赖未公开的私有信息。
+- 入口函数：`def generate_decisions(context)`。
+- `context` 含：`world_state`, `entity_state`, `config`, `script_api_version`, `agent_kind` (应为 'central_bank'), `entity_id`。
+- 返回值建议：使用 `OverridesBuilder.central_bank(...)` 构造并返回 `build()` 的结果；返回 `None` 或抛异常将触发 baseline 回退。
 
-## 一、context 的结构与如何使用
+## 2. 可读取的核心字段（逐项说明）
 
-- `world_state`：包含 `tick`, `day`, `features`, `macro`，以及你可以看到的市场/机构快照（例如 market rates、inflation、unemployment）。
-- `entity_state`：当前央行的序列化状态，典型字段如下。
-- `config`：系统与政策配置（如最小/最大 policy_rate 步长等）。
-- `script_api_version`、`agent_kind`、`entity_id` 同 household 文档。
+- `policy_rate` / `base_rate` (float)
+    - 含义：当前记录的政策利率参考值（年化）。
+    - 格式：浮点；建议范围：[0.0, 1.0]，但可支持负利率以 `config` 为准。
 
-常见 `entity_state` 字段说明：
+- `reserve_ratio` (float)
+    - 含义：对商业银行的准备金率（比例，0-1）。
+    - 格式：浮点，推荐范围：[0.0, 1.0]。
 
-- `id` (str)
-- `balance_sheet` (dict)
-- `policy_rate` / `base_rate` (float)：当前记录的政策利率参考值。
-- `reserve_ratio` (float)：央行对商业银行准备金率的设定。
-- `inflation_target` / `unemployment_target` (float)
-- `bond_holdings` (dict)
-- `omo_history`（可选）：近期公开市场操作记录，便于判断市场流动性变化。
+- `inflation_target`, `unemployment_target` (float)
+    - 含义：央行的目标变量（例如通胀目标通常在 0.01-0.03 区间）。
 
-## 二、可下的决策字段（CentralBankDecision）与字段说明
+- `balance_sheet`（央行持仓，包括 `reserves`, `bond_holdings`）
 
-使用 `OverridesBuilder.central_bank(...)` 提交下列字段：
+- `omo_history`（list）
+    - 含义：最近若干期的 OMO（公开市场操作）记录，形如 `[{'tick': int, 'ops': [...]}, ...]`。
+
+- `world_state['macro']`:
+    - 含义：宏观数据（`inflation`, `gdp_growth`, `unemployment`, `bond_yield` 等），脚本应基于这些指标决定货币政策。
+
+## 3. 决策字段（逐项、含义、格式与建议范围）
 
 - `policy_rate` (float)
-  - 建议的政策利率（年化），会被平台合并与检查合法性（例如步长/上下限）。
+    - 含义：建议的新政策利率（年化）。
+    - 格式：浮点。建议通过 `config` 中的步长与上下限做 clamp。
+
 - `reserve_ratio` (float)
-  - 对商业银行施加的准备金要求比例。
-- `omo_ops` (list)
-  - 一组公开市场操作的建议，每项为：{"bond_id": str, "side": "buy"|"sell", "quantity": float, "price": float}。平台会把这些建议提交到 OMO 执行模块并按市场规则处理。
+    - 含义：建议的法定准备金比例（对商业银行）。
+    - 格式：浮点，范围 [0.0, 1.0]。
 
-注意：policy 变动会有滞后且对宏观变量影响显著，脚本应考虑目标（`inflation_target`/`unemployment_target`）和滞后效应。
+- `omo_ops` (list of dict)
+    - 含义：公开市场操作建议，单项格式示例：
+        {"bond_id": "BOND-2025-01", "side": "buy" | "sell", "quantity": 1000.0, "price": 99.5}
+    - 平台会按市场规则执行或部分执行这些建议。`quantity` >= 0，`side` 必须为 "buy" 或 "sell"。
 
-## 三、如何构造与返回覆盖（示例）
+## 4. 决策失效与 fallback
+
+- 若脚本返回 `None` 或抛异常：平台使用 baseline 央行逻辑（一般是维持上期政策或按规则小幅调整）。
+- 非法字段格式或超过 `config` 限制：平台可能拒绝该字段或 clamp 到合法范围；被拒的关键字段将触发 baseline 或保留上期值。
+
+## 5. 示例（简单货币政策规则）
 
 ```python
 from econ_sim.script_engine.user_api import OverridesBuilder
-from econ_sim.utils.llm_session import create_llm_session_from_env
 
 def generate_decisions(context):
-    try:
-        ent = context.get('entity_state', {}) or {}
-        # 简单示例：当通胀高于目标时小幅加息
-        inflation = float(context.get('world_state', {}).get('macro', {}).get('inflation', 0.0))
-        target = float(ent.get('inflation_target', 0.02))
-        policy_rate = float(ent.get('policy_rate', 0.01))
-        if inflation > target + 0.005:
-            policy_rate = round(policy_rate + 0.002, 4)
-        elif inflation < target - 0.005:
-            policy_rate = round(max(0.0, policy_rate - 0.002), 4)
-
-        b = OverridesBuilder()
-        b.central_bank(policy_rate=policy_rate)
-        return b.build()
-    except Exception:
-        return None
-```
-
-## 四、在脚本中使用 LLM（统一、受支持的方法）
-
-平台对脚本内调用 LLM 的方式只支持一种：
-
-    from econ_sim.utils.llm_session import create_llm_session_from_env
-
-使用示例：
-
-```python
-from econ_sim.utils.llm_session import create_llm_session_from_env
-from econ_sim.script_engine.user_api import OverridesBuilder
-
-def generate_decisions(context):
-    try:
-        session = create_llm_session_from_env()
-        prompt = '请基于最近 12 期的通胀与失业率数据，建议 policy_rate 调整（只返回数字）'
-        resp = session.generate(prompt, max_tokens=30)
-        text = resp.get('content', '')
         try:
-            suggested = float(text.strip().split()[0])
-        except Exception:
-            suggested = float(context.get('entity_state', {}).get('policy_rate', 0.01))
+                ent = context.get('entity_state', {}) or {}
+                macro = context.get('world_state', {}).get('macro', {}) or {}
+                inflation = float(macro.get('inflation', 0.0))
+                target = float(ent.get('inflation_target', 0.02))
+                policy_rate = float(ent.get('policy_rate', 0.01))
 
-        b = OverridesBuilder()
-        b.central_bank(policy_rate=suggested)
-        return b.build()
-    except Exception:
-        return None
+                # 简单规则：以小步长向目标靠拢
+                step = (context.get('config') or {}).get('policy_rate_step', 0.002)
+                if inflation > target + 0.005:
+                        policy_rate = round(policy_rate + step, 4)
+                elif inflation < target - 0.005:
+                        policy_rate = round(max(0.0, policy_rate - step), 4)
+
+                b = OverridesBuilder()
+                b.central_bank(policy_rate=policy_rate)
+                return b.build()
+        except Exception:
+                return None
 ```
 
-注意：央行决策影响面广，务必在脚本中对 LLM 输出做范围与步长校验（例如参考 `config` 中的限制），并在解析失败时使用稳健的回退值。
+## 6. 关于 LLM 的使用
 
-## 五、常见错误与排查
+- 只能通过统一接口 `from econ_sim.utils.llm_session import create_llm_session_from_env` 创建会话并调用，必须对 LLM 返回做严格解析与范围校验，解析失败时回退为稳健值。
 
-- `ScriptExecutionError: override contains unsupported fields`：不要提交未列出的字段，使用 `OverridesBuilder` 会降低出错概率。
-- `ScriptSandboxTimeout`：LLM 调用或复杂计算可能导致超时，保持 prompt 与解析逻辑简短。
-- OMO 操作未被执行：检查 `omo_ops` 字段格式、数量和价格约束是否满足系统要求。
+---
 
-## 六、dry-run 与本地调试
-
-同 household 文档中描述的 `dry_run_generate` 模板，可用来在本地构造 `sample_ctx` 并验证 `generate_decisions` 的返回结构是否符合平台预期。
+如果你希望，我可以把 `omo_ops` 的格式约束和示例逐项映射到 repo 中实际的债券结构（例如债券到期日、票息字段），或基于 `world_settings.yaml` 填充更精确的数值范围。
 
 

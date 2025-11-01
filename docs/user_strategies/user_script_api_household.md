@@ -1,114 +1,114 @@
-## 家户脚本 API（简明、与当前实现一致）
+# 家户（Household）脚本 API
 
-本文件列出家户（household）脚本在 sandbox 中可读的精确字段（白名单），并给出简单示例。
+本文按统一模板描述家户脚本的可用字段、经济学含义、格式和合法范围，以及如何构造决策与失效处理。
 
-重要说明：为了保护玩家隐私，家户脚本只会看到自己的 household 条目；非家户脚本不会得到完整的 `households` 列表。若需要宏观统计量，请使用 `world_state['macro']` 或平台提供的聚合字段（如有）。
+## 1. 交互契约
 
-一、context 快速参考
+- 入口：`def generate_decisions(context)`。
+- `context` 包含：`world_state`, `entity_state`, `config`, `script_api_version`, `agent_kind` ('household'), `entity_id`（通常为整数或字符串形式）。
+- 推荐返回：使用 `OverridesBuilder.household(hid, ...)` 构造并返回 `build()` 的结果；返回 `None` 或非法结构将触发 baseline 回退。
 
-- `world_state`：被裁剪的世界快照（dict）。对家户脚本包含 `tick`, `day`, `features`, `macro`，以及该家户在 `households` 下的单条记录（键为其 id）；不包含其他家户的私有数据。
-- `entity_state`：该家户的序列化状态（等同于 `world_state['households'][id]`），一个 dict，仅包含下列白名单字段（及其子字段）。
-- `config`：只读世界配置（policies 等）。
-- `script_api_version`：int。
-- `agent_kind`：字符串 `'household'`。
-- `entity_id`：实体 id（字符串形式）。
+## 2. 可读字段（逐项说明、格式与建议范围）
 
-二、家户可读字段白名单（entity_state / household 条目）
+- `id` (int or str)
+    - 含义：家户唯一标识。
 
-仅下列字段可被家户脚本读取（若不存在则视为空或 0）：
+- `balance_sheet` (object)
+    - 子字段：
+        - `cash` (float)：可用现金，>= 0。
+        - `deposits` (float)：存款余额，>= 0。
+        - `loans` (float)：负债（贷款），>= 0。
+        - `inventory_goods` (float)：持有商品库存，>= 0。
 
-- `id` (int)
-- `balance_sheet` (object): 子字段：`cash`, `deposits`, `loans`, `inventory_goods`
-- `balance_sheet` (object): 子字段：`cash`, `deposits`, `loans`, `inventory_goods`
-- `bond_holdings` (dict): 债券 id -> 持仓数量（例如 {"BOND-2025-01": 10.0}），脚本可以读取自身持仓以决定是否参与认购或抛售。
+- `bond_holdings` (dict)
+    - 含义：债券 id -> 持仓数量。
+
 - `skill` (float)
+    - 含义：劳动技能水平，格式：浮点，取值通常在 [0, 1] 或更大，具体归一化参照 world_settings。
+
 - `employment_status` (str)
+    - 含义：如 'employed', 'unemployed', 'inactive' 等。
+
 - `is_studying` (bool)
+    - 含义：若为 True，则该家户在本周期从事学习，其 labor_supply 可能为 0。
+
 - `education_level` (float)
+    - 含义：累计教育/人力资本，格式：浮点。
+
 - `labor_supply` (float)
+    - 含义：可供给的劳动时间或单位，格式：浮点，>= 0。
+
 - `wage_income` (float)
+    - 含义：上期工资收入，格式：浮点。
+
 - `last_consumption` (float)
+    - 含义：上期实际消费支出。
+
 - `lifetime_utility` (float)
+    - 含义：累积的效用指标（只读，用于策略评估）。
 
-此外，脚本可通过 `world_state['macro'].get('bond_yield')` 观察当期市场可见的国债收益率（若有），用于评估债券回报与再平衡决策。
+此外，脚本可读 `world_state['macro']` 中的宏观统计量（如 `bond_yield`, `inflation`, `unemployment`）以辅助决策。
 
-三、可写决策字段（HouseholdDecision）
+## 3. 可写决策字段（逐项说明、格式与合法范围）
 
-家户脚本可返回的决策字段与语义（通过 `OverridesBuilder.household(hid, ...)` 提交）：
+通过 `OverridesBuilder.household(hid, ...)` 提交：
 
 - `consumption_budget` (float)
+    - 含义：计划用于本 tick 消费的预算（货币单位）。格式：非负浮点。
+    - 建议约束：应小于等于 `cash + deposits + 可动用信贷`。
+
 - `savings_rate` (float)
+    - 含义：将可支配收入中分配给储蓄的比例（0-1）。格式：浮点。
+    - 建议范围：[0.0, 1.0]。
+
 - `labor_supply` (float)
-- `is_studying` (bool) — 仅在 daily tick 有效；若为 True，建议同时设置 `education_payment`。
+    - 含义：本 tick 提供的劳动量。格式：非负浮点。若 `is_studying == True`，可能被忽略。
+
+- `is_studying` (bool)
+    - 含义：是否决定进入学习（一般仅在 daily tick 生效）。
+
 - `education_payment` (float)
+    - 含义：若进入学习，愿意支付的教育费用（货币单位）。格式：非负浮点。
+
 - `deposit_order` / `withdrawal_order` (float)
+    - 含义：请求把多少现金转入存款或从存款取出。格式：浮点，受现金与银行规则约束。
 
-四、简明示例（推荐使用 OverridesBuilder）
+平台将对这些字段做类型和范围校验；若不满足，字段可能被拒绝或 clamp。
 
-```python
-from econ_sim.script_engine.user_api import OverridesBuilder, clamp
+## 4. 决策失效 / fallback 行为
 
-def generate_decisions(context):
-    # 获得当前实体 id 与序列化状态（仅为本家户）
-    hid_raw = context.get('entity_id')
-    if hid_raw is None:
-        return {}
-    try:
-        hid = int(hid_raw)
-    except Exception:
-        return {}
+- 如果脚本抛出异常或返回 `None`：平台使用 baseline（例如简单预算规则、默认劳动选择）。
+- 若返回字段超出 `config` 限制或类型错误：平台会尝试解析并 clamp，否则拒绝该字段并使用 baseline/上期值。
 
-    ent = context.get('entity_state') or {}
-    bs = ent.get('balance_sheet', {})
-    cash = float(bs.get('cash', 0.0))
-    deposits = float(bs.get('deposits', 0.0))
-    wage = float(ent.get('wage_income', 0.0))
+建议脚本在本地对返回值做严格校验并在异常情况下返回 `None` 或稳健默认值。
 
-    # 使用仅有字段做预算决定（避开未暴露的私有字段）
-    liquid = cash + deposits
-    target_consumption = max(1.0, (0.05 * liquid + 0.5 * wage))
-
-    features = context.get('world_state', {}).get('features', {}) or {}
-    is_daily = bool(features.get('is_daily_decision_tick'))
-
-    builder = OverridesBuilder()
-    # 每日决策可同时选择学习
-    if is_daily and float(ent.get('education_level', 0.0)) < 0.4:
-        builder.household(hid, consumption_budget=round(target_consumption,2), savings_rate=0.1, is_studying=True, education_payment=2.0)
-    else:
-        builder.household(hid, consumption_budget=round(target_consumption,2), savings_rate=0.1)
-
-    return builder.build()
-```
-
-六、债券示例：读取持仓与债券收益率
+## 5. 示例（保守消费与学习决策）
 
 ```python
 from econ_sim.script_engine.user_api import OverridesBuilder
 
 def generate_decisions(context):
-    hid = int(context.get('entity_id'))
-    ent = context.get('entity_state') or {}
-    bond_holdings = ent.get('bond_holdings', {}) or {}
-    bond_yield = (context.get('world_state') or {}).get('macro', {}).get('bond_yield')
+        try:
+                ent = context.get('entity_state', {}) or {}
+                hid = int(context.get('entity_id'))
+                bs = ent.get('balance_sheet', {}) or {}
+                cash = float(bs.get('cash', 0.0))
+                wage = float(ent.get('wage_income', 0.0))
 
-    # 若收益率高且手头有债券，考虑出售部分仓位
-    builder = OverridesBuilder()
-    if bond_yield is not None and bond_holdings:
-        # 简单规则：当收益率高于阈值且持仓较多时减少持仓（示例）
-        for bid, qty in bond_holdings.items():
-            if qty > 0 and float(bond_yield) > 0.05:
-                # 平台上家户一般通过提交 bond_bids 等方式参与，这里仅做示例逻辑
-                pass
+                # 简单规则：消费为现金的一小部分加上工资因子
+                target_consumption = max(1.0, 0.05 * (cash + wage))
 
-    # 返回默认消费决策示例
-    builder.household(hid, consumption_budget=round(float(ent.get('balance_sheet', {}).get('cash',0.0)),2), savings_rate=0.1)
-    return builder.build()
+                b = OverridesBuilder()
+                b.household(hid, consumption_budget=round(target_consumption,2), savings_rate=0.1)
+                return b.build()
+        except Exception:
+                return None
 ```
 
-五、常见错误快速排查
+## 6. 使用 LLM
 
-- 若脚本期望读取其他家户（例如 `world_state['households']` 中的所有条目）会发现该字典只包含本家户；不要依赖它来做全局聚合。
-- 若需要宏观统计量，应优先读取 `world_state['macro']` 或请求平台提供的受控聚合字段。
+- 可使用统一接口 `create_llm_session_from_env()` 但必须解析并验证返回；家户脚本由于权限与运行时限制，应尽量避免频繁或大型 LLM 调用。
 
-更多示例与细节请参见同目录下其他主体文档。
+---
+
+若你希望，我可以把 `consumption_budget`、`savings_rate` 等字段的建议范围映射到仓库中的实际 `world_settings.yaml` 或测试 fixture，以提供更精确的基线与示例。 
