@@ -7,24 +7,27 @@
     <nav class="tabs">
         {% set _base = "/web/dashboard" %}
         <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=overview"
-           class="tab{% if _tab == 'overview' %} active{% endif %}">总览</a>
+           class="tab{% if _tab == 'overview' %} active{% endif %}">世界与我</a>
         <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=scripts"
-           class="tab{% if _tab == 'scripts' %} active{% endif %}">脚本</a>
+           class="tab{% if _tab == 'scripts' %} active{% endif %}">策略库</a>
         <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=upload"
-           class="tab{% if _tab == 'upload' %} active{% endif %}">上传/挂载</a>
+           class="tab{% if _tab == 'upload' %} active{% endif %}">加入世界</a>
         {% if simulation_id %}
             <a href="{{ _base }}{% if simulation_id %}?simulation_id={{ simulation_id }}&{% else %}?{% endif %}tab=rotate"
-               class="tab{% if _tab == 'rotate' %} active{% endif %}">日终轮换</a>
+               class="tab{% if _tab == 'rotate' %} active{% endif %}">修改策略</a>
         {% endif %}
     </nav>
     <section class="panel">
         <h2>欢迎，{{ user.email }}（{{ user.user_type }}）</h2>
+        <h4>您可以上传脚本到个人脚本库，然后将个人脚本库中的策略脚本挂载到您选择的仿真世界中，这会为这个脚本自动创建实体以加入这个世界。</h4>
+        <h4>请在仿真世界还未开始运行时加入世界。</h4>
+        <h4>世界开始运行后，在每个游戏日结束时，您可以为每个实体更换策略脚本。</h4>
         <p>
             当前仿真世界：<strong>{{ simulation_id or "未选择" }}</strong>
         </p>
         {% if simulation_id %}
             <p>
-                当前脚本上限：
+                可向当前世界投放的实体数上限：
                 {% if script_limit is not none %}
                     <strong>{{ script_limit }}</strong> 个脚本 / 用户
                 {% elif default_script_limit is not none %}
@@ -481,7 +484,7 @@
                   enctype="multipart/form-data">
                 <input type="hidden" name="simulation_id" value="{{ simulation_id }}">
                 <label>
-                    选择已挂载脚本
+                    选择实体以修改策略
                     <select name="script_id" required>
                         {% for script in scripts if script.user_id == user.email %}
                             <option value="{{ script.script_id }}">
@@ -491,14 +494,14 @@
                     </select>
                 </label>
                 <label>
-                    新脚本描述（可选）
+                    新策略描述（可选）
                     <input type="text" name="new_description" placeholder="本次版本的说明">
                 </label>
                 <label>
-                    新脚本文件（.py）
+                    新策略脚本文件（.py）
                     <input type="file" name="script_file" accept=".py" required>
                 </label>
-                <button type="submit">在日终替换脚本</button>
+                <button type="submit">在日终替换策略脚本</button>
             </form>
         </section>
     {% endif %}
