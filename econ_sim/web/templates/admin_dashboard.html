@@ -342,7 +342,14 @@
                             {% set debt = world.government.debt_instruments if world.government is defined and world.government.debt_instruments is defined else {} %}
                             {% if debt and debt | length > 0 %}
                                 <div class="scroll-pane">
-                                    <table class="state-table">
+                                    <table class="state-table gov-debt-table">
+                                        <colgroup>
+                                            <col style="width:20%">
+                                            <col style="width:20%">
+                                            <col style="width:20%">
+                                            <col style="width:20%">
+                                            <col style="width:20%">
+                                        </colgroup>
                                         <thead>
                                             <tr>
                                                 <th>ID</th>

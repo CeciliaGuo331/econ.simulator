@@ -162,7 +162,8 @@ def _means_tested_transfer(
                 world_state,
                 face_value=1.0,
                 coupon_rate=cfg.policies.default_bond_coupon_rate,
-                maturity_tick=world_state.tick + cfg.policies.default_bond_maturity,
+                # maturity set to one simulation day (ticks_per_day) after now
+                maturity_tick=world_state.tick + int(cfg.simulation.ticks_per_day),
                 volume=shortfall,
                 bids=use_bids,
                 tick=world_state.tick,
@@ -363,7 +364,7 @@ def _unemployment_benefit(
                 world_state,
                 face_value=1.0,
                 coupon_rate=cfg.policies.default_bond_coupon_rate,
-                maturity_tick=world_state.tick + cfg.policies.default_bond_maturity,
+                maturity_tick=world_state.tick + int(cfg.simulation.ticks_per_day),
                 volume=shortfall,
                 bids=use_bids,
                 tick=world_state.tick,

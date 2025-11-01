@@ -613,6 +613,24 @@ def process_bond_maturities(world_state, tick: int, day: int):
             del government.debt_instruments[bond_id]
             government.debt_outstanding.pop(bond_id, None)
 
+            # persist updated debt_instruments mapping after removal so storage
+            # reflects the deletion of matured bonds. This is done per-removal
+            # as a best-effort update to ensure UI consistency.
+            try:
+                debt_instruments_serial = {
+                    bid: b.model_dump()
+                    for bid, b in government.debt_instruments.items()
+                }
+                updates.append(
+                    StateUpdateCommand.assign(
+                        scope=AgentKind.GOVERNMENT,
+                        agent_id=government.id,
+                        debt_instruments=debt_instruments_serial,
+                    )
+                )
+            except Exception:
+                pass
+
     log = models.TickLogEntry(
         tick=tick,
         day=day,

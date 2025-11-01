@@ -462,6 +462,27 @@ body {
   color: rgba(226, 232, 240, 0.6);
 }
 
+/* 专门用于政府债券表格：允许 colgroup 宽度生效并平均分配列 */
+.state-table.gov-debt-table {
+  table-layout: fixed !important; /* 让 col/colgroup 的宽度生效 */
+}
+.state-table.gov-debt-table th {
+  width: auto; /* 覆盖全局 .state-table th { width: 40% } */
+}
+.state-table.gov-debt-table col {
+  width: 20% !important; /* 五列均分 */
+}
+/* 防止长 ID 或数值撑开列宽：截断溢出文本 */
+.state-table.gov-debt-table th,
+.state-table.gov-debt-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.state-table.gov-debt-table td:first-child {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+
 .json-preview {
   white-space: pre-wrap;
   font-family: "JetBrains Mono", "Fira Code", monospace;

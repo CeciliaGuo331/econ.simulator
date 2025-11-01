@@ -1535,9 +1535,10 @@ def _execute_market_logic(
                 cfg = config
                 face_value = 1.0
                 coupon_rate = float(cfg.policies.default_bond_coupon_rate)
-                maturity_tick = world_state.tick + int(
-                    cfg.policies.default_bond_maturity
-                )
+                # Set bond maturity to one configured day (ticks_per_day) rather
+                # than a hard-coded constant. This ensures newly issued bonds
+                # mature after one simulation day as configured in world settings.
+                maturity_tick = world_state.tick + int(cfg.simulation.ticks_per_day)
                 volume = float(gov_plan.get("volume", 0.0)) or 0.0
                 # if no explicit volume provided, default to min(available cash, small amount)
                 if volume <= 0:

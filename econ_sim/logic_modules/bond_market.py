@@ -292,6 +292,24 @@ def clear_bond_auction(
     # register bond in government's debt_instruments registry
     government.debt_instruments[bond.id] = bond
 
+    # persist government's debt_instruments mapping so UI and persistence layers
+    # can observe registered bond metadata. Serialize BondInstrument objects to
+    # plain dicts for storage.
+    try:
+        debt_instruments_serial = {
+            bid: b.model_dump() for bid, b in government.debt_instruments.items()
+        }
+        updates.append(
+            StateUpdateCommand.assign(
+                scope=AgentKind.GOVERNMENT,
+                agent_id=government.id,
+                debt_instruments=debt_instruments_serial,
+            )
+        )
+    except Exception:
+        # best-effort: do not break auction if persistence prep fails
+        pass
+
     # produce a TickLogEntry summarizing the auction/trades for persistent market_order_log
     try:
         trades_serial = [t.model_dump() for t in trades]
