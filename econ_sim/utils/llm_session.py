@@ -75,7 +75,6 @@ class LLMSession:
         self,
         prompt: str,
         *,
-        model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.2,
     ) -> dict:
@@ -99,7 +98,7 @@ class LLMSession:
 
         # construct request object compatible with provider
         req = LLMRequest(
-            model=model or "default",
+            model=None,
             prompt=prompt,
             max_tokens=int(max_tokens or DEFAULT_MAX_TOKENS_PER_CALL),
         )

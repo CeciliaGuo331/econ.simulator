@@ -1,17 +1,18 @@
-"""
-LLM Provider 抽象与运行时绑定（OpenAI 兼容）。
+"""llm_provider
+=================
 
-该模块定义了用于与外部 LLM（当前以 OpenAI 兼容接口为主）交互的简单抽象：
+简单的 OpenAI-compatible LLM provider 绑定，按环境变量初始化。
 
-- `LLMRequest` / `LLMResponse`：用于在模块内部标准化请求/响应的数据结构。
-- `LLMProvider`：接口定义，具体 provider 应实现 `generate` 异步方法以返回 `LLMResponse`。
-- `get_default_provider()`：按需在运行时导入 `openai` SDK 并返回一个 OpenAIProvider 实例，
-    若 SDK 缺失或 `OPENAI_API_KEY` 未设置，会抛出明确的运行时错误以提示部署者配置环境。
+目标：尽量保持代码简单，只兼容本项目需要的 OpenAI 风格接口，并支持通过环境
+变量配置三项：推理终点 (API base), API key, 与默认模型。
 
-设计原则：
-- 避免在模块导入时立即依赖第三方 SDK；仅在需要 provider 时动态导入，从而降低导入侧副作用与测试难度。
-- 若需要在测试中使用 mock，请在测试目录中实现并注入一个满足 `LLMProvider` 接口的模拟实现，
-    或在测试 fixture 中替换 `get_default_provider` 的行为。
+约定的环境变量（可以修改，如果你想要别的名字我可以改）：
+- `LLM_API_ENDPOINT`：可选，OpenAI 兼容 API 的 base URL（例如自托管的推理终点）。
+- `LLM_API_KEY`：必需，用于认证的 API key。
+- `LLM_DEFAULT_MODEL`：可选，作为 provider 的默认 model 名称（例如 "gpt-3.5-turbo"）。
+
+保留：模块仍定义 `LLMRequest` / `LLMResponse` / `LLMProvider` 抽象，以及 `get_default_provider()`。
+实现尽量精简，token usage 的读取行为与之前兼容。
 """
 
 from __future__ import annotations
@@ -24,7 +25,10 @@ import logging
 
 @dataclass
 class LLMRequest:
-    model: str
+    # Callers no longer select the model. This field is optional and ignored
+    # by the provider implementation; the provider will use the system
+    # configured default model instead.
+    model: Optional[str]
     prompt: str
     max_tokens: int = 512
     temperature: float = 0.2
@@ -45,67 +49,115 @@ class LLMProvider:
 
 
 def get_default_provider() -> LLMProvider:
-    """Return an OpenAI-backed provider. Requires OPENAI_API_KEY and the `openai` package.
+    # Read configuration from environment (three variables as requested):
+    # - LLM_API_ENDPOINT (optional)
+    # - LLM_API_KEY      (required)
+    # - LLM_DEFAULT_MODEL(optional)
+    endpoint = os.getenv("LLM_API_ENDPOINT") or os.getenv("OPENAI_API_BASE")
+    key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    default_model = os.getenv("LLM_DEFAULT_MODEL") or os.getenv("OPENAI_MODEL")
 
-    Raises RuntimeError with a helpful message if configuration is missing.
-    """
+    if not key:
+        raise RuntimeError(
+            "LLM API key is not set. Set LLM_API_KEY (or OPENAI_API_KEY) in environment."
+        )
+
     try:
         import openai  # type: ignore
     except Exception as exc:  # pragma: no cover - diagnostic
         logging.exception("openai package import failed")
         raise RuntimeError(
-            "The 'openai' package is required for the OpenAI LLM provider. Install it with 'pip install openai'."
+            "The 'openai' package is required for the OpenAI-compatible provider. Install it with 'pip install openai'."
         ) from exc
 
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise RuntimeError(
-            "OPENAI_API_KEY environment variable is not set; OpenAI provider cannot be used"
-        )
-
+    # Apply configuration to openai client
     openai.api_key = key
+    if endpoint:
+        # allow custom inference endpoints (OpenAI-compatible)
+        openai.api_base = endpoint
 
     class OpenAIProvider(LLMProvider):
         async def generate(self, req: LLMRequest, *, user_id: str) -> LLMResponse:
-            # Use ChatCompletion for gpt-like models, fallback to Completion for older models
-            try:
-                if req.model and "gpt" in req.model:
-                    resp = openai.ChatCompletion.create(
-                        model=req.model,
-                        messages=[{"role": "user", "content": req.prompt}],
-                        max_tokens=req.max_tokens,
-                        temperature=req.temperature,
-                    )
-                    # compatibility: some SDKs return nested objects
-                    choice = resp.choices[0]
-                    text = (
-                        getattr(choice.message, "content", None)
-                        or choice["message"]["content"]
-                    )
-                    usage = (
-                        int(resp.usage.get("total_tokens", 0))
-                        if getattr(resp, "usage", None)
-                        else 0
-                    )
-                else:
-                    resp = openai.Completion.create(
-                        model=req.model or "text-davinci-003",
-                        prompt=req.prompt,
-                        max_tokens=req.max_tokens,
-                        temperature=req.temperature,
-                    )
-                    choice = resp.choices[0]
-                    text = choice.text
-                    usage = (
-                        int(resp.usage.get("total_tokens", 0))
-                        if getattr(resp, "usage", None)
-                        else 0
-                    )
-                return LLMResponse(
-                    model=req.model or "openai", content=text, usage_tokens=usage
+            # Ignore any model provided by the caller; enforce system-provided model
+            model_name = default_model or "gpt-3.5-turbo"
+
+            # Prefer ChatCompletion for 'gpt' style models
+            if "gpt" in model_name:
+                resp = await _call_chat_completion(openai, model_name, req)
+            else:
+                resp = await _call_completion(openai, model_name, req)
+
+            # Extract text and usage in a compact, compatible way
+            text = _extract_text_from_response(resp)
+            usage = _extract_usage_from_response(resp)
+
+            return LLMResponse(model=model_name, content=text, usage_tokens=usage)
+
+    # helper implementations kept local and simple
+    async def _call_chat_completion(openai, model_name: str, req: LLMRequest):
+        # Use create for older sync SDKs or an async shim; try both sync and async paths
+        try:
+            # modern openai Python lib exposes .ChatCompletion.create synchronously
+            resp = openai.ChatCompletion.create(
+                model=model_name,
+                messages=[{"role": "user", "content": req.prompt}],
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+            )
+            return resp
+        except TypeError:
+            # in case the SDK provides an async method (unlikely), await it
+            return await openai.ChatCompletion.acreate(
+                model=model_name,
+                messages=[{"role": "user", "content": req.prompt}],
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+            )
+
+    async def _call_completion(openai, model_name: str, req: LLMRequest):
+        try:
+            resp = openai.Completion.create(
+                model=model_name,
+                prompt=req.prompt,
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+            )
+            return resp
+        except TypeError:
+            return await openai.Completion.acreate(
+                model=model_name,
+                prompt=req.prompt,
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+            )
+
+    def _extract_text_from_response(resp: Any) -> str:
+        # ChatCompletion shape: resp.choices[0].message.content or resp.choices[0]["message"]["content"]
+        try:
+            choice = resp.choices[0]
+            # try attribute-style first
+            msg = getattr(choice, "message", None)
+            if msg is not None:
+                return getattr(msg, "content", "")
+            # fallback to mapping
+            if isinstance(choice, dict):
+                return choice.get("message", {}).get("content", "") or choice.get(
+                    "text", ""
                 )
-            except Exception:
-                logging.exception("OpenAI provider generate failed")
-                raise
+            return getattr(choice, "text", "") or ""
+        except Exception:
+            logging.exception("Failed to extract text from LLM response")
+            return ""
+
+    def _extract_usage_from_response(resp: Any) -> int:
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage and isinstance(usage, dict):
+                return int(usage.get("total_tokens", 0) or 0)
+            if usage and hasattr(usage, "total_tokens"):
+                return int(getattr(usage, "total_tokens", 0) or 0)
+            return 0
+        except Exception:
+            return 0
 
     return OpenAIProvider()

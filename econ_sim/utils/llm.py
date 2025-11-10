@@ -29,11 +29,12 @@ class _Adapter:
         self,
         prompt: str,
         *,
-        model: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
+        # Callers are not allowed to select the model; system-configured
+        # model will be used by the provider. We pass model=None.
         req = LLMRequest(
-            model=model or "gpt-3.5-turbo",
+            model=None,
             prompt=prompt,
             max_tokens=int(max_tokens or 256),
         )
