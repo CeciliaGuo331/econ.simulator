@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from ..auth import user_manager
 from ..auth.user_manager import UserProfile
 from ..utils.llm import resolve_llm_provider
+import os
 from ..utils.rate_limiter import RateLimiter
 
 
@@ -77,14 +78,24 @@ async def completions(
             detail=f"Rate limit exceeded. Try again in {rl.reset_seconds}s.",
         )
     provider = resolve_llm_provider()
-    text = await provider.complete(
-        payload.prompt, model=payload.model, max_tokens=payload.max_tokens
-    )
+    # Call without model: system-provided model is enforced by the provider
+    text = await provider.complete(payload.prompt, max_tokens=payload.max_tokens)
+
     # Simple token usage estimate by characters (placeholder)
     usage = min(len(payload.prompt) // 4 + (payload.max_tokens or 0), 4096)
+
+    # Determine the actual model used: prefer adapter.exposed system_model,
+    # fall back to env var or a sensible default
+    model_used = (
+        getattr(provider, "system_model", None)
+        or os.getenv("LLM_DEFAULT_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or "gpt-3.5-turbo"
+    )
+
     return CompletionResponse(
         output=text,
-        model=payload.model or "openai",
+        model=model_used,
         usage_tokens=usage,
         rate_remaining=rl.remaining,
         rate_reset_seconds=rl.reset_seconds,

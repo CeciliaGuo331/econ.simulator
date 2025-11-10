@@ -5,6 +5,7 @@ defensive if `entity_state` is missing (in which case registry should
 normally provide it for household scripts)."""
 
 from econ_sim.script_engine.user_api import OverridesBuilder, clamp
+from econ_sim.utils.llm_session import LLMQuotaExceeded
 import random
 
 
@@ -70,6 +71,52 @@ def generate_decisions(context: dict) -> dict:
         labor_supply = 0.0
     else:
         labor_supply = 1.0 if random.random() < 0.7 else 0.0
+
+    # Allow optional LLM-assisted suggestion for household consumption.
+    # If an `llm` object is injected into the script globals (the sandbox
+    # provides this when available), we ask for a numeric suggestion and
+    # apply it only if it parses to a sensible number within allowed range.
+    try:
+        llm = globals().get("llm")
+        if llm is not None:
+            prompt = (
+                "Household decision support. Provide a single numeric consumption "
+                "budget suggestion (no extra text) for this household given the "
+                f"state: cash={cash}, deposits={deposits}, wage_income={wage_income}, "
+                f"is_studying={is_studying}. Return only a number between {consumption_min} and {consumption_max}."
+            )
+            try:
+                content = None
+                # Use synchronous session-style API only. If the injected llm
+                # provides a .generate(...) method we call it; otherwise skip.
+                if hasattr(llm, "generate"):
+                    resp = llm.generate(prompt, max_tokens=40)
+                    if isinstance(resp, dict):
+                        content = resp.get("content")
+                    else:
+                        content = getattr(resp, "content", str(resp))
+
+                if content:
+                    import re
+
+                    m = re.search(r"([-+]?\d*\.?\d+)", str(content))
+                    if m:
+                        try:
+                            val = float(m.group(1))
+                            # clamp into allowed window
+                            val = max(consumption_min, min(consumption_max, val))
+                            consumption = round(val, 2)
+                        except Exception:
+                            pass
+            except LLMQuotaExceeded:
+                # quota exceeded -> safe fallback to baseline decision
+                pass
+            except Exception:
+                # ignore any llm errors to avoid breaking baseline behavior
+                pass
+    except Exception:
+        # global lookup issues should not break script
+        pass
 
     builder = OverridesBuilder()
     builder.household(

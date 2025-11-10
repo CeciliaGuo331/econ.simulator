@@ -40,6 +40,7 @@ services:
         condition: service_started
     env_file:
       - ./config/docker.env
+      - ./config/llm.env
     ports:
       - "8000:8000"
     # mount source for easier local iteration (optional)

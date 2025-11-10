@@ -55,8 +55,8 @@ try:
 except Exception:
     _PSUTIL_AVAILABLE = False
 
-DEFAULT_SANDBOX_TIMEOUT = 0.75
-CPU_TIME_LIMIT_SECONDS = 1
+DEFAULT_SANDBOX_TIMEOUT = 120
+CPU_TIME_LIMIT_SECONDS = 120
 MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
 # 当单个工作进程执行到达此任务数量时，强制其退出以便进程池替换它。
 # 这有助于缓解长期运行工作进程中的内存泄漏或模块状态污染问题。
@@ -71,6 +71,7 @@ ALLOWED_MODULES: Set[str] = {
     "statistics",
     "random",
     "time",
+    "re",
     "econ_sim",
     "econ_sim.script_engine",
     "econ_sim.script_engine.user_api",
@@ -275,6 +276,239 @@ def _pool_worker(
                 llm_obj = None
         except Exception:
             llm_obj = None
+
+        # Wrap injected llm object with a logging proxy so the system (not user
+        # scripts) can record when LLM calls occur and which system model is used.
+        try:
+            if llm_obj is not None:
+                import asyncio
+                import inspect
+
+                logger = logging.getLogger("econ_sim.llm")
+
+                class _LLMLoggingProxy:
+                    def __init__(self, real):
+                        self._real = real
+                        # try common places for system_model
+                        self.system_model = getattr(
+                            real, "system_model", None
+                        ) or getattr(
+                            getattr(real, "provider", None), "system_model", None
+                        )
+
+                        # Control detailed logging of prompts/outputs via env var.
+                        # Set ECON_SIM_LLM_LOG_FULL=1 to enable logging full prompt
+                        # and full response content + usage_tokens at DEBUG level.
+                        try:
+                            self._log_full = (
+                                os.getenv("ECON_SIM_LLM_LOG_FULL", "0") == "1"
+                            )
+                        except Exception:
+                            self._log_full = False
+
+                    def _unwrap_content(self, resp):
+                        if resp is None:
+                            return None
+                        if isinstance(resp, dict):
+                            return resp.get("content")
+                        return getattr(resp, "content", str(resp))
+
+                    def generate(self, *args, **kwargs):
+                        try:
+                            user_id = kwargs.get("user_id")
+                            prompt = args[0] if args else kwargs.get("prompt")
+                            plen = len(prompt) if isinstance(prompt, str) else 0
+                            logger.info(
+                                "llm.generate called: system_model=%s user_id=%s prompt_len=%s",
+                                self.system_model,
+                                user_id,
+                                plen,
+                            )
+                            # debug: log prompt preview and optionally full prompt
+                            try:
+                                if self._log_full:
+                                    logger.debug(
+                                        "llm.generate prompt (full)=%r", prompt
+                                    )
+                                else:
+                                    preview_p = (
+                                        (prompt[:400] + "...")
+                                        if prompt and len(prompt) > 400
+                                        else prompt
+                                    )
+                                    logger.debug(
+                                        "llm.generate prompt_preview=%r", preview_p
+                                    )
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                        try:
+                            result = self._real.generate(*args, **kwargs)
+                        except Exception:
+                            logger.exception("llm.generate raised")
+                            raise
+
+                        # support if generate returned a coroutine
+                        try:
+                            if asyncio.iscoroutine(result):
+                                try:
+                                    result = asyncio.run(result)
+                                except RuntimeError:
+                                    loop = asyncio.new_event_loop()
+                                    try:
+                                        result = loop.run_until_complete(
+                                            self._real.generate(*args, **kwargs)
+                                        )
+                                    finally:
+                                        try:
+                                            loop.close()
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
+
+                        try:
+                            content = self._unwrap_content(result)
+                            # Attempt to extract usage tokens if available
+                            usage = None
+                            try:
+                                usage = int(getattr(result, "usage_tokens", None) or 0)
+                            except Exception:
+                                try:
+                                    usage = (
+                                        int(result.get("usage_tokens", 0))
+                                        if isinstance(result, dict)
+                                        else None
+                                    )
+                                except Exception:
+                                    usage = None
+
+                            if self._log_full:
+                                logger.debug(
+                                    "llm.generate returned: system_model=%s content=%r usage_tokens=%r",
+                                    self.system_model,
+                                    content,
+                                    usage,
+                                )
+                            else:
+                                preview = (
+                                    (content[:200] + "...")
+                                    if content and len(content) > 200
+                                    else content
+                                )
+                                logger.info(
+                                    "llm.generate returned: system_model=%s preview=%r usage_tokens=%r",
+                                    self.system_model,
+                                    preview,
+                                    usage,
+                                )
+                        except Exception:
+                            pass
+                        return result
+
+                    async def complete(self, *args, **kwargs):
+                        try:
+                            user_id = kwargs.get("user_id")
+                            prompt = args[0] if args else kwargs.get("prompt")
+                            plen = len(prompt) if isinstance(prompt, str) else 0
+                            logger.info(
+                                "llm.complete called: system_model=%s user_id=%s prompt_len=%s",
+                                self.system_model,
+                                user_id,
+                                plen,
+                            )
+                            try:
+                                if self._log_full:
+                                    logger.debug(
+                                        "llm.complete prompt (full)=%r", prompt
+                                    )
+                                else:
+                                    preview_p = (
+                                        (prompt[:400] + "...")
+                                        if prompt and len(prompt) > 400
+                                        else prompt
+                                    )
+                                    logger.debug(
+                                        "llm.complete prompt_preview=%r", preview_p
+                                    )
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                        try:
+                            result = self._real.complete(*args, **kwargs)
+                        except Exception:
+                            logger.exception("llm.complete raised")
+                            raise
+
+                        # if complete returned coroutine-like, await it
+                        try:
+                            if inspect.isawaitable(result):
+                                result = await result
+                        except Exception:
+                            # fallback: try running in new loop
+                            try:
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    result = loop.run_until_complete(
+                                        self._real.complete(*args, **kwargs)
+                                    )
+                                finally:
+                                    try:
+                                        loop.close()
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                        try:
+                            content = self._unwrap_content(result)
+                            # Attempt to extract usage tokens if available
+                            usage = None
+                            try:
+                                usage = int(getattr(result, "usage_tokens", None) or 0)
+                            except Exception:
+                                try:
+                                    usage = (
+                                        int(result.get("usage_tokens", 0))
+                                        if isinstance(result, dict)
+                                        else None
+                                    )
+                                except Exception:
+                                    usage = None
+
+                            if self._log_full:
+                                logger.debug(
+                                    "llm.complete returned: system_model=%s content=%r usage_tokens=%r",
+                                    self.system_model,
+                                    content,
+                                    usage,
+                                )
+                            else:
+                                preview = (
+                                    (content[:200] + "...")
+                                    if content and len(content) > 200
+                                    else content
+                                )
+                                logger.info(
+                                    "llm.complete returned: system_model=%s preview=%r usage_tokens=%r",
+                                    self.system_model,
+                                    preview,
+                                    usage,
+                                )
+                        except Exception:
+                            pass
+                        return result
+
+                try:
+                    llm_obj = _LLMLoggingProxy(llm_obj)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         sandbox_globals: Dict[str, Any] = {
             "__builtins__": safe_builtins,

@@ -27,6 +27,17 @@ import logging
 import os
 from pathlib import Path
 
+# If detailed LLM logging is requested via env, ensure the
+# 'econ_sim.llm' logger is at DEBUG so proxy INFO/DEBUG lines are emitted.
+try:
+    if os.getenv("ECON_SIM_LLM_LOG_FULL", "0") == "1":
+        logging.getLogger("econ_sim.llm").setLevel(logging.DEBUG)
+    else:
+        # ensure at least INFO for llm previews when not in full mode
+        logging.getLogger("econ_sim.llm").setLevel(logging.INFO)
+except Exception:
+    pass
+
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles

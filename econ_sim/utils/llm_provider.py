@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+import httpx
 import os
 import logging
 
@@ -81,11 +82,8 @@ def get_default_provider() -> LLMProvider:
             # Ignore any model provided by the caller; enforce system-provided model
             model_name = default_model or "gpt-3.5-turbo"
 
-            # Prefer ChatCompletion for 'gpt' style models
-            if "gpt" in model_name:
-                resp = await _call_chat_completion(openai, model_name, req)
-            else:
-                resp = await _call_completion(openai, model_name, req)
+            # Use Chat Completions REST endpoint (matches the provided example)
+            resp = await _call_chat_completions_api(model_name, req, key, endpoint)
 
             # Extract text and usage in a compact, compatible way
             text = _extract_text_from_response(resp)
@@ -94,60 +92,109 @@ def get_default_provider() -> LLMProvider:
             return LLMResponse(model=model_name, content=text, usage_tokens=usage)
 
     # helper implementations kept local and simple
-    async def _call_chat_completion(openai, model_name: str, req: LLMRequest):
-        # Use create for older sync SDKs or an async shim; try both sync and async paths
-        try:
-            # modern openai Python lib exposes .ChatCompletion.create synchronously
-            resp = openai.ChatCompletion.create(
-                model=model_name,
-                messages=[{"role": "user", "content": req.prompt}],
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-            )
-            return resp
-        except TypeError:
-            # in case the SDK provides an async method (unlikely), await it
-            return await openai.ChatCompletion.acreate(
-                model=model_name,
-                messages=[{"role": "user", "content": req.prompt}],
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-            )
+    async def _call_chat_completions_api(
+        model_name: str, req: LLMRequest, api_key: str, api_base: Optional[str]
+    ):
+        """Call the Chat Completions REST endpoint using async httpx.
 
-    async def _call_completion(openai, model_name: str, req: LLMRequest):
-        try:
-            resp = openai.Completion.create(
-                model=model_name,
-                prompt=req.prompt,
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-            )
-            return resp
-        except TypeError:
-            return await openai.Completion.acreate(
-                model=model_name,
-                prompt=req.prompt,
-                max_tokens=req.max_tokens,
-                temperature=req.temperature,
-            )
+        This mirrors the official example: POST {api_base}/v1/chat/completions
+        with Authorization Bearer <key> and a JSON body containing `model` and
+        `messages`. We use a non-streaming call for simplicity.
+        """
+        if not api_base:
+            raise RuntimeError("No API base configured for chat completions endpoint")
+
+        url = api_base.rstrip("/") + "/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        body = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": req.prompt}],
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+        }
+
+        async with httpx.AsyncClient(timeout=30.0, verify=True) as client:
+            resp = await client.post(url, headers=headers, json=body)
+            text = resp.text
+            try:
+                data = resp.json()
+            except Exception:
+                raise RuntimeError(
+                    f"Non-JSON response from LLM endpoint: {resp.status_code} {text[:200]}"
+                )
+
+            if resp.status_code >= 400:
+                # Bubble up a compact error without leaking the key
+                err_msg = data.get("error") if isinstance(data, dict) else text
+                raise RuntimeError(f"LLM endpoint error {resp.status_code}: {err_msg}")
+
+            return data
+
+    # remove legacy completion/chat code paths; use responses API only
 
     def _extract_text_from_response(resp: Any) -> str:
-        # ChatCompletion shape: resp.choices[0].message.content or resp.choices[0]["message"]["content"]
+        """Extract textual content from a Responses API response.
+
+        This focuses on the new Responses API shapes but keeps a minimal
+        fallback to older 'choices' style if present for robustness.
+        """
         try:
-            choice = resp.choices[0]
-            # try attribute-style first
-            msg = getattr(choice, "message", None)
-            if msg is not None:
-                return getattr(msg, "content", "")
-            # fallback to mapping
-            if isinstance(choice, dict):
-                return choice.get("message", {}).get("content", "") or choice.get(
-                    "text", ""
-                )
-            return getattr(choice, "text", "") or ""
+            # common new-style attribute
+            out_text = getattr(resp, "output_text", None)
+            if out_text:
+                return out_text
+
+            # mapping-style new responses API
+            if isinstance(resp, dict):
+                if resp.get("output_text"):
+                    return resp.get("output_text")
+                outputs = resp.get("output") or resp.get("outputs")
+                if outputs and isinstance(outputs, list) and len(outputs) > 0:
+                    first = outputs[0]
+                    if isinstance(first, dict):
+                        content = first.get("content")
+                        if isinstance(content, list) and len(content) > 0:
+                            c0 = content[0]
+                            if isinstance(c0, dict):
+                                return c0.get("text") or c0.get("content") or ""
+                            if isinstance(c0, str):
+                                return c0
+                        if first.get("text"):
+                            return first.get("text")
+
+            # attribute-style outputs
+            outputs = getattr(resp, "output", None) or getattr(resp, "outputs", None)
+            if outputs and isinstance(outputs, list) and len(outputs) > 0:
+                first = outputs[0]
+                content = None
+                if isinstance(first, dict):
+                    content = first.get("content")
+                else:
+                    content = getattr(first, "content", None)
+                if isinstance(content, list) and len(content) > 0:
+                    item = content[0]
+                    if isinstance(item, dict):
+                        return item.get("text") or ""
+                    if isinstance(item, str):
+                        return item
+
+            # minimal fallback to legacy choices API
+            choice = getattr(resp, "choices", None)
+            if choice:
+                c = choice[0]
+                msg = getattr(c, "message", None)
+                if msg:
+                    return getattr(msg, "content", "")
+                if isinstance(c, dict):
+                    return c.get("message", {}).get("content", "") or c.get("text", "")
+                return getattr(c, "text", "") or ""
         except Exception:
             logging.exception("Failed to extract text from LLM response")
-            return ""
+        return ""
 
     def _extract_usage_from_response(resp: Any) -> int:
         try:
@@ -156,8 +203,17 @@ def get_default_provider() -> LLMProvider:
                 return int(usage.get("total_tokens", 0) or 0)
             if usage and hasattr(usage, "total_tokens"):
                 return int(getattr(usage, "total_tokens", 0) or 0)
+            # also check mapping style
+            if isinstance(resp, dict):
+                u = resp.get("usage") or {}
+                if isinstance(u, dict) and u.get("total_tokens"):
+                    return int(u.get("total_tokens") or 0)
             return 0
         except Exception:
             return 0
 
-    return OpenAIProvider()
+    provider = OpenAIProvider()
+    # Expose the system model used by this provider instance so callers
+    # (HTTP endpoints, adapters) can report which model is actually used.
+    provider.system_model = default_model or "gpt-3.5-turbo"
+    return provider

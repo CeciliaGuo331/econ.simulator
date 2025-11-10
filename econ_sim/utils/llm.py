@@ -44,4 +44,7 @@ class _Adapter:
 
 def resolve_llm_provider() -> _Adapter:
     provider = get_default_provider()
-    return _Adapter(provider)
+    adapter = _Adapter(provider)
+    # propagate system_model if provider exposes it
+    adapter.system_model = getattr(provider, "system_model", None)
+    return adapter
