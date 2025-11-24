@@ -983,6 +983,11 @@ def _execute_market_logic(
 
     tick = world_state.tick
     day = world_state.day
+    try:
+        ticks_per_day = int(getattr(config.simulation, "ticks_per_day", 1) or 1)
+    except Exception:
+        ticks_per_day = 1
+    is_daily_tick = (int(tick) % max(1, ticks_per_day)) == 0
 
     # 1) coupon payments
     try:
@@ -998,93 +1003,102 @@ def _execute_market_logic(
         pass
 
     # 2) labor market
-    try:
-        from ..logic_modules import labor_market
-
-        l_updates, l_log = labor_market.resolve_labor_market_new(world_state, decisions)
-        updates.extend(l_updates)
-        logs.append(l_log)
-        # Apply labor market updates into in-memory world_state so downstream
-        # modules (wages settlement, production) observe the new assignments.
+    if is_daily_tick:
         try:
-            for cmd in l_updates:
-                try:
-                    scope = getattr(cmd, "scope", None)
-                    agent_id = getattr(cmd, "agent_id", None)
-                    changes = getattr(cmd, "changes", {}) or {}
-                    if scope is None:
-                        continue
-                    if scope == AgentKind.HOUSEHOLD:
-                        hid = int(agent_id)
-                        hh = world_state.households.get(hid)
-                        if hh is None:
+            from ..logic_modules import labor_market
+
+            l_updates, l_log = labor_market.resolve_labor_market_new(
+                world_state, decisions
+            )
+            updates.extend(l_updates)
+            logs.append(l_log)
+            # Apply labor market updates into in-memory world_state so downstream
+            # modules (wages settlement, production) observe the new assignments.
+            try:
+                for cmd in l_updates:
+                    try:
+                        scope = getattr(cmd, "scope", None)
+                        agent_id = getattr(cmd, "agent_id", None)
+                        changes = getattr(cmd, "changes", {}) or {}
+                        if scope is None:
                             continue
-                        for k, v in changes.items():
-                            try:
-                                existing = getattr(hh, k, None)
-                                # if existing is a pydantic model and new value is a dict,
-                                # validate/convert it back to the model to preserve attribute access
-                                if isinstance(existing, BaseModel) and isinstance(
-                                    v, dict
-                                ):
-                                    try:
-                                        setattr(hh, k, existing.model_validate(v))
-                                    except Exception:
-                                        # fallback: try model_copy(update=...)
+                        if scope == AgentKind.HOUSEHOLD:
+                            hid = int(agent_id)
+                            hh = world_state.households.get(hid)
+                            if hh is None:
+                                continue
+                            for k, v in changes.items():
+                                try:
+                                    existing = getattr(hh, k, None)
+                                    if isinstance(existing, BaseModel) and isinstance(
+                                        v, dict
+                                    ):
                                         try:
-                                            setattr(
-                                                hh, k, existing.model_copy(update=v)
-                                            )
+                                            setattr(hh, k, existing.model_validate(v))
                                         except Exception:
-                                            setattr(hh, k, v)
-                                else:
-                                    setattr(hh, k, v)
-                            except Exception:
-                                # best-effort: ignore incompatible fields
-                                pass
-                    elif scope == AgentKind.FIRM and world_state.firm is not None:
-                        for k, v in changes.items():
-                            try:
-                                existing = getattr(world_state.firm, k, None)
-                                if isinstance(existing, BaseModel) and isinstance(
-                                    v, dict
-                                ):
-                                    try:
-                                        setattr(
-                                            world_state.firm,
-                                            k,
-                                            existing.model_validate(v),
-                                        )
-                                    except Exception:
+                                            try:
+                                                setattr(
+                                                    hh, k, existing.model_copy(update=v)
+                                                )
+                                            except Exception:
+                                                setattr(hh, k, v)
+                                    else:
+                                        setattr(hh, k, v)
+                                except Exception:
+                                    pass
+                        elif scope == AgentKind.FIRM and world_state.firm is not None:
+                            for k, v in changes.items():
+                                try:
+                                    existing = getattr(world_state.firm, k, None)
+                                    if isinstance(existing, BaseModel) and isinstance(
+                                        v, dict
+                                    ):
                                         try:
                                             setattr(
                                                 world_state.firm,
                                                 k,
-                                                existing.model_copy(update=v),
+                                                existing.model_validate(v),
                                             )
                                         except Exception:
-                                            setattr(world_state.firm, k, v)
-                                else:
-                                    setattr(world_state.firm, k, v)
-                            except Exception:
-                                pass
-                    elif (
-                        scope == AgentKind.GOVERNMENT
-                        and world_state.government is not None
-                    ):
-                        for k, v in changes.items():
-                            try:
-                                setattr(world_state.government, k, v)
-                            except Exception:
-                                pass
-                except Exception:
-                    continue
+                                            try:
+                                                setattr(
+                                                    world_state.firm,
+                                                    k,
+                                                    existing.model_copy(update=v),
+                                                )
+                                            except Exception:
+                                                setattr(world_state.firm, k, v)
+                                    else:
+                                        setattr(world_state.firm, k, v)
+                                except Exception:
+                                    pass
+                        elif (
+                            scope == AgentKind.GOVERNMENT
+                            and world_state.government is not None
+                        ):
+                            for k, v in changes.items():
+                                try:
+                                    setattr(world_state.government, k, v)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        continue
+            except Exception:
+                logger.debug(
+                    "Applying labor_market updates to world_state failed",
+                    exc_info=True,
+                )
         except Exception:
-            logger.debug(
-                "Applying labor_market updates to world_state failed", exc_info=True
+            pass
+    else:
+        logs.append(
+            TickLogEntry(
+                tick=tick,
+                day=day,
+                message="labor_market_skipped_non_daily",
+                context={},
             )
-    except Exception:
-        pass
+        )
 
     # 3) wages settlement (best-effort)
     try:
@@ -1459,67 +1473,80 @@ def _execute_market_logic(
         pass
 
     # 4.5) education processing: apply education payments and update education_level
-    try:
-        from ..logic_modules import education
-
-        # Diagnostic: record how many households requested education in decisions
+    if is_daily_tick:
         try:
-            req = 0
-            total_hh = 0
-            for hid, hdec in decisions.households.items():
-                total_hh += 1
-                try:
-                    if (
-                        getattr(hdec, "is_studying", False)
-                        and float(getattr(hdec, "education_payment", 0.0)) > 0
-                    ):
-                        req += 1
-                except Exception:
-                    continue
-            logs.append(
-                TickLogEntry(
-                    tick=world_state.tick,
-                    day=world_state.day,
-                    message="education_requests",
-                    context={"requested": int(req), "total_households": int(total_hh)},
+            from ..logic_modules import education
+
+            # Diagnostic: record how many households requested education in decisions
+            try:
+                req = 0
+                total_hh = 0
+                for hid, hdec in decisions.households.items():
+                    total_hh += 1
+                    try:
+                        if (
+                            getattr(hdec, "is_studying", False)
+                            and float(getattr(hdec, "education_payment", 0.0)) > 0
+                        ):
+                            req += 1
+                    except Exception:
+                        continue
+                logs.append(
+                    TickLogEntry(
+                        tick=world_state.tick,
+                        day=world_state.day,
+                        message="education_requests",
+                        context={
+                            "requested": int(req),
+                            "total_households": int(total_hh),
+                        },
+                    )
                 )
+            except Exception:
+                pass
+
+            e_updates, e_ledgers, e_log = education.process_education(
+                world_state, decisions, tick=tick, day=day
             )
+            updates.extend(e_updates)
+            ledgers.extend(e_ledgers)
+            logs.append(e_log)
+
+            # Diagnostic: snapshot how many households are marked as studying in memory after processing
+            try:
+                studying = 0
+                total_hh = 0
+                for hid, hh in getattr(world_state, "households", {}).items():
+                    total_hh += 1
+                    try:
+                        if getattr(hh, "is_studying", False):
+                            studying += 1
+                    except Exception:
+                        continue
+                logs.append(
+                    TickLogEntry(
+                        tick=world_state.tick,
+                        day=world_state.day,
+                        message="education_state_snapshot",
+                        context={
+                            "studying": int(studying),
+                            "total_households": int(total_hh),
+                        },
+                    )
+                )
+            except Exception:
+                pass
         except Exception:
             pass
-
-        e_updates, e_ledgers, e_log = education.process_education(
-            world_state, decisions, tick=tick, day=day
+    else:
+        logs.append(
+            TickLogEntry(
+                tick=tick,
+                day=day,
+                message="education_skipped_non_daily",
+                context={},
+            )
         )
-        updates.extend(e_updates)
-        ledgers.extend(e_ledgers)
-        logs.append(e_log)
-
-        # Diagnostic: snapshot how many households are marked as studying in memory after processing
-        try:
-            studying = 0
-            total_hh = 0
-            for hid, hh in getattr(world_state, "households", {}).items():
-                total_hh += 1
-                try:
-                    if getattr(hh, "is_studying", False):
-                        studying += 1
-                except Exception:
-                    continue
-            logs.append(
-                TickLogEntry(
-                    tick=world_state.tick,
-                    day=world_state.day,
-                    message="education_state_snapshot",
-                    context={
-                        "studying": int(studying),
-                        "total_households": int(total_hh),
-                    },
-                )
-            )
-        except Exception:
-            pass
-    except Exception:
-        pass
 
     # 5) government transfers
     try:

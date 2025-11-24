@@ -124,6 +124,45 @@ async def test_overrides_affect_decisions() -> None:
 
 
 @pytest.mark.asyncio
+# 测试：劳动市场和教育模块仅在每日第一个 tick 执行。
+async def test_labor_and_education_only_run_daily_tick() -> None:
+    orchestrator = SimulationOrchestrator()
+    simulation_id = "daily-only"
+    await _seed_minimal_coverage(
+        orchestrator,
+        simulation_id,
+        households=range(orchestrator.config.simulation.num_households),
+    )
+
+    first_tick = await orchestrator.run_tick(simulation_id)
+    assert any(log.message == "labor_market_cleared_new" for log in first_tick.logs)
+    assert any(log.message == "education_processed" for log in first_tick.logs)
+
+    overrides = TickDecisionOverrides(
+        households={
+            0: HouseholdDecisionOverride(
+                labor_supply=0.0, is_studying=True, education_payment=25.0
+            )
+        }
+    )
+
+    second_tick = await orchestrator.run_tick(simulation_id, overrides=overrides)
+    assert any(
+        log.message == "labor_market_skipped_non_daily" for log in second_tick.logs
+    )
+    assert any(log.message == "education_skipped_non_daily" for log in second_tick.logs)
+    assert not any(
+        log.message == "labor_market_cleared_new" for log in second_tick.logs
+    )
+    assert not any(log.message == "education_processed" for log in second_tick.logs)
+
+    hh_before = first_tick.world_state.households[0]
+    hh_after = second_tick.world_state.households[0]
+    assert hh_after.employment_status == hh_before.employment_status
+    assert hh_after.is_studying == hh_before.is_studying
+
+
+@pytest.mark.asyncio
 # 测试：启用/禁用家庭冲击功能后，世界状态中的 features 与 household_shocks 应相应变化。
 async def test_household_shock_toggle_updates_state() -> None:
     orchestrator = SimulationOrchestrator()
