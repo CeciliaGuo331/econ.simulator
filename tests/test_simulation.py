@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Iterable
+import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -102,7 +103,23 @@ async def test_overrides_affect_decisions() -> None:
 
     result = await orchestrator.run_tick(simulation_id, overrides=overrides)
 
-    assert result.world_state.households[0].last_consumption <= 0.5
+    goods_log = next(
+        (log for log in result.logs if log.message == "goods_market_cleared_new"),
+        None,
+    )
+    assert goods_log is not None, "goods market log missing"
+
+    clipped_raw = goods_log.context.get("clipped_budgets")
+    assert clipped_raw is not None
+    clipped = json.loads(clipped_raw)
+
+    subsistence = orchestrator.config.markets.goods.subsistence_consumption
+    expected_min = subsistence * result.world_state.firm.price
+
+    assert "0" in clipped
+    original_budget, sanitized_budget = clipped["0"]
+    assert original_budget == pytest.approx(0.0)
+    assert sanitized_budget == pytest.approx(expected_min)
     assert abs(result.world_state.firm.price - 25.0) < 1e-6
 
 
