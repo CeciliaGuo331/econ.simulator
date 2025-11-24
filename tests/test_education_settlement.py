@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,8 +9,20 @@ from econ_sim.data_access.models import (
     StateUpdateCommand,
     TickDecisionOverrides,
     HouseholdDecisionOverride,
+    HouseholdDecision,
+    BalanceSheet,
+    HouseholdState,
+    MacroState,
+    FirmState,
+    GovernmentState,
+    BankState,
+    CentralBankState,
+    SimulationFeatures,
+    EmploymentStatus,
+    WorldState,
 )
 from econ_sim.utils.settings import get_world_config
+from econ_sim.logic_modules import education
 
 
 @pytest.mark.asyncio
@@ -227,3 +240,48 @@ def generate_decisions(context):
     # education level increased at least by the configured gain
     gain = float(cfg.policies.education_gain)
     assert float(hh1_final.education_level) >= initial_edu + gain
+
+
+def test_employed_household_rejected_from_education_request():
+    world_state = WorldState(
+        simulation_id="sim",
+        tick=1,
+        day=1,
+        households={
+            1: HouseholdState(
+                id=1,
+                balance_sheet=BalanceSheet(cash=100.0),
+                skill=1.0,
+                employment_status=EmploymentStatus.EMPLOYED_FIRM,
+                is_studying=False,
+            )
+        },
+        firm=FirmState(),
+        bank=BankState(),
+        government=GovernmentState(),
+        central_bank=CentralBankState(),
+        macro=MacroState(),
+        features=SimulationFeatures(),
+    )
+
+    decision = HouseholdDecision(
+        labor_supply=0.0,
+        consumption_budget=0.0,
+        savings_rate=0.0,
+        is_studying=True,
+        education_payment=25.0,
+        deposit_order=0.0,
+        withdrawal_order=0.0,
+    )
+
+    decisions = SimpleNamespace(households={1: decision})
+
+    updates, ledgers, log = education.process_education(
+        world_state, decisions, tick=1, day=1
+    )
+
+    assert updates == []
+    assert ledgers == []
+    hh = world_state.households[1]
+    assert hh.is_studying is False
+    assert "rejected_employed" in log.context

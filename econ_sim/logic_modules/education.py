@@ -14,6 +14,7 @@ from ..data_access.models import (
     StateUpdateCommand,
     TickLogEntry,
     AgentKind,
+    EmploymentStatus,
 )
 from . import finance_market
 from ..utils.settings import get_world_config
@@ -26,6 +27,7 @@ def process_education(
     ledgers: List[Any] = []
     total_paid = 0.0
     students = []
+    rejected_employed: List[int] = []
 
     government = getattr(world_state, "government", None)
     if government is None:
@@ -53,6 +55,25 @@ def process_education(
                 getattr(h_dec, "is_studying", False)
                 and float(getattr(h_dec, "education_payment", 0.0)) > 0
             ):
+                hh = world_state.households.get(int(hid))
+                if hh is None:
+                    continue
+
+                status = getattr(hh, "employment_status", None)
+                try:
+                    if isinstance(status, EmploymentStatus):
+                        status_value = status
+                    elif status is None:
+                        status_value = EmploymentStatus.UNEMPLOYED
+                    else:
+                        status_value = EmploymentStatus(str(status))
+                except Exception:
+                    status_value = EmploymentStatus.UNEMPLOYED
+
+                if status_value is not EmploymentStatus.UNEMPLOYED:
+                    rejected_employed.append(int(hid))
+                    continue
+
                 amount = float(h_dec.education_payment)
                 # transfer from household to government immediately (tuition paid now)
                 t_updates, t_ledgers, t_log = finance_market.transfer(
@@ -75,7 +96,6 @@ def process_education(
                 # immediately apply education level gains here — gains are
                 # applied at the start of the next day's first tick by
                 # daily_settlement.settle_previous_day.
-                hh = world_state.households[int(hid)]
                 hh.is_studying = True
 
                 updates.append(
@@ -92,6 +112,8 @@ def process_education(
             continue
 
     context = {"students": str(students), "total_paid": float(total_paid)}
+    if rejected_employed:
+        context["rejected_employed"] = str(rejected_employed)
     log = TickLogEntry(
         tick=tick, day=day, message="education_processed", context=context
     )
